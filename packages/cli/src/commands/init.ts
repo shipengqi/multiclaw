@@ -85,13 +85,13 @@ export function initCommand(options: { preset?: string }): void {
 
   if (!TEMPLATES[preset]) {
     const available = Object.keys(TEMPLATES).join(", ")
-    console.error(`\x1b[31m❌ Unknown preset "${preset}". Available: ${available}\x1b[0m`)
+    console.error(`\x1b[31mError: Unknown preset "${preset}". Available: ${available}\x1b[0m`)
     process.exit(1)
   }
 
   const configPath = path.resolve(process.cwd(), "multiclaw.config.ts")
   if (fs.existsSync(configPath)) {
-    console.error("\x1b[31m❌ multiclaw.config.ts already exists\x1b[0m")
+    console.error("\x1b[31mError: multiclaw.config.ts already exists\x1b[0m")
     process.exit(1)
   }
 
@@ -99,15 +99,15 @@ export function initCommand(options: { preset?: string }): void {
     fs.writeFileSync(configPath, TEMPLATES[preset])
     fs.mkdirSync(path.resolve(process.cwd(), "workspace"), { recursive: true })
   } catch (err) {
-    console.error(`\x1b[31m❌ Failed to create files: ${(err as Error).message}\x1b[0m`)
+    console.error(`\x1b[31mError: Failed to create files: ${(err as Error).message}\x1b[0m`)
     process.exit(1)
   }
 
-  console.log(`✅ Created multiclaw.config.ts (preset: ${preset})`)
-  console.log(`   ${PRESET_DESCRIPTIONS[preset]}`)
+  console.log(`Created multiclaw.config.ts (preset: ${preset})`)
+  console.log(`  ${PRESET_DESCRIPTIONS[preset]}`)
   console.log("")
-  console.log(`👉 Edit multiclaw.config.ts — set projectName`)
-  console.log(`👉 Run: multiclaw run "describe your requirement" --ui`)
+  console.log(`> Edit multiclaw.config.ts — set projectName`)
+  console.log(`> Run: multiclaw run "describe your requirement" --ui`)
 
   // Check if the default runtime (claude) is installed
   checkRuntime()
@@ -116,14 +116,14 @@ export function initCommand(options: { preset?: string }): void {
 function checkRuntime(): void {
   const runtimes = ["claude", "codex", "opencode"]
   const available = runtimes.filter((r) => {
-    try { execSync(`${r === "opencode" ? r : r} --version`, { stdio: "ignore" }); return true }
+    try { execSync(`${r} --version`, { stdio: "ignore" }); return true }
     catch { return false }
   })
   if (available.length === 0) {
     console.log("")
-    console.log("\x1b[33m⚠️  No AI runtime detected. Install at least one:\x1b[0m")
+    console.log("\x1b[33mWarning: No AI runtime detected. Install at least one:\x1b[0m")
     for (const [name, cmd] of Object.entries(RUNTIME_INSTALL)) {
-      console.log(`   \x1b[2m${name.padEnd(12)} ${cmd}\x1b[0m`)
+      console.log(`  \x1b[2m${name.padEnd(12)} ${cmd}\x1b[0m`)
     }
   }
 }

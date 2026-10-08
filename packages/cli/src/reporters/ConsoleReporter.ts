@@ -1,10 +1,26 @@
 import type { EventBus, MultiClawEvent } from "@multiclaw/core"
 
-const C = {
-  reset: "\x1b[0m", bold: "\x1b[1m",
-  cyan: "\x1b[36m", green: "\x1b[32m",
-  yellow: "\x1b[33m", red: "\x1b[31m", purple: "\x1b[35m",
-}
+// Degraded to plain ASCII when NO_COLOR is set, TERM=dumb, or stdout is not a TTY (pipe/CI).
+const isFancy =
+  !process.env.NO_COLOR &&
+  process.env.TERM !== "dumb" &&
+  process.stdout.isTTY === true
+
+const S = isFancy
+  ? { ok: "✓", fail: "✗", run: "›", retry: "↻", skip: "⊘", warn: "⚠", bullet: "·" }
+  : { ok: "+", fail: "x", run: ">", retry: "~", skip: "-", warn: "!", bullet: "*" }
+
+const C = isFancy
+  ? {
+      reset: "\x1b[0m", bold: "\x1b[1m", dim: "\x1b[2m",
+      cyan: "\x1b[36m", green: "\x1b[32m",
+      yellow: "\x1b[33m", red: "\x1b[31m", purple: "\x1b[35m",
+    }
+  : {
+      reset: "", bold: "", dim: "",
+      cyan: "", green: "",
+      yellow: "", red: "", purple: "",
+    }
 
 export class ConsoleReporter {
   attach(eventBus: EventBus): () => void {
@@ -14,19 +30,21 @@ export class ConsoleReporter {
   private handle(e: MultiClawEvent): void {
     switch (e.type) {
       case "orchestration:start": {
-        const line = "═".repeat(50)
-        console.log(`\n${C.bold}${C.purple}╔${line}╗`)
-        console.log(`║  🤖 ${e.payload.name.padEnd(46)}║`)
-        console.log(`╚${line}╝${C.reset}`)
-        console.log(`${C.cyan}🔢 Agents: ${e.payload.totalAgents}  |  Stages: ${e.payload.stages.length}${C.reset}\n`)
+        const line = (isFancy ? "═" : "=").repeat(50)
+        const edge = isFancy ? ["╔", "║", "╚", "╗", "╝"] : ["+", "|", "+", "+", "+"]
+        console.log(`\n${C.bold}${C.purple}${edge[0]}${line}${edge[3]}`)
+        console.log(`${edge[1]}  ${S.run} ${e.payload.name.padEnd(47)}${edge[3]}`)
+        console.log(`${edge[2]}${line}${edge[4]}${C.reset}`)
+        console.log(`${C.cyan}${S.bullet} Agents: ${e.payload.totalAgents}  Stages: ${e.payload.stages.length}${C.reset}\n`)
         break
       }
       case "stage:start": {
-        console.log(`${C.cyan}${"─".repeat(16)} Stage ${e.payload.stageIndex + 1} ${"─".repeat(16)}${C.reset}`)
+        const dash = (isFancy ? "─" : "-").repeat(16)
+        console.log(`${C.cyan}${dash} Stage ${e.payload.stageIndex + 1} ${dash}${C.reset}`)
         break
       }
       case "agent:start": {
-        console.log(`${C.purple}${e.payload.icon ?? "▶"} [${e.payload.agentName}] starting...${C.reset}`)
+        console.log(`${C.purple}${S.run} [${e.payload.agentName}] starting...${C.reset}`)
         break
       }
       case "agent:output": {
@@ -35,32 +53,34 @@ export class ConsoleReporter {
       }
       case "agent:complete": {
         const d = (e.payload.duration / 1000).toFixed(1)
-        console.log(`${C.green}✅ ${e.payload.agentName} done (${d}s)${C.reset}`)
+        console.log(`${C.green}${S.ok} ${e.payload.agentName} done (${d}s)${C.reset}`)
         break
       }
       case "agent:failed": {
-        console.log(`${C.red}❌ ${e.payload.agentName} failed: ${e.payload.error}${C.reset}`)
+        console.log(`${C.red}${S.fail} ${e.payload.agentName} failed: ${e.payload.error}${C.reset}`)
         break
       }
       case "agent:skipped": {
-        console.log(`${C.yellow}⏭️  ${e.payload.agentName} skipped${C.reset}`)
+        console.log(`${C.yellow}${S.skip} ${e.payload.agentName} skipped${C.reset}`)
         break
       }
       case "agent:retrying": {
-        console.log(`${C.yellow}🔄 ${e.payload.agentName} retry ${e.payload.attempt}/${e.payload.maxAttempts}: ${e.payload.error}${C.reset}`)
+        console.log(`${C.yellow}${S.retry} ${e.payload.agentName} retry ${e.payload.attempt}/${e.payload.maxAttempts}: ${e.payload.error}${C.reset}`)
         break
       }
       case "orchestration:complete": {
         const { success, totalDuration, agentResults } = e.payload
-        const line = "═".repeat(50)
-        const title = success ? "🎉 All done" : "⚠️  Done (with failures)"
-        console.log(`\n${C.bold}${C.purple}╔${line}╗`)
-        console.log(`║  ${title.padEnd(47)}║`)
-        console.log(`╚${line}╝${C.reset}`)
-        console.log(`  ⏱️  Total: ${(totalDuration / 1000).toFixed(1)}s`)
+        const line = (isFancy ? "═" : "=").repeat(50)
+        const edge = isFancy ? ["╔", "║", "╚", "╗", "╝"] : ["+", "|", "+", "+", "+"]
+        const title = success ? `${S.ok} All done` : `${S.warn} Done (with failures)`
+        console.log(`\n${C.bold}${C.purple}${edge[0]}${line}${edge[3]}`)
+        console.log(`${edge[1]}  ${title.padEnd(49)}${edge[3]}`)
+        console.log(`${edge[2]}${line}${edge[4]}${C.reset}`)
+        console.log(`  ~ Total: ${(totalDuration / 1000).toFixed(1)}s`)
         for (const r of agentResults) {
-          const icon = r.status === "success" ? "✅" : "❌"
-          console.log(`     ${icon} ${r.agentName.padEnd(20)} ${(r.duration / 1000).toFixed(1)}s`)
+          const icon = r.status === "success" ? S.ok : S.fail
+          const color = r.status === "success" ? C.green : C.red
+          console.log(`     ${color}${icon}${C.reset} ${r.agentName.padEnd(20)} ${(r.duration / 1000).toFixed(1)}s`)
         }
         console.log()
         break

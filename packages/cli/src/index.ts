@@ -37,6 +37,6 @@ program
   .action((opts) => serveCommand(opts))
 
 program.parseAsync(process.argv).catch((err: unknown) => {
-  console.error(`\x1b[31m❌ ${(err as Error).message ?? err}\x1b[0m`)
+  console.error(`\x1b[31mError: ${(err as Error).message ?? err}\x1b[0m`)
   process.exit(1)
 })

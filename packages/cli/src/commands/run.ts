@@ -23,11 +23,11 @@ export async function runCommand(requirement: string, options: RunOptions): Prom
   for (const name of runtimeNames) {
     let rt
     try { rt = runtimeRegistry.get(name) } catch {
-      console.error(`\x1b[31m❌ Unknown runtime "${name}". Supported: claude, codex, opencode, cursor\x1b[0m`)
+      console.error(`\x1b[31mError: Unknown runtime "${name}". Supported: claude, codex, opencode, cursor\x1b[0m`)
       process.exit(1)
     }
     if (!(await rt.checkAvailable())) {
-      console.error(`\x1b[31m❌ Runtime "${name}" is not available. Make sure the CLI is installed.\x1b[0m`)
+      console.error(`\x1b[31mError: Runtime "${name}" is not available. Make sure the CLI is installed.\x1b[0m`)
       process.exit(1)
     }
   }
@@ -38,10 +38,10 @@ export async function runCommand(requirement: string, options: RunOptions): Prom
 
   const logDir = config.logDir ?? path.join(config.workDir, ".multiclaw", "logs")
   new FileLogWriter(logDir).attach(orchestrator.eventBus)
-  console.log(`\x1b[2m📁 Logs: ${logDir}\x1b[0m`)
+  console.log(`\x1b[2mLogs: ${logDir}\x1b[0m`)
 
   if (options.ui && options.serverUrl) {
-    console.warn("\x1b[33m⚠️  --ui and --server-url cannot be used together. Using --ui.\x1b[0m")
+    console.warn("\x1b[33mWarning: --ui and --server-url cannot be used together. Using --ui.\x1b[0m")
   }
 
   if (options.ui) {
@@ -66,7 +66,7 @@ async function attachDashboard(
   server.bindEventBus(orchestrator.eventBus)
 
   const url = `http://localhost:${port}`
-  console.log(`\x1b[36m📊 Dashboard: ${url}\x1b[0m`)
+  console.log(`\x1b[36mDashboard: ${url}\x1b[0m`)
 
   if (config.dashboard?.autoOpen ?? true) {
     const { default: open } = await import("open")
@@ -86,7 +86,7 @@ async function attachRemoteServer(
     ws.on("open", () => { clearTimeout(timer); resolve() })
     ws.on("error", (err) => { clearTimeout(timer); reject(err) })
   })
-  console.log(`\x1b[36m🔗 Connected to Dashboard server: ${serverUrl}\x1b[0m`)
+  console.log(`\x1b[36mConnected to Dashboard server: ${serverUrl}\x1b[0m`)
   orchestrator.eventBus.subscribe((e) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(e))
   })
