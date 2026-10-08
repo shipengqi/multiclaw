@@ -1,70 +1,73 @@
 import { defineConfig } from "@multiclaw/core"
 
 export default defineConfig({
-  name: "Dev Team",
+  name: "Dev Team Demo",
   workDir: "./workspace",
   context: {
     projectName: "Todo App",
   },
-  dashboard: {
-    port: 3210,
-    autoOpen: true,
-  },
+  dashboard: { port: 3210, autoOpen: true },
   agents: [
     {
       id: "architect",
       name: "Architect",
-      icon: "🏛️",
-      systemPrompt: "You are a senior software architect. Execute tasks directly without asking for confirmation. Output files immediately.",
-      taskPrompt: `
-## Project: {{projectName}}
+      icon: "◆",
+      taskPrompt: `Write a file named architecture.md with this exact content:
 
-## Requirement
-{{requirement}}
+# Architecture
 
-## Task
-Create two files in the current directory:
-1. architecture.md — project structure and file list
-2. api-spec.md — all API endpoints (path, method, request/response format)
+## Stack
+- Runtime: Node.js
+- Framework: Express
+- Database: SQLite
 
-Create the files directly. No extra output.
-      `,
+## Endpoints
+- GET  /todos        list all todos
+- POST /todos        create a todo
+- PUT  /todos/:id    update a todo
+- DELETE /todos/:id  delete a todo
+
+Do nothing else.`,
       tools: ["Write"],
     },
     {
       id: "developer",
       name: "Developer",
-      icon: "⚙️",
+      icon: "⊕",
       dependsOn: ["architect"],
-      systemPrompt: "You are a senior Node.js engineer. Write code directly without asking for confirmation.",
-      taskPrompt: `
-## Architecture
-{{file:architecture.md}}
+      taskPrompt: `Read architecture.md, then write implementation-notes.md with this exact content:
 
-## API Specification
-{{file:api-spec.md}}
+# Implementation Notes
 
-## Task
-Implement a complete Express Todo API following the architecture and API spec.
-Create all source files directly. Run npx tsc --noEmit to verify types when done.
-      `,
-      tools: ["Read", "Write", "Bash"],
+## Commands
+- Install: npm install
+- Start: node index.js
+- Test: npm test
+
+## Notes
+- All endpoints implemented per architecture.md
+- SQLite database created on first run
+
+Do nothing else.`,
+      tools: ["Read", "Write"],
     },
     {
       id: "reviewer",
       name: "Reviewer",
-      icon: "🔍",
+      icon: "◉",
       dependsOn: ["developer"],
-      systemPrompt: "You are a code review expert. Read only — do not modify code.",
-      taskPrompt: `
-## Task
-Review all code written by the developer and output a review report to review.md:
-- Code quality score (1–10)
-- Issues found
-- Improvement suggestions
+      taskPrompt: `Read architecture.md and implementation-notes.md, then write review.md with this exact content:
 
-Create review.md directly.
-      `,
+# Code Review
+
+Score: 9/10
+Verdict: Approved
+
+## Summary
+Architecture is clean and implementation follows the spec.
+No blocking issues found.
+
+Do nothing else.`,
       tools: ["Read", "Write"],
     },
   ],

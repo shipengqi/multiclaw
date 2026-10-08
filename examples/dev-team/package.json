@@ -1,0 +1,17 @@
+{
+  "name": "dev-team-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx ../../packages/cli/src/index.ts run 'Build a Todo API' --config ./multiclaw.config.ts --ui"
+  },
+  "dependencies": {
+    "@multiclaw/core": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  }
+}

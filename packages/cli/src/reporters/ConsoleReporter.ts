@@ -33,7 +33,7 @@ export class ConsoleReporter {
         const line = (isFancy ? "═" : "=").repeat(50)
         const edge = isFancy ? ["╔", "║", "╚", "╗", "╝"] : ["+", "|", "+", "+", "+"]
         console.log(`\n${C.bold}${C.purple}${edge[0]}${line}${edge[3]}`)
-        console.log(`${edge[1]}  ${S.run} ${e.payload.name.padEnd(47)}${edge[3]}`)
+        console.log(`${edge[1]}  ${S.run} ${e.payload.name.padEnd(46)}${edge[1]}`)
         console.log(`${edge[2]}${line}${edge[4]}${C.reset}`)
         console.log(`${C.cyan}${S.bullet} Agents: ${e.payload.totalAgents}  Stages: ${e.payload.stages.length}${C.reset}\n`)
         break
@@ -74,13 +74,16 @@ export class ConsoleReporter {
         const edge = isFancy ? ["╔", "║", "╚", "╗", "╝"] : ["+", "|", "+", "+", "+"]
         const title = success ? `${S.ok} All done` : `${S.warn} Done (with failures)`
         console.log(`\n${C.bold}${C.purple}${edge[0]}${line}${edge[3]}`)
-        console.log(`${edge[1]}  ${title.padEnd(49)}${edge[3]}`)
+        console.log(`${edge[1]}  ${title.padEnd(48)}${edge[1]}`)
         console.log(`${edge[2]}${line}${edge[4]}${C.reset}`)
-        console.log(`  ~ Total: ${(totalDuration / 1000).toFixed(1)}s`)
+        const nameWidth = Math.max(8, ...agentResults.map((r) => r.agentName.length))
+        const totalStr = `${(totalDuration / 1000).toFixed(1)}s`
+        console.log(`  ~ ${"Total".padEnd(nameWidth)}   ${totalStr.padStart(7)}`)
         for (const r of agentResults) {
           const icon = r.status === "success" ? S.ok : S.fail
           const color = r.status === "success" ? C.green : C.red
-          console.log(`     ${color}${icon}${C.reset} ${r.agentName.padEnd(20)} ${(r.duration / 1000).toFixed(1)}s`)
+          const dur = `${(r.duration / 1000).toFixed(1)}s`
+          console.log(`  ${color}${icon}${C.reset} ${r.agentName.padEnd(nameWidth)}   ${dur.padStart(7)}`)
         }
         console.log()
         break
