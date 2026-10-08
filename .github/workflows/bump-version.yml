@@ -1,0 +1,70 @@
+name: Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options: [patch, minor, major]
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install
+
+      - name: Bump all packages to the same version
+        id: bump
+        run: |
+          cd packages/cli
+          npm version ${{ inputs.bump }} --no-git-tag-version
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          cd ../..
+
+          node -e "
+            const fs = require('fs');
+            for (const pkg of ['packages/core', 'packages/dashboard']) {
+              const p = pkg + '/package.json';
+              const json = JSON.parse(fs.readFileSync(p, 'utf8'));
+              json.version = '${VERSION}';
+              fs.writeFileSync(p, JSON.stringify(json, null, 2) + '\n');
+            }
+          "
+
+      - name: Commit, push branch, and open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${{ steps.bump.outputs.version }}
+          BRANCH="release/v${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add packages/cli/package.json packages/core/package.json packages/dashboard/package.json
+          git commit -m "chore: release v${VERSION}"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "chore: release v${VERSION}" \
+            --body "Bumps all packages to **v${VERSION}**. Merge to trigger the release workflow." \
+            --base main \
+            --head "$BRANCH"
