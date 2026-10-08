@@ -1,4 +1,4 @@
-import { defineConfig } from "@multiclaw/core"
+import { defineConfig } from "multiclaw"
 
 export default defineConfig({
   name: "Dev Team Demo",

@@ -7,7 +7,7 @@
     "dev": "tsx ../../packages/cli/src/index.ts run 'Build a Todo API' --config ./multiclaw.config.ts --ui"
   },
   "dependencies": {
-    "@multiclaw/core": "workspace:*"
+    "multiclaw": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.7.0",
