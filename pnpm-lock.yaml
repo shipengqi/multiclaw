@@ -20,9 +20,9 @@ importers:
 
   examples/dev-team:
     dependencies:
-      '@multiclaw/core':
+      multiclaw:
         specifier: workspace:*
-        version: link:../../packages/core
+        version: link:../../packages/cli
     devDependencies:
       '@types/node':
         specifier: ^20.11.0
@@ -39,10 +39,10 @@ importers:
       '@inquirer/prompts':
         specifier: ^8.7.3
         version: 8.7.3(@types/node@20.19.43)
-      '@multiclaw/core':
+      '@multiclawcli/core':
         specifier: workspace:*
         version: link:../core
-      '@multiclaw/dashboard':
+      '@multiclawcli/dashboard':
         specifier: workspace:*
         version: link:../dashboard
       commander:
@@ -79,7 +79,7 @@ importers:
 
   packages/dashboard:
     dependencies:
-      '@multiclaw/core':
+      '@multiclawcli/core':
         specifier: workspace:*
         version: link:../core
       '@radix-ui/react-scroll-area':
