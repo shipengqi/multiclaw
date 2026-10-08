@@ -1,0 +1,14 @@
+{
+  "name": "multiclaw-monorepo",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev:example": "pnpm --filter dev-team-example run dev"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "tsx": "^4.7.0",
+    "@types/node": "^20.11.0"
+  },
+  "packageManager": "pnpm@9.0.0"
+}

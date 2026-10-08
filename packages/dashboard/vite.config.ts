@@ -1,0 +1,25 @@
+import { defineConfig } from "vite"
+import react from "@vitejs/plugin-react"
+import * as path from "path"
+
+export default defineConfig({
+  plugins: [react()],
+  root: ".",
+  define: {
+    // ws 等 Node.js 包引用了 global，浏览器端需要映射到 globalThis
+    global: "globalThis",
+  },
+  build: {
+    outDir: "dist/client",
+    emptyOutDir: true,
+  },
+  resolve: {
+    alias: {
+      "@multiclaw/core": path.resolve(__dirname, "../core/src"),
+      "@": path.resolve(__dirname, "./src/client"),
+    },
+  },
+  optimizeDeps: {
+    exclude: ["ws", "child_process", "fs", "path"],
+  },
+})
