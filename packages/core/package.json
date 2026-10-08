@@ -1,5 +1,5 @@
 {
-  "name": "@multiclaw/core",
+  "name": "@multiclawcli/core",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",

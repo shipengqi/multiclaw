@@ -1,6 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
-import type { EventBus, MultiClawEvent } from "@multiclaw/core"
+import type { EventBus, MultiClawEvent } from "@multiclawcli/core"
 
 export class FileLogWriter {
   private streams = new Map<string, fs.WriteStream>()

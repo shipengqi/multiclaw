@@ -1,6 +1,6 @@
 import * as path from "path"
 import * as fs from "fs"
-import type { MultiClawConfig } from "@multiclaw/core"
+import type { MultiClawConfig } from "@multiclawcli/core"
 
 const DEFAULT_CONFIG_NAMES = ["multiclaw.config.ts", "multiclaw.config.js"]
 

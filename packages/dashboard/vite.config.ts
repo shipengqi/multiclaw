@@ -15,7 +15,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@multiclaw/core": path.resolve(__dirname, "../core/src"),
+      "@multiclawcli/core": path.resolve(__dirname, "../core/src"),
       "@": path.resolve(__dirname, "./src/client"),
     },
   },

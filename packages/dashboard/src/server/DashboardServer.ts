@@ -2,7 +2,7 @@ import * as http from "http"
 import * as path from "path"
 import * as fs from "fs"
 import { WebSocketServer } from "ws"
-import type { EventBus } from "@multiclaw/core"
+import type { EventBus } from "@multiclawcli/core"
 import { WebSocketHub } from "./WebSocketHub"
 
 export interface DashboardServerOptions {

@@ -1,6 +1,6 @@
 import * as path from "path"
-import type { Orchestrator } from "@multiclaw/core"
-import { Orchestrator as OrchestratorImpl, runtimeRegistry } from "@multiclaw/core"
+import type { Orchestrator } from "@multiclawcli/core"
+import { Orchestrator as OrchestratorImpl, runtimeRegistry } from "@multiclawcli/core"
 import { loadConfig } from "../loader/loadConfig"
 import { ConsoleReporter } from "../reporters/ConsoleReporter"
 import { FileLogWriter } from "../reporters/FileLogWriter"
@@ -58,7 +58,7 @@ async function attachDashboard(
   config: Awaited<ReturnType<typeof loadConfig>>,
   options: RunOptions
 ): Promise<void> {
-  const { DashboardServer } = await import("@multiclaw/dashboard/server")
+  const { DashboardServer } = await import("@multiclawcli/dashboard/server")
   const port = options.port ?? config.dashboard?.port ?? 3210
   const server = new DashboardServer({ port })
   await server.start()

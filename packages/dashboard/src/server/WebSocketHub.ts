@@ -1,5 +1,5 @@
 import { WebSocketServer, WebSocket } from "ws"
-import type { MultiClawEvent } from "@multiclaw/core"
+import type { MultiClawEvent } from "@multiclawcli/core"
 
 export class WebSocketHub {
   private wss: WebSocketServer

@@ -1,5 +1,5 @@
 import { create } from "zustand"
-import type { MultiClawEvent, StageInfo, AgentStatus } from "@multiclaw/core"
+import type { MultiClawEvent, StageInfo, AgentStatus } from "@multiclawcli/core"
 
 const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
 

@@ -1,4 +1,4 @@
-import type { EventBus, MultiClawEvent } from "@multiclaw/core"
+import type { EventBus, MultiClawEvent } from "@multiclawcli/core"
 
 // Degraded to plain ASCII when NO_COLOR is set, TERM=dumb, or stdout is not a TTY (pipe/CI).
 const isFancy =

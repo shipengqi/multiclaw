@@ -1,5 +1,5 @@
 {
-  "name": "@multiclaw/dashboard",
+  "name": "@multiclawcli/dashboard",
   "version": "0.1.0",
   "type": "module",
   "exports": {
@@ -16,7 +16,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@multiclaw/core": "workspace:*",
+    "@multiclawcli/core": "workspace:*",
     "ws": "^8.16.0",
     "zustand": "^4.5.0",
     "react": "^18.2.0",

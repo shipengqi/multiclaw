@@ -3,7 +3,7 @@ export interface ServeOptions {
 }
 
 export async function serveCommand(options: ServeOptions): Promise<void> {
-  const { DashboardServer } = await import("@multiclaw/dashboard/server")
+  const { DashboardServer } = await import("@multiclawcli/dashboard/server")
   const port = options.port ?? 3210
   const server = new DashboardServer({ port, acceptClientEvents: true })
   await server.start()
