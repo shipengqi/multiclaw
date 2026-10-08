@@ -13,13 +13,8 @@ program
 
 program
   .command("init")
-  .description("Scaffold a config file")
-  .option(
-    "--preset <name>",
-    "Built-in preset: simple (default) | backend | fullstack",
-    "simple"
-  )
-  .action((opts) => initCommand(opts))
+  .description("Scaffold a config file (interactive)")
+  .action(() => initCommand())
 
 program
   .command("run <requirement>")
