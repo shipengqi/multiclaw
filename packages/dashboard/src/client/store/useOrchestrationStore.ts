@@ -81,7 +81,7 @@ export const useOrchestrationStore = create<OrchestrationState>((set) => ({
       }
       case "agent:retrying": {
         const { agentId, attempt, maxAttempts } = e.payload
-        const msg = `\n🔄 第 ${attempt} 次重试 (共 ${maxAttempts} 次)...\n`
+        const msg = `\n[retry] attempt ${attempt} of ${maxAttempts}...\n`
         if (agentId in state.agents) {
           const a = state.agents[agentId]
           return { agents: { ...state.agents, [agentId]: { ...a, status: "retrying", logs: a.logs + msg } } }

@@ -4,7 +4,7 @@ import type { MultiClawEvent } from "@multiclawcli/core"
 export function useWebSocket(onEvent: (e: MultiClawEvent) => void): void {
   const ref = useRef(onEvent)
   ref.current = onEvent
-  // 编排完成后停止重连，避免 server 已关闭时持续刷错误
+  // Stop reconnecting after orchestration completes to avoid errors when server has shut down
   const doneRef = useRef(false)
 
   useEffect(() => {

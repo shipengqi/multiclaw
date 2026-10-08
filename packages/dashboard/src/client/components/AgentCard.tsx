@@ -10,12 +10,12 @@ const STATUS_CONFIG: Record<AgentStatus, {
   variant: "secondary" | "default" | "destructive" | "outline"
   className?: string
 }> = {
-  pending:   { label: "等待中", variant: "secondary" },
-  running:   { label: "运行中", variant: "default", className: "animate-pulse" },
-  retrying:  { label: "重试中", variant: "default", className: "animate-pulse bg-yellow-500 hover:bg-yellow-500/80" },
-  success:   { label: "完成",   variant: "default",  className: "bg-green-500 hover:bg-green-500/80" },
-  failed:    { label: "失败",   variant: "destructive" },
-  skipped:   { label: "跳过",   variant: "outline" },
+  pending:   { label: "pending",  variant: "secondary" },
+  running:   { label: "running",  variant: "default", className: "animate-pulse" },
+  retrying:  { label: "retrying", variant: "default", className: "animate-pulse bg-yellow-500 hover:bg-yellow-500/80" },
+  success:   { label: "done",     variant: "default",  className: "bg-green-500 hover:bg-green-500/80" },
+  failed:    { label: "failed",   variant: "destructive" },
+  skipped:   { label: "skipped",  variant: "outline" },
 }
 
 export function AgentCard({ agent, onClick, selected }: {
@@ -31,7 +31,7 @@ export function AgentCard({ agent, onClick, selected }: {
     >
       <CardContent className="flex items-center justify-between p-3">
         <div className="flex items-center gap-2">
-          <span>{agent.icon ?? "▶"}</span>
+          <span>{agent.icon ?? "-"}</span>
           <span className="font-medium text-sm">{agent.name}</span>
         </div>
         <div className="flex items-center gap-2">

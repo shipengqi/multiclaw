@@ -3,10 +3,12 @@ import { useOrchestrationStore } from "../store/useOrchestrationStore"
 
 export function LogPanel({ agentId }: { agentId: string | null }) {
   const agents = useOrchestrationStore((s) => s.agents)
+  const preflightBuffer = useOrchestrationStore((s) => s.preflightBuffer)
   const scrollRef = useRef<HTMLDivElement>(null)
   const userScrolled = useRef(false)
-  const logs = agentId ? agents[agentId]?.logs ?? "" : ""
-  const agentName = agentId ? agents[agentId]?.name : null
+  const agentState = agentId ? (agents[agentId] ?? preflightBuffer[agentId]) : undefined
+  const logs = agentState?.logs ?? ""
+  const agentName = agentState?.name ?? null
 
   const handleScroll = () => {
     const el = scrollRef.current
@@ -29,11 +31,11 @@ export function LogPanel({ agentId }: { agentId: string | null }) {
       <div className="p-4 font-mono text-sm">
         {agentId ? (
           <>
-            <p className="text-zinc-400 mb-3 text-xs">📄 {agentName} 日志</p>
+            <p className="text-zinc-400 mb-3 text-xs">{agentName} logs</p>
             <pre className="whitespace-pre-wrap leading-relaxed">{logs}</pre>
           </>
         ) : (
-          <p className="text-zinc-500">← 选择一个 Agent 查看实时日志</p>
+          <p className="text-zinc-500">Select an agent to view live logs</p>
         )}
       </div>
     </div>
