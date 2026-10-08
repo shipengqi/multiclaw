@@ -3,6 +3,7 @@ import { Command } from "commander"
 import { runCommand } from "./commands/run"
 import { initCommand } from "./commands/init"
 import { serveCommand } from "./commands/serve"
+import { upgradeCommand } from "./commands/upgrade"
 
 const program = new Command()
 
@@ -30,6 +31,11 @@ program
   .description("Start a persistent Dashboard server")
   .option("--port <port>", "Port", (v) => parseInt(v, 10))
   .action((opts) => serveCommand(opts))
+
+program
+  .command("upgrade")
+  .description("Upgrade multiclaw to the latest version")
+  .action(() => upgradeCommand())
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(`\x1b[31mError: ${(err as Error).message ?? err}\x1b[0m`)
