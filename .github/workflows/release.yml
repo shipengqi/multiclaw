@@ -41,8 +41,6 @@ jobs:
           pnpm --filter @multiclaw/core    publish --no-git-checks --access public
           pnpm --filter @multiclaw/dashboard publish --no-git-checks --access public
           pnpm --filter multiclaw          publish --no-git-checks --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create git tag and GitHub Release
         env:

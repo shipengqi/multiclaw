@@ -12,6 +12,9 @@
     "build": "vite build && tsc -p tsconfig.server.json",
     "dev:client": "vite"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@multiclaw/core": "workspace:*",
     "ws": "^8.16.0",
