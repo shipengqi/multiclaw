@@ -15,8 +15,9 @@ export default defineConfig({
   dashboard: { port: 3210, autoOpen: true },
   agents: [
     agents.architect(),
-    agents.backendDeveloper({ dependsOn: ["architect"] }),
-    agents.reviewer({ dependsOn: ["backend-developer"] }),
+    agents.archDesignReviewer({ dependsOn: ["architect"] }),
+    agents.backendDeveloper({ dependsOn: ["arch-design-reviewer"] }),
+    agents.codeReviewer({ dependsOn: ["backend-developer"] }),
   ],
 })
 `
@@ -33,9 +34,11 @@ export default defineConfig({
   agents: [
     agents.productManager(),
     agents.architect({ dependsOn: ["product-manager"] }),
-    agents.backendDeveloper({ dependsOn: ["architect"] }),
+    agents.archDesignReviewer({ dependsOn: ["architect"] }),
+    agents.backendDeveloper({ dependsOn: ["arch-design-reviewer"] }),
     agents.tester({ dependsOn: ["backend-developer"] }),
-    agents.reviewer({ dependsOn: ["tester"] }),
+    agents.codeReviewer({ dependsOn: ["tester"] }),
+    agents.devops({ dependsOn: ["tester"] }),
   ],
 })
 `
@@ -52,9 +55,13 @@ export default defineConfig({
   agents: [
     agents.productManager(),
     agents.architect({ dependsOn: ["product-manager"] }),
-    agents.backendDeveloper({ dependsOn: ["architect"] }),
-    agents.frontendDeveloper({ dependsOn: ["architect"] }),
-    agents.reviewer({ dependsOn: ["backend-developer", "frontend-developer"] }),
+    agents.archDesignReviewer({ dependsOn: ["architect"] }),
+    agents.backendDeveloper({ dependsOn: ["arch-design-reviewer"] }),
+    agents.uiDesigner({ dependsOn: ["arch-design-reviewer"] }),
+    agents.uiDesignReviewer({ dependsOn: ["ui-designer"] }),
+    agents.frontendDeveloper({ dependsOn: ["ui-design-reviewer"] }),
+    agents.codeReviewer({ dependsOn: ["backend-developer", "frontend-developer"] }),
+    agents.devops({ dependsOn: ["backend-developer", "frontend-developer"] }),
   ],
 })
 `
@@ -66,9 +73,9 @@ const TEMPLATES: Record<string, string> = {
 }
 
 const PRESET_DESCRIPTIONS: Record<string, string> = {
-  simple:    "Architect → Backend Developer → Reviewer  (3 agents)",
-  backend:   "Product Manager → Architect → Backend Developer → Tester → Reviewer  (5 agents)",
-  fullstack: "Product Manager → Architect → Backend + Frontend Developer → Reviewer  (5 agents)",
+  simple:    "Architect → Arch Design Reviewer → Backend Developer → Code Reviewer  (4 agents)",
+  backend:   "Product Manager → Architect → Arch Design Reviewer → Backend Developer → Tester → Code Reviewer + DevOps  (7 agents)",
+  fullstack: "Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Code Reviewer + DevOps  (9 agents)",
 }
 
 const RUNTIME_INSTALL: Record<string, string> = {

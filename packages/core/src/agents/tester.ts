@@ -35,7 +35,7 @@ export function tester(overrides?: Overrides): AgentDefinition {
   return {
     id: "tester",
     name: "Tester",
-    icon: "🧪",
+    icon: "⊙",
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Write", "Bash"],

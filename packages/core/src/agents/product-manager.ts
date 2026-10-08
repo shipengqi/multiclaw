@@ -33,7 +33,7 @@ export function productManager(overrides?: Overrides): AgentDefinition {
   return {
     id: "product-manager",
     name: "Product Manager",
-    icon: "📋",
+    icon: "≡",
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Write"],

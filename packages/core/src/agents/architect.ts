@@ -33,7 +33,7 @@ export function architect(overrides?: Overrides): AgentDefinition {
   return {
     id: "architect",
     name: "Architect",
-    icon: "🏛️",
+    icon: "◆",
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Write"],

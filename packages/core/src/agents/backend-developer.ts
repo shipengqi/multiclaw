@@ -36,7 +36,7 @@ export function backendDeveloper(overrides?: Overrides): AgentDefinition {
   return {
     id: "backend-developer",
     name: "Backend Developer",
-    icon: "⚙️",
+    icon: "⊕",
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Write", "Bash"],

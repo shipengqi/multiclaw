@@ -37,7 +37,7 @@ export function reviewer(overrides?: Overrides): AgentDefinition {
   return {
     id: "reviewer",
     name: "Reviewer",
-    icon: "🔍",
+    icon: "◉",
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Write"],
