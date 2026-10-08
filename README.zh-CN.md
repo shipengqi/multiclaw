@@ -169,7 +169,18 @@ Stage 4:  code-reviewer      │  devops            ← 并行
 
 ## 日志
 
-每次运行结束后，日志写入 `workDir/run-<时间戳>/.multiclaw/logs/`（若设置了 `logDir` 则写入该目录）：
+每次运行结束后，所有生成文件统一写入 `workDir/.multiclaw/runs/run-<时间戳>/`（若设置了 `logDir` 则写入该目录）：
+
+```
+workDir/
+└── .multiclaw/
+    └── runs/
+        └── run-2026-10-08T12-00-00/
+            ├── <agent 产出文件>        ← agent 写的文件（如 architecture.md）
+            └── logs/
+                ├── <agentId>.log      ← 该 agent 进程的原始标准输出
+                └── report.json        ← 完整编排结果
+```
 
 | 文件 | 内容 |
 |------|------|

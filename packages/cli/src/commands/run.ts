@@ -15,9 +15,8 @@ export interface RunOptions {
 export async function runCommand(requirement: string, options: RunOptions): Promise<void> {
   const config = await loadConfig(options.config, requirement)
 
-  // Isolate each run in a timestamped subdirectory
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
-  config.workDir = path.join(config.workDir, `run-${ts}`)
+  config.workDir = path.join(config.workDir, ".multiclaw", "runs", `run-${ts}`)
 
   const runtimeNames = new Set(config.agents.map((a) => a.runtime ?? "claude"))
   for (const name of runtimeNames) {
@@ -36,7 +35,7 @@ export async function runCommand(requirement: string, options: RunOptions): Prom
 
   new ConsoleReporter().attach(orchestrator.eventBus)
 
-  const logDir = config.logDir ?? path.join(config.workDir, ".multiclaw", "logs")
+  const logDir = config.logDir ?? path.join(config.workDir, "logs")
   new FileLogWriter(logDir).attach(orchestrator.eventBus)
   console.log(`\x1b[2mLogs: ${logDir}\x1b[0m`)
 

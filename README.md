@@ -169,7 +169,18 @@ Start it with `--ui` on `run`, or run `multiclaw serve` for a persistent instanc
 
 ## Logs
 
-After each run, logs are written to `workDir/run-<timestamp>/.multiclaw/logs/` (or `logDir` if set):
+After each run, all generated files are written under `workDir/.multiclaw/runs/run-<timestamp>/` (or `logDir` if set):
+
+```
+workDir/
+└── .multiclaw/
+    └── runs/
+        └── run-2026-10-08T12-00-00/
+            ├── <agent output files>   ← files agents write (e.g. architecture.md)
+            └── logs/
+                ├── <agentId>.log      ← raw stdout per agent
+                └── report.json        ← full orchestration result
+```
 
 | File | Contents |
 |------|----------|
