@@ -1,4 +1,4 @@
-import { defineConfig } from "multiclaw"
+import { defineConfig, agents } from "multiclaw"
 
 export default defineConfig({
   name: "Dev Team Demo",
@@ -7,6 +7,7 @@ export default defineConfig({
     projectName: "Todo App",
   },
   dashboard: { port: 3210, autoOpen: true },
+  leader: agents.leader(),  // uncomment to enable dynamic routing
   agents: [
     {
       id: "architect",

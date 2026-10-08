@@ -73,7 +73,7 @@ Connect a run to it with `multiclaw run "..." --server-url http://localhost:3210
 
 ```typescript
 // multiclaw.config.ts
-import { defineConfig } from "multiclaw"
+import { defineConfig, agents } from "multiclaw"
 
 export default defineConfig({
   name: "My Project",
@@ -84,6 +84,10 @@ export default defineConfig({
   context: {
     projectName: "My App",
   },
+
+  // Optional: runs before the main pipeline to decide which agents are needed.
+  // The leader reads the requirement and the codebase, then outputs the agent IDs to run.
+  leader: agents.leader(),
 
   logDir: "./logs",         // optional; default: workDir/.multiclaw/logs
   continueOnError: false,   // optional; keep running if an agent fails
@@ -119,6 +123,21 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
   ],
 })
 ```
+
+### Top-level config fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | ✓ | Project name, shown in the dashboard. |
+| `workDir` | string | ✓ | Base directory where agents read and write files. |
+| `agents` | AgentDefinition[] | ✓ | The agent pipeline (see Agent fields below). |
+| `leader` | AgentDefinition | | Optional routing agent (see [Leader](#leader)). |
+| `context` | Record<string, string> | | Variables available as `{{key}}` in every prompt. `requirement` is injected automatically. |
+| `logDir` | string | | Log output directory. Default: `workDir/.multiclaw/logs`. |
+| `continueOnError` | boolean | | Keep running when an agent fails. Default: `false`. |
+| `maxConcurrency` | number | | Max agents running in parallel. Default: unlimited. |
+| `dashboard.port` | number | | Dashboard port. Default: `3210`. |
+| `dashboard.autoOpen` | boolean | | Open the dashboard in a browser automatically. Default: `true`. |
 
 ### Agent fields
 
@@ -198,6 +217,26 @@ Presets are pipeline templates you can pick during `multiclaw init`:
 | `simple` | Architect → Arch Design Reviewer → Backend Developer → Code Reviewer | 4 |
 | `backend` | Product Manager → Architect → Arch Design Reviewer → Backend Developer → Tester → Code Reviewer + DevOps | 7 |
 | `fullstack` | Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Code Reviewer + DevOps | 9 |
+
+## Leader
+
+The `leader` field adds a routing agent that runs **before** the main pipeline. It reads the requirement and inspects the codebase, then decides which agents are actually needed for this task. Agents the leader omits are skipped.
+
+```typescript
+export default defineConfig({
+  leader: agents.leader(),
+  agents: [
+    agents.architect(),
+    agents.archDesignReviewer({ dependsOn: ["architect"] }),
+    agents.backendDeveloper({ dependsOn: ["arch-design-reviewer"] }),
+    agents.codeReviewer({ dependsOn: ["backend-developer"] }),
+  ],
+})
+```
+
+For a minor bug fix the leader might decide only `backend-developer` and `code-reviewer` are needed, skipping the design stages. For a greenfield feature it runs the full pipeline.
+
+If the leader fails or produces invalid output, multiclaw falls back to running all agents.
 
 ## Example
 

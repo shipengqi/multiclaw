@@ -1,3 +1,4 @@
+import { leader } from "./leader"
 import { architect } from "./architect"
 import { productManager } from "./product-manager"
 import { backendDeveloper } from "./backend-developer"
@@ -11,6 +12,7 @@ import { codeReviewer } from "./code-reviewer"
 import { devops } from "./devops"
 
 export const agents = {
+  leader,
   architect,
   productManager,
   backendDeveloper,

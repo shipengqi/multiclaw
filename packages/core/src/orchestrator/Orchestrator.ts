@@ -23,7 +23,8 @@ export class Orchestrator {
 
   async run(): Promise<OrchestratorResult> {
     const startTime = new Date()
-    const stages = buildStages(this.config.agents)
+    const agents = await this.resolveAgents()
+    const stages = buildStages(agents)
 
     const stageInfos: StageInfo[] = stages.map((stage, i) => ({
       stageIndex: i,
@@ -33,7 +34,7 @@ export class Orchestrator {
     this.eventBus.emit({
       type: "orchestration:start",
       timestamp: new Date().toISOString(),
-      payload: { name: this.config.name, totalAgents: this.config.agents.length, stages: stageInfos },
+      payload: { name: this.config.name, totalAgents: agents.length, stages: stageInfos },
     })
 
     const results: AgentResult[] = []
@@ -87,6 +88,44 @@ export class Orchestrator {
       type: "orchestration:complete", timestamp: new Date().toISOString(), payload: result,
     })
     return result
+  }
+
+  private async resolveAgents(): Promise<AgentDefinition[]> {
+    if (!this.config.leader) return this.config.agents
+
+    this.contextManager.set(
+      "availableAgents",
+      this.config.agents.map((a) => `${a.id}: ${a.name}`).join("\n")
+    )
+
+    const result = await this.runner.run(this.config.leader)
+    if (result.status !== "success") return this.config.agents
+
+    const match = result.output.match(/\{[\s\S]*?"run"\s*:\s*\[[\s\S]*?\]\s*\}/)
+    if (!match) return this.config.agents
+
+    let plan: { run: string[] }
+    try { plan = JSON.parse(match[0]) } catch { return this.config.agents }
+
+    const runSet = new Set(plan.run)
+    const skippedIds = new Set(
+      this.config.agents.filter((a) => !runSet.has(a.id)).map((a) => a.id)
+    )
+
+    for (const agent of this.config.agents.filter((a) => skippedIds.has(a.id))) {
+      this.eventBus.emit({
+        type: "agent:skipped",
+        timestamp: new Date().toISOString(),
+        payload: { agentId: agent.id, agentName: agent.name, icon: agent.icon },
+      })
+    }
+
+    return this.config.agents
+      .filter((a) => runSet.has(a.id))
+      .map((a) => ({
+        ...a,
+        dependsOn: a.dependsOn?.filter((dep) => !skippedIds.has(dep)),
+      }))
   }
 
   private async runStage(agents: AgentDefinition[]): Promise<AgentResult[]> {

@@ -3,6 +3,7 @@ import type { AgentDefinition } from "./agent"
 export interface MultiClawConfig {
   name: string
   workDir: string
+  leader?: AgentDefinition
   agents: AgentDefinition[]
   context?: Record<string, string>
   logDir?: string

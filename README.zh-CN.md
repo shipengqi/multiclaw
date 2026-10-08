@@ -73,7 +73,7 @@ multiclaw run "构建一个 Todo 列表 REST API" --ui
 
 ```typescript
 // multiclaw.config.ts
-import { defineConfig } from "multiclaw"
+import { defineConfig, agents } from "multiclaw"
 
 export default defineConfig({
   name: "我的项目",
@@ -84,6 +84,10 @@ export default defineConfig({
   context: {
     projectName: "我的应用",
   },
+
+  // 可选：在主流水线执行前，由 leader 决定需要运行哪些 agent。
+  // leader 会读取需求并检查代码库，然后输出要运行的 agent ID 列表。
+  leader: agents.leader(),
 
   logDir: "./logs",         // 可选；默认：workDir/.multiclaw/logs
   continueOnError: false,   // 可选；某个 Agent 失败后是否继续
@@ -119,6 +123,21 @@ export default defineConfig({
   ],
 })
 ```
+
+### 顶层配置字段
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `name` | string | ✓ | 项目名称，在 Dashboard 中展示。 |
+| `workDir` | string | ✓ | Agent 读写文件的基础目录。 |
+| `agents` | AgentDefinition[] | ✓ | Agent 流水线（见下方 Agent 字段说明）。 |
+| `leader` | AgentDefinition | | 可选的路由 Agent（见 [Leader](#leader)）。 |
+| `context` | Record<string, string> | | 可在每个 prompt 中通过 `{{key}}` 引用的变量，`requirement` 由 CLI 自动注入。 |
+| `logDir` | string | | 日志输出目录，默认 `workDir/.multiclaw/logs`。 |
+| `continueOnError` | boolean | | 某个 Agent 失败后是否继续运行，默认 `false`。 |
+| `maxConcurrency` | number | | 最大并行 Agent 数，默认不限制。 |
+| `dashboard.port` | number | | Dashboard 端口，默认 `3210`。 |
+| `dashboard.autoOpen` | boolean | | 是否自动在浏览器中打开 Dashboard，默认 `true`。 |
 
 ### Agent 字段说明
 
@@ -198,6 +217,26 @@ workDir/
 | `simple` | 架构师 → 架构评审 → 后端开发 → 代码评审 | 4 |
 | `backend` | 产品经理 → 架构师 → 架构评审 → 后端开发 → 测试 → 代码评审 + DevOps | 7 |
 | `fullstack` | 产品经理 → 架构师 → 架构评审 → 后端开发 + UI 设计师 → UI 评审 → 前端开发 → 代码评审 + DevOps | 9 |
+
+## Leader
+
+`leader` 字段用于在主流水线执行前，加入一个路由 Agent。它会读取需求并检查代码库，然后决定本次任务实际需要运行哪些 Agent，未被选中的 Agent 会被跳过。
+
+```typescript
+export default defineConfig({
+  leader: agents.leader(),
+  agents: [
+    agents.architect(),
+    agents.archDesignReviewer({ dependsOn: ["architect"] }),
+    agents.backendDeveloper({ dependsOn: ["arch-design-reviewer"] }),
+    agents.codeReviewer({ dependsOn: ["backend-developer"] }),
+  ],
+})
+```
+
+对于简单的 bug 修复，leader 可能只选择 `backend-developer` 和 `code-reviewer`，跳过设计阶段；对于全新功能，则运行完整流水线。
+
+如果 leader 执行失败或输出无效内容，multiclaw 会回退到运行所有 Agent。
 
 ## 示例
 
