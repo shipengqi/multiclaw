@@ -5,6 +5,10 @@
   "bin": {
     "multiclaw": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "package.json"
+  ],
   "main": "dist/lib.js",
   "types": "dist/lib.d.ts",
   "exports": {

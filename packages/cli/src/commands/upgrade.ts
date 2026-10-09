@@ -4,7 +4,7 @@ import { createRequire } from "module"
 const require = createRequire(import.meta.url)
 
 export async function upgradeCommand(): Promise<void> {
-  const { version: currentVersion } = require("../../package.json") as { version: string }
+  const { version: currentVersion } = require("../package.json") as { version: string }
 
   console.log(`Current version: v${currentVersion}`)
   console.log("Checking for updates...")
