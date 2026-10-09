@@ -24,6 +24,7 @@ program
   .option("--ui", "Start Dashboard and open in browser")
   .option("--port <port>", "Dashboard port (requires --ui)", (v) => parseInt(v, 10))
   .option("--server-url <url>", "Connect to a running serve process")
+  .option("--no-leader", "Skip the leader agent and use the default pipeline")
   .action((requirement, opts) => runCommand(requirement, opts))
 
 program

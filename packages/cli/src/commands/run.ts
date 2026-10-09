@@ -10,10 +10,15 @@ export interface RunOptions {
   ui?: boolean
   serverUrl?: string
   port?: number
+  noLeader?: boolean
 }
 
 export async function runCommand(requirement: string, options: RunOptions): Promise<void> {
   const config = await loadConfig(options.config, requirement)
+
+  if (options.noLeader) {
+    config.useLeader = false
+  }
 
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
   config.workDir = path.join(config.workDir, ".multiclaw", "runs", `run-${ts}`)

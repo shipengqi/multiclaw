@@ -9,6 +9,7 @@ export interface MultiClawConfig {
   logDir?: string
   continueOnError?: boolean
   maxConcurrency?: number
+  useLeader?: boolean
   dashboard?: {
     port?: number
     autoOpen?: boolean

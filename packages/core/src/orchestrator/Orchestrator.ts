@@ -95,7 +95,7 @@ export class Orchestrator {
   }
 
   private async resolveAgents(): Promise<AgentDefinition[]> {
-    if (!this.config.leader) return this.config.agents
+    if (!this.config.leader || this.config.useLeader === false) return this.config.agents
 
     this.contextManager.set(
       "availableAgents",
