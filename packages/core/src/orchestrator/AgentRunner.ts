@@ -26,6 +26,7 @@ export class AgentRunner {
     const retries = agent.retries ?? 0
     const timeout = agent.timeout ?? 600_000
     const tools = agent.tools ?? ["Read", "Write", "Bash"]
+    const model = agent.model ?? agent.models?.[agent.runtime ?? "claude"]
 
     this.eventBus.emit({
       type: "agent:start",
@@ -49,6 +50,7 @@ export class AgentRunner {
             agentId: agent.id,
             systemPrompt: agent.systemPrompt,
             prompt, tools, workDir, timeout, signal,
+            model,
             onOutput: (chunk) => {
               this.eventBus.emit({
                 type: "agent:output",

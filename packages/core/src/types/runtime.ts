@@ -7,6 +7,7 @@ export interface AgentTask {
   timeout: number
   signal?: AbortSignal
   onOutput?: (chunk: string) => void
+  model?: string
 }
 
 export interface AgentOutput {

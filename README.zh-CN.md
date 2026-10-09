@@ -11,9 +11,8 @@
 | Runtime | 安装命令 |
 |---------|---------|
 | `claude`（默认）| `npm install -g @anthropic-ai/claude-code` |
-| `codex` | `npm install -g @openai/codex` |
-| `opencode` | `npm install -g opencode` |
-| `cursor` | `curl https://cursor.com/install \| bash` |
+
+> **未来计划**：我们计划在后续版本中支持更多 Runtime（Codex、OpenCode、Cursor）。
 
 ## 安装
 
@@ -148,7 +147,8 @@ export default defineConfig({
 | `taskPrompt` | string | ✓ | 发送给 AI Runtime 的 prompt，支持模板变量。 |
 | `systemPrompt` | string | | 可选的系统 prompt，会拼接在 `taskPrompt` 前面。 |
 | `icon` | string | | Agent 名称旁展示的 Unicode 图标。 |
-| `runtime` | string | | `claude` \| `codex` \| `opencode` \| `cursor`，默认 `claude`。 |
+| `runtime` | string | | `claude`（默认）。更多 Runtime 支持敬请期待。 |
+| `model` | string | | 覆盖此 Agent 的默认模型。例如 `"opus"`、`"sonnet"`、`"haiku"`。 |
 | `tools` | string[] | | 允许使用的工具列表，默认 `["Read", "Write", "Bash"]`。 |
 | `dependsOn` | string[] | | 必须在此 Agent 启动前完成的 Agent id 列表。 |
 | `timeout` | number | | 单个 Agent 超时时间（毫秒），默认 `600000`（10 分钟）。 |

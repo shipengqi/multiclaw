@@ -44,6 +44,7 @@ export function uiDesigner(overrides?: Overrides): AgentDefinition {
     id: "ui-designer",
     name: "UI Designer",
     icon: "▣",
+    models: { claude: "sonnet" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Write"],

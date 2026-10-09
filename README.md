@@ -11,9 +11,8 @@ At least one AI runtime must be installed:
 | Runtime | Install |
 |---------|---------|
 | `claude` (default) | `npm install -g @anthropic-ai/claude-code` |
-| `codex` | `npm install -g @openai/codex` |
-| `opencode` | `npm install -g opencode` |
-| `cursor` | `curl https://cursor.com/install \| bash` |
+
+> **Future support:** We plan to add support for additional runtimes (Codex, OpenCode, Cursor) in upcoming releases.
 
 ## Install
 
@@ -148,7 +147,8 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `taskPrompt` | string | ✓ | Prompt sent to the AI runtime. Supports template variables. |
 | `systemPrompt` | string | | Optional system prompt prepended to `taskPrompt`. |
 | `icon` | string | | Unicode icon shown next to the agent name. |
-| `runtime` | string | | `claude` \| `codex` \| `opencode` \| `cursor`. Default: `claude`. |
+| `runtime` | string | | `claude` (default). Additional runtimes coming soon. |
+| `model` | string | | Override the default model for this agent. E.g. `"opus"`, `"sonnet"`, `"haiku"`. |
 | `tools` | string[] | | Allowed tools. Default: `["Read", "Write", "Bash"]`. |
 | `dependsOn` | string[] | | Agent ids that must complete before this agent starts. |
 | `timeout` | number | | Per-agent timeout in ms. Default: `600000` (10 min). |

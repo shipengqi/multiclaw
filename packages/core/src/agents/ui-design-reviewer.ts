@@ -39,6 +39,7 @@ export function uiDesignReviewer(overrides?: Overrides): AgentDefinition {
     id: "ui-design-reviewer",
     name: "UI Design Reviewer",
     icon: "◎",
+    models: { claude: "haiku" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Write"],

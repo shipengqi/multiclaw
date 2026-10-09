@@ -16,6 +16,7 @@ export class ClaudeRuntime extends RuntimeBase {
       "--allowedTools", task.tools.join(","),
     ]
     if (task.systemPrompt) args.push("--system-prompt", task.systemPrompt)
+    if (task.model) args.push("--model", task.model)
 
     return new Promise((resolve, reject) => {
       const child = spawn("claude", args, { cwd: task.workDir, env: process.env })

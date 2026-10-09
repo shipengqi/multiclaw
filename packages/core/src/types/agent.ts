@@ -7,6 +7,8 @@ export interface AgentDefinition {
   name: string
   icon?: string
   runtime?: string
+  model?: string
+  models?: Partial<Record<string, string>>
   systemPrompt: string
   taskPrompt: string
   tools?: ToolName[]

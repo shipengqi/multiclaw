@@ -42,6 +42,7 @@ export function devops(overrides?: Overrides): AgentDefinition {
     id: "devops",
     name: "DevOps",
     icon: "▶",
+    models: { claude: "sonnet" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Write"],

@@ -22,7 +22,7 @@ export async function runCommand(requirement: string, options: RunOptions): Prom
   for (const name of runtimeNames) {
     let rt
     try { rt = runtimeRegistry.get(name) } catch {
-      console.error(`\x1b[31mError: Unknown runtime "${name}". Supported: claude, codex, opencode, cursor\x1b[0m`)
+      console.error(`\x1b[31mError: Unknown runtime "${name}". Supported: claude\x1b[0m`)
       process.exit(1)
     }
     if (!(await rt.checkAvailable())) {

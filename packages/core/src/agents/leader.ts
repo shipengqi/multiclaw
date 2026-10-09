@@ -28,6 +28,7 @@ export function leader(overrides?: Overrides): AgentDefinition {
     id: "leader",
     name: "Leader",
     icon: "★",
+    models: { claude: "sonnet" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Bash"],

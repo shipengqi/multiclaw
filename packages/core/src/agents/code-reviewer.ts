@@ -45,6 +45,7 @@ export function codeReviewer(overrides?: Overrides): AgentDefinition {
     id: "code-reviewer",
     name: "Code Reviewer",
     icon: "⊗",
+    models: { claude: "haiku" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Write"],

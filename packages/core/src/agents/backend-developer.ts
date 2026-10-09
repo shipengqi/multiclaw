@@ -37,6 +37,7 @@ export function backendDeveloper(overrides?: Overrides): AgentDefinition {
     id: "backend-developer",
     name: "Backend Developer",
     icon: "⊕",
+    models: { claude: "sonnet" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Write", "Bash"],

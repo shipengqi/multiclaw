@@ -34,6 +34,7 @@ export function architect(overrides?: Overrides): AgentDefinition {
     id: "architect",
     name: "Architect",
     icon: "◆",
+    models: { claude: "opus" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Write"],
