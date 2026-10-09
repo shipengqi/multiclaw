@@ -7,12 +7,13 @@ export default defineConfig({
     projectName: "Todo App",
   },
   dashboard: { port: 3210, autoOpen: true },
-  leader: agents.leader(),  // uncomment to enable dynamic routing
+  leader: agents.leader({model: 'haiku'}),  // uncomment to enable dynamic routing
   agents: [
     {
       id: "architect",
       name: "Architect",
       icon: "◆",
+      model: 'haiku',
       taskPrompt: `Write a file named architecture.md with this exact content:
 
 # Architecture
@@ -35,6 +36,7 @@ Do nothing else.`,
       id: "developer",
       name: "Developer",
       icon: "⊕",
+      model: 'haiku',
       dependsOn: ["architect"],
       taskPrompt: `Read architecture.md, then write implementation-notes.md with this exact content:
 
@@ -56,6 +58,7 @@ Do nothing else.`,
       id: "reviewer",
       name: "Reviewer",
       icon: "◉",
+      model: 'haiku',
       dependsOn: ["developer"],
       taskPrompt: `Read architecture.md and implementation-notes.md, then write review.md with this exact content:
 

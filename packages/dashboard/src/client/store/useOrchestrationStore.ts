@@ -7,6 +7,8 @@ interface AgentState {
   id: string
   name: string
   icon?: string
+  model?: string
+  taskTitle?: string
   status: AgentStatus
   duration?: number
   logs: string
@@ -14,6 +16,7 @@ interface AgentState {
 
 interface OrchestrationState {
   name: string
+  requirement?: string
   running: boolean
   success?: boolean
   totalDuration?: number
@@ -27,6 +30,7 @@ interface OrchestrationState {
 
 export const useOrchestrationStore = create<OrchestrationState>((set) => ({
   name: "",
+  requirement: undefined,
   running: false,
   stages: [],
   agents: {},
@@ -40,11 +44,11 @@ export const useOrchestrationStore = create<OrchestrationState>((set) => ({
         const map: Record<string, AgentState> = { ...state.preflightBuffer }
         for (const stage of e.payload.stages) {
           for (const a of stage.agents) {
-            map[a.id] = { id: a.id, name: a.name, icon: a.icon, status: "pending", logs: "" }
+            map[a.id] = { id: a.id, name: a.name, icon: a.icon, model: a.model, taskTitle: a.taskTitle, status: "pending", logs: "" }
           }
         }
         return {
-          name: e.payload.name, running: true,
+          name: e.payload.name, requirement: e.payload.requirement, running: true,
           stages: e.payload.stages, agents: map,
           preflightBuffer: {}, preflightAgentIds,
         }
@@ -62,7 +66,7 @@ export const useOrchestrationStore = create<OrchestrationState>((set) => ({
             ...state.preflightBuffer,
             [agentId]: existing
               ? { ...existing, status: "running" }
-              : { id: agentId, name: e.payload.agentName, icon: e.payload.icon, status: "running", logs: "" },
+              : { id: agentId, name: e.payload.agentName, icon: e.payload.icon, model: e.payload.model, taskTitle: e.payload.taskTitle, status: "running", logs: "" },
           },
         }
       }

@@ -7,7 +7,7 @@ import { LogPanel } from "./components/LogPanel"
 
 export function App() {
   const apply = useOrchestrationStore((s) => s.apply)
-  const { name, running, success, totalDuration, stages, agents, preflightAgentIds, preflightBuffer } =
+  const { name, requirement, running, success, totalDuration, stages, agents, preflightAgentIds, preflightBuffer } =
     useOrchestrationStore()
   const [selected, setSelected] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState(0)
@@ -56,16 +56,23 @@ export function App() {
 
   return (
     <div className="h-screen flex flex-col bg-background">
-      <header className="flex items-center justify-between px-6 py-3 border-b shrink-0">
-        <h1 className="text-base font-semibold">
-          MultiClaw{name && <span className="text-muted-foreground font-normal"> · {name}</span>}
-        </h1>
-        <div className="flex items-center gap-3 text-sm">
-          {displayDuration != null && (
-            <span className="text-muted-foreground">{(displayDuration / 1000).toFixed(1)}s</span>
-          )}
-          {statusBadge}
+      <header className="flex flex-col items-start justify-between px-6 py-3 border-b shrink-0 gap-2">
+        <div className="flex w-full items-center justify-between">
+          <h1 className="text-base font-semibold">
+            MultiClaw{name && <span className="text-muted-foreground font-normal"> · {name}</span>}
+          </h1>
+          <div className="flex items-center gap-3 text-sm">
+            {displayDuration != null && (
+              <span className="text-muted-foreground">{(displayDuration / 1000).toFixed(1)}s</span>
+            )}
+            {statusBadge}
+          </div>
         </div>
+        {requirement && (
+          <p className="text-sm text-muted-foreground line-clamp-2">
+            {requirement}
+          </p>
+        )}
       </header>
 
       {hasPipelineBar && (

@@ -11,6 +11,7 @@ export interface AgentDefinition {
   models?: Partial<Record<string, string>>
   systemPrompt: string
   taskPrompt: string
+  taskTitle?: string
   tools?: ToolName[]
   dependsOn?: string[]
   timeout?: number

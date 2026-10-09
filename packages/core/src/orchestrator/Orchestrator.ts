@@ -30,15 +30,19 @@ export class Orchestrator {
     )
     const stages = buildStages(agents)
 
+    const getModel = (agent: AgentDefinition): string | undefined => {
+      return agent.model ?? agent.models?.[agent.runtime ?? "claude"]
+    }
+
     const stageInfos: StageInfo[] = stages.map((stage, i) => ({
       stageIndex: i,
-      agents: stage.map((a) => ({ id: a.id, name: a.name, icon: a.icon })),
+      agents: stage.map((a) => ({ id: a.id, name: a.name, icon: a.icon, model: getModel(a), taskTitle: a.taskTitle })),
     }))
 
     this.eventBus.emit({
       type: "orchestration:start",
       timestamp: new Date().toISOString(),
-      payload: { name: this.config.name, totalAgents: agents.length, stages: stageInfos },
+      payload: { name: this.config.name, requirement: this.config.context?.requirement, totalAgents: agents.length, stages: stageInfos },
     })
 
     const results: AgentResult[] = []

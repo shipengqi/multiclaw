@@ -31,7 +31,7 @@ export class AgentRunner {
     this.eventBus.emit({
       type: "agent:start",
       timestamp: new Date().toISOString(),
-      payload: { agentId: agent.id, agentName: agent.name, icon: agent.icon },
+      payload: { agentId: agent.id, agentName: agent.name, icon: agent.icon, model, taskTitle: agent.taskTitle },
     })
 
     let attempts = 0

@@ -68,6 +68,8 @@ interface AgentInfo {
   id: string
   name: string
   icon?: string
+  model?: string
+  taskTitle?: string
   status: string
   duration?: number
 }
@@ -88,7 +90,7 @@ function AgentRow({
     <button
       onClick={onClick}
       className={cn(
-        "flex items-center gap-1.5 w-full px-2 py-1 text-left transition-colors rounded",
+        "flex items-center gap-1.5 w-full px-2 py-1.5 text-left transition-colors rounded",
         "hover:bg-accent",
         isSelected && "bg-accent",
       )}
@@ -98,10 +100,22 @@ function AgentRow({
         <div className={cn("text-[11px] font-medium truncate", NAME_COLOR[status])}>
           {agent.name}
         </div>
-        <div className={cn("text-[9px]", labelColor[status])}>
-          {agent.duration != null
-            ? `${(agent.duration / 1000).toFixed(1)}s`
-            : STATUS_LABEL[status]}
+        {agent.taskTitle && (
+          <div className="text-[8px] text-muted-foreground truncate">
+            {agent.taskTitle}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2 text-[9px]">
+          <div className={cn(labelColor[status])}>
+            {agent.duration != null
+              ? `${(agent.duration / 1000).toFixed(1)}s`
+              : STATUS_LABEL[status]}
+          </div>
+          {agent.model && (
+            <span className="text-muted-foreground text-[8px] truncate">
+              {agent.model}
+            </span>
+          )}
         </div>
       </div>
     </button>
