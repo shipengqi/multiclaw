@@ -18,13 +18,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-
       - uses: pnpm/setup@v3
-        with:
-          version: 11
-          runtime: node@22
-          cache: true
-
       - name: Bump all packages to the same version
         id: bump
         run: |
