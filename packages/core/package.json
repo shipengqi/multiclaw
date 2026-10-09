@@ -4,9 +4,16 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "scripts": {
-    "build": "tsc"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shipengqi/multiclaw.git",
+    "directory": "packages/core"
   },
+  "homepage": "https://github.com/shipengqi/multiclaw#readme",
+  "bugs": {
+    "url": "https://github.com/shipengqi/multiclaw/issues"
+  },
+  "scripts": {
   "publishConfig": {
     "access": "public"
   },

@@ -13,6 +13,15 @@
       "default": "./dist/lib.js"
     }
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shipengqi/multiclaw.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/shipengqi/multiclaw#readme",
+  "bugs": {
+    "url": "https://github.com/shipengqi/multiclaw/issues"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts"
