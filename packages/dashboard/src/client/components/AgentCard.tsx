@@ -19,7 +19,7 @@ const STATUS_CONFIG: Record<AgentStatus, {
 }
 
 export function AgentCard({ agent, onClick, selected }: {
-  agent: { name: string; icon?: string; status: string; duration?: number }
+  agent: { name: string; icon?: string; status: string; duration?: number; taskTitle?: string; model?: string }
   onClick: () => void
   selected?: boolean
 }) {
@@ -29,20 +29,30 @@ export function AgentCard({ agent, onClick, selected }: {
       onClick={onClick}
       className={cn("cursor-pointer hover:bg-accent transition-colors", selected && "bg-accent ring-1 ring-ring")}
     >
-      <CardContent className="flex items-center justify-between p-3">
-        <div className="flex items-center gap-2">
-          <span>{agent.icon ?? "-"}</span>
-          <span className="font-medium text-sm">{agent.name}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          {agent.duration != null && (
-            <span className="text-xs text-muted-foreground">
-              {(agent.duration / 1000).toFixed(1)}s
-            </span>
-          )}
+      <CardContent className="flex flex-col gap-2 p-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span>{agent.icon ?? "-"}</span>
+            <div className="flex flex-col gap-0.5">
+              <span className="font-medium text-sm">{agent.name}</span>
+              {agent.taskTitle && (
+                <span className="text-xs text-muted-foreground">{agent.taskTitle}</span>
+              )}
+            </div>
+          </div>
           <Badge variant={cfg.variant} className={cn(cfg.className)}>
             {cfg.label}
           </Badge>
+        </div>
+        <div className="flex items-center justify-between text-xs">
+          {agent.duration != null && (
+            <span className="text-muted-foreground">
+              {(agent.duration / 1000).toFixed(1)}s
+            </span>
+          )}
+          {agent.model && (
+            <span className="text-muted-foreground">{agent.model}</span>
+          )}
         </div>
       </CardContent>
     </Card>

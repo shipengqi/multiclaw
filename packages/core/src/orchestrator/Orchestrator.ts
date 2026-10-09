@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import type { MultiClawConfig, OrchestratorResult } from "../types/config"
-import type { AgentDefinition, AgentResult } from "../types/agent"
+import type { AgentDefinition, AgentResult, TaskPlan } from "../types/agent"
 import type { StageInfo } from "../types/event"
 import { EventBus } from "../event/EventBus"
 import { ContextManager } from "./ContextManager"
@@ -28,7 +28,8 @@ export class Orchestrator {
       "pipelineAgents",
       agents.map((a) => `${a.id}: ${a.name}`).join("\n")
     )
-    const stages = buildStages(agents)
+
+    let stages = buildStages(agents)
 
     const getModel = (agent: AgentDefinition): string | undefined => {
       return agent.model ?? agent.models?.[agent.runtime ?? "claude"]
@@ -50,6 +51,7 @@ export class Orchestrator {
 
     for (let i = 0; i < stages.length; i++) {
       const stage = stages[i]
+
       this.eventBus.emit({
         type: "stage:start", timestamp: new Date().toISOString(),
         payload: { stageIndex: i, agentIds: stage.map((a) => a.id) },
@@ -57,6 +59,12 @@ export class Orchestrator {
 
       const stageResults = await this.runStage(stage)
       results.push(...stageResults)
+
+      // After architect stage completes, apply task plan and rebuild stages
+      if (i === 0 && stage.some((a) => a.id === "architect") && stageResults.some((r) => r.status === "success")) {
+        await this.applyTaskPlan(agents)
+        stages = buildStages(agents)
+      }
 
       for (const r of stageResults) {
         if (r.status !== "success") {
@@ -147,5 +155,26 @@ export class Orchestrator {
       results.push(...(await Promise.all(batch.map((a) => this.runner.run(a)))))
     }
     return results
+  }
+
+  private async applyTaskPlan(agents: AgentDefinition[]): Promise<void> {
+    try {
+      const taskPlanPath = path.join(this.workDir, "task-plan.json")
+      if (!fs.existsSync(taskPlanPath)) return
+
+      const content = fs.readFileSync(taskPlanPath, "utf-8")
+      const taskPlan: TaskPlan = JSON.parse(content)
+
+      const taskMap = new Map(taskPlan.tasks.map((t) => [t.id, t]))
+      for (const agent of agents) {
+        const task = taskMap.get(agent.id)
+        if (task) {
+          agent.taskTitle = task.title
+          agent.dependsOn = task.dependsOn
+        }
+      }
+    } catch {
+      // Silently ignore parsing errors
+    }
   }
 }
