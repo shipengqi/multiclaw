@@ -22,8 +22,8 @@ jobs:
       - uses: pnpm/setup@v3
       - name: Build all packages
         run: |
-          pnpm --filter @multiclaw/core build
-          pnpm --filter @multiclaw/dashboard build
+          pnpm --filter @multiclawcli/core build
+          pnpm --filter @multiclawcli/dashboard build
           pnpm --filter multiclaw build
 
       - name: Get version
@@ -32,8 +32,8 @@ jobs:
 
       - name: Publish to npm
         run: |
-          pnpm --filter @multiclaw/core    publish --no-git-checks --access public
-          pnpm --filter @multiclaw/dashboard publish --no-git-checks --access public
+          pnpm --filter @multiclawcli/core    publish --no-git-checks --access public
+          pnpm --filter @multiclawcli/dashboard publish --no-git-checks --access public
           pnpm --filter multiclaw          publish --no-git-checks --access public
 
       - name: Create git tag and GitHub Release
