@@ -53,6 +53,7 @@ multiclaw run "构建一个 Todo 列表 REST API" --ui
 | `--ui` | 启动 Dashboard 服务并在浏览器中打开。 |
 | `--port <port>` | Dashboard 端口。需配合 `--ui` 使用，默认 `3210`。 |
 | `--server-url <url>` | 将事件推送到已运行的 `multiclaw serve` 实例。 |
+| `--no-leader` | 跳过 leader agent，直接使用默认流水线。 |
 
 `<requirement>` 字符串会以 `{{requirement}}` 的形式注入到每个 Agent 的 prompt 中。
 
@@ -103,6 +104,7 @@ export default defineConfig({
       name: "架构师",          // 展示名称
       icon: "◆",              // 可选；在终端和 Dashboard 中展示
       runtime: "claude",      // 可选；默认 "claude"
+      model: "opus",          // 可选；指定此 Agent 的模型
       systemPrompt: "你是一名软件架构师。", // 可选
       taskPrompt: `为 {{requirement}} 设计系统架构。
 读取 {{file:brief.md}} 中的需求说明，并输出 architecture.md。`,
@@ -115,6 +117,7 @@ export default defineConfig({
     {
       id: "developer",
       name: "开发者",
+      model: "sonnet",        // 指定此 Agent 的模型
       taskPrompt: "读取 architecture.md 并实现代码。",
       tools: ["Read", "Write", "Bash"],
       dependsOn: ["architect"],
@@ -131,6 +134,7 @@ export default defineConfig({
 | `workDir` | string | ✓ | Agent 读写文件的基础目录。 |
 | `agents` | AgentDefinition[] | ✓ | Agent 流水线（见下方 Agent 字段说明）。 |
 | `leader` | AgentDefinition | | 可选的路由 Agent（见 [Leader](#leader)）。 |
+| `useLeader` | boolean | | 是否启用 leader agent。默认当配置了 leader 时为 `true`。 |
 | `context` | Record<string, string> | | 可在每个 prompt 中通过 `{{key}}` 引用的变量，`requirement` 由 CLI 自动注入。 |
 | `logDir` | string | | 日志输出目录，默认 `workDir/.multiclaw/logs`。 |
 | `continueOnError` | boolean | | 某个 Agent 失败后是否继续运行，默认 `false`。 |
@@ -148,7 +152,8 @@ export default defineConfig({
 | `systemPrompt` | string | | 可选的系统 prompt，会拼接在 `taskPrompt` 前面。 |
 | `icon` | string | | Agent 名称旁展示的 Unicode 图标。 |
 | `runtime` | string | | `claude`（默认）。更多 Runtime 支持敬请期待。 |
-| `model` | string | | 覆盖此 Agent 的默认模型。例如 `"opus"`、`"sonnet"`、`"haiku"`。 |
+| `model` | string | | 指定此 Agent 使用的模型。例如 `"opus"`、`"sonnet"`、`"haiku"`。优先级高于 `models`。 |
+| `models` | Record<string, string> | | Runtime 名称到模型名称的映射。当未设置 `model` 时使用。例如 `{ claude: "opus", openai: "gpt-4" }`。 |
 | `tools` | string[] | | 允许使用的工具列表，默认 `["Read", "Write", "Bash"]`。 |
 | `dependsOn` | string[] | | 必须在此 Agent 启动前完成的 Agent id 列表。 |
 | `timeout` | number | | 单个 Agent 超时时间（毫秒），默认 `600000`（10 分钟）。 |
@@ -163,6 +168,7 @@ export default defineConfig({
 |------|---------|
 | `{{key}}` | `context.key` 的值（`requirement` 由 CLI 参数自动注入）。 |
 | `{{file:path/to/file}}` | 该文件的内容，路径相对于 `workDir` 解析。 |
+| `{{pipelineAgents}}` | 本次运行中参与的所有 Agent 列表（id: name）。自动注入；主要用于 Architect 根据实际参与的 Agent 分解任务。 |
 
 ## 并行执行
 
@@ -208,6 +214,7 @@ workDir/
 
 每次运行开始时，日志路径会打印到终端。
 
+
 ## 预设模板
 
 执行 `multiclaw init` 时可选择以下预设模板：
@@ -237,6 +244,72 @@ export default defineConfig({
 对于简单的 bug 修复，leader 可能只选择 `backend-developer` 和 `code-reviewer`，跳过设计阶段；对于全新功能，则运行完整流水线。
 
 如果 leader 执行失败或输出无效内容，multiclaw 会回退到运行所有 Agent。
+
+### 禁用 Leader Agent
+
+可以通过以下三种方式跳过 leader 并直接使用默认流水线：
+
+1. **CLI 选项**（针对单次运行）：
+   ```bash
+   multiclaw run "你的需求" --no-leader
+   ```
+
+2. **配置文件**（运行时可通过环境变量或配置覆盖）：
+   ```typescript
+   export default defineConfig({
+     leader: agents.leader(),
+     useLeader: false, // 禁用 leader
+     agents: [...],
+   })
+   ```
+
+3. **从配置文件移除 leader**（始终使用默认流水线）：
+   ```typescript
+   export default defineConfig({
+     // 不配置 leader 字段
+     agents: [...],
+   })
+   ```
+
+## 架构师与任务分解
+
+当 **architect**（架构师）Agent 在流水线中时，它会产出三个输出文件：
+
+1. **architecture.md** — 架构设计与模块分解
+2. **api-spec.md** — 完整的 API 规范
+3. **task-plan.json** — 针对流水线中所有实现类 Agent 的结构化任务分解
+
+`task-plan.json` 文件帮助多个并行 Agent 明确分工，每个实现类 Agent（backend-developer、frontend-developer、ui-designer、devops、tester 等）读取该文件来了解自己的具体职责和依赖关系。
+
+**task-plan.json 示例：**
+```json
+{
+  "projectName": "我的应用",
+  "requirement": "构建一个 Todo 列表 REST API 和 React UI",
+  "tasks": [
+    {
+      "id": "backend-developer",
+      "title": "实现 REST API",
+      "scope": "根据 api-spec.md 实现全部端点",
+      "dependsOn": []
+    },
+    {
+      "id": "frontend-developer",
+      "title": "实现 React UI",
+      "scope": "根据 ui-design.md 实现 React 组件",
+      "dependsOn": []
+    },
+    {
+      "id": "devops",
+      "title": "容器化与 CI/CD",
+      "scope": "编写 Dockerfile、docker-compose 和 CI 流水线",
+      "dependsOn": ["backend-developer", "frontend-developer"]
+    }
+  ]
+}
+```
+
+如果流水线中没有 architect Agent，开发者 Agent 会直接读取 `architecture.md` 和 `api-spec.md`。
 
 ## 示例
 

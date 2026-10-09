@@ -53,6 +53,7 @@ Runs the orchestration defined in your config file.
 | `--ui` | Start the Dashboard server and open it in the browser. |
 | `--port <port>` | Dashboard port. Requires `--ui`. Default: `3210`. |
 | `--server-url <url>` | Stream events to a running `multiclaw serve` instance. |
+| `--no-leader` | Skip the leader agent and use the default pipeline directly. |
 
 The `<requirement>` string is injected into every agent's prompt as `{{requirement}}`.
 
@@ -103,6 +104,7 @@ export default defineConfig({
       name: "Architect",      // display name
       icon: "◆",              // optional; shown in terminal and dashboard
       runtime: "claude",      // optional; default: "claude"
+      model: "opus",          // optional; override default model for this agent
       systemPrompt: "You are a software architect.", // optional
       taskPrompt: `Design the system for {{requirement}}.
 Read the brief at {{file:brief.md}} and write architecture.md.`,
@@ -115,6 +117,7 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
     {
       id: "developer",
       name: "Developer",
+      model: "sonnet",        // override model for this agent
       taskPrompt: "Read architecture.md and implement the code.",
       tools: ["Read", "Write", "Bash"],
       dependsOn: ["architect"],
@@ -131,6 +134,7 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `workDir` | string | ✓ | Base directory where agents read and write files. |
 | `agents` | AgentDefinition[] | ✓ | The agent pipeline (see Agent fields below). |
 | `leader` | AgentDefinition | | Optional routing agent (see [Leader](#leader)). |
+| `useLeader` | boolean | | Enable or disable the leader agent. Default: `true` when leader is configured. |
 | `context` | Record<string, string> | | Variables available as `{{key}}` in every prompt. `requirement` is injected automatically. |
 | `logDir` | string | | Log output directory. Default: `workDir/.multiclaw/logs`. |
 | `continueOnError` | boolean | | Keep running when an agent fails. Default: `false`. |
@@ -148,7 +152,8 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `systemPrompt` | string | | Optional system prompt prepended to `taskPrompt`. |
 | `icon` | string | | Unicode icon shown next to the agent name. |
 | `runtime` | string | | `claude` (default). Additional runtimes coming soon. |
-| `model` | string | | Override the default model for this agent. E.g. `"opus"`, `"sonnet"`, `"haiku"`. |
+| `model` | string | | Override the default model for this agent. E.g. `"opus"`, `"sonnet"`, `"haiku"`. Takes precedence over `models`. |
+| `models` | Record<string, string> | | Map of runtime names to model names. Used when `model` is not set. E.g. `{ claude: "opus", openai: "gpt-4" }`. |
 | `tools` | string[] | | Allowed tools. Default: `["Read", "Write", "Bash"]`. |
 | `dependsOn` | string[] | | Agent ids that must complete before this agent starts. |
 | `timeout` | number | | Per-agent timeout in ms. Default: `600000` (10 min). |
@@ -163,6 +168,7 @@ Two syntaxes are supported in `taskPrompt` and `systemPrompt`:
 |--------|--------------|
 | `{{key}}` | The value of `context.key` (or `requirement` from the CLI). |
 | `{{file:path/to/file}}` | The contents of that file, resolved relative to `workDir`. |
+| `{{pipelineAgents}}` | List of all agents running in this pipeline (id: name). Auto-injected; useful for the architect to decompose tasks per agent. |
 
 ## Parallelism
 
@@ -237,6 +243,72 @@ export default defineConfig({
 For a minor bug fix the leader might decide only `backend-developer` and `code-reviewer` are needed, skipping the design stages. For a greenfield feature it runs the full pipeline.
 
 If the leader fails or produces invalid output, multiclaw falls back to running all agents.
+
+### Disabling the leader
+
+You can skip the leader and use the default pipeline directly in three ways:
+
+1. **CLI option** (for a single run):
+   ```bash
+   multiclaw run "your requirement" --no-leader
+   ```
+
+2. **Config file** (per-run, via environment variable or config override):
+   ```typescript
+   export default defineConfig({
+     leader: agents.leader(),
+     useLeader: false, // disable leader
+     agents: [...],
+   })
+   ```
+
+3. **Remove the leader from config** (always use the default pipeline):
+   ```typescript
+   export default defineConfig({
+     // leader field omitted
+     agents: [...],
+   })
+   ```
+
+## Architect and Task Decomposition
+
+When the **architect** agent is in your pipeline, it produces three outputs:
+
+1. **architecture.md** — architecture plan and module breakdown
+2. **api-spec.md** — complete API specification
+3. **task-plan.json** — structured task breakdown for all implementation agents in the pipeline
+
+The `task-plan.json` file helps coordinate work across parallel agents by explicitly assigning scope to each agent. Each implementation agent (backend-developer, frontend-developer, ui-designer, devops, tester, etc.) reads this file to understand its specific responsibilities and dependencies.
+
+**Example task-plan.json:**
+```json
+{
+  "projectName": "My App",
+  "requirement": "Build a todo list API with React UI",
+  "tasks": [
+    {
+      "id": "backend-developer",
+      "title": "REST API",
+      "scope": "Implement all endpoints per api-spec.md",
+      "dependsOn": []
+    },
+    {
+      "id": "frontend-developer",
+      "title": "React UI",
+      "scope": "Build React components following ui-design.md",
+      "dependsOn": []
+    },
+    {
+      "id": "devops",
+      "title": "Deployment",
+      "scope": "Containerize and set up CI/CD",
+      "dependsOn": ["backend-developer", "frontend-developer"]
+    }
+  ]
+}
+```
+
+If the architect is not in your pipeline, dev agents fall back to reading `architecture.md` and `api-spec.md` directly.
 
 ## Example
 
