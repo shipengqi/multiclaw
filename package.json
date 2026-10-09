@@ -13,5 +13,10 @@
   "packageManager": "pnpm@12.0.0",
   "devEngines": {
     "runtime": { "name": "node", "version": "^22.0.0", "onFail": "download" }
-  }
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }  
 }
