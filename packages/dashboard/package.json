@@ -18,6 +18,7 @@
     "url": "https://github.com/shipengqi/multiclaw/issues"
   },
   "scripts": {
+    "build": "vite build && tsc -p tsconfig.server.json",
     "dev:client": "vite"
   },
   "publishConfig": {
