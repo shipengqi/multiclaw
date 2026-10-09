@@ -6,12 +6,17 @@
     "dev:example": "pnpm --filter dev-team-example run dev"
   },
   "devDependencies": {
-    "typescript": "^5.4.0",
+    "@types/node": "^20.11.0",
+    "tsup": "^8.5.1",
     "tsx": "^4.7.0",
-    "@types/node": "^20.11.0"
+    "typescript": "^5.4.0"
   },
   "packageManager": "pnpm@12.0.0",
   "devEngines": {
-    "runtime": { "name": "node", "version": "^22.0.0 || >=24.0.0", "onFail": "download" }
+    "runtime": {
+      "name": "node",
+      "version": "^22.0.0 || >=24.0.0",
+      "onFail": "download"
+    }
   }
 }

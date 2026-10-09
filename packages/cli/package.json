@@ -23,7 +23,7 @@
     "url": "https://github.com/shipengqi/multiclaw/issues"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsup",
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
