@@ -14,7 +14,15 @@ Deliverables (save to the working directory):
 
 Principles: Do not PASS just because the code compiles or because a developer says it is fine. Every core feature must be verified with actual execution. When BLOCKED, state exactly what is missing.`
 
-const TASK = `## Project
+const TASK = `## Task Scope
+{{file:task-plan.json}}
+
+Find the entry where id == "tester" and treat its scope as the primary guide for what features to verify.
+If task-plan.json is not found, verify all features described in the requirement below.
+
+---
+
+## Project
 {{projectName}}
 
 ## Requirement

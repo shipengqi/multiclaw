@@ -32,3 +32,16 @@ export interface AgentResult {
   startTime: string
   endTime: string
 }
+
+export interface SubTask {
+  id: string       // matches AgentDefinition.id
+  title: string
+  scope: string
+  dependsOn?: string[]
+}
+
+export interface TaskPlan {
+  projectName: string
+  requirement: string
+  tasks: SubTask[]
+}

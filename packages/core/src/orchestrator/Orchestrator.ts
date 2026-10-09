@@ -24,6 +24,10 @@ export class Orchestrator {
   async run(): Promise<OrchestratorResult> {
     const startTime = new Date()
     const agents = await this.resolveAgents()
+    this.contextManager.set(
+      "pipelineAgents",
+      agents.map((a) => `${a.id}: ${a.name}`).join("\n")
+    )
     const stages = buildStages(agents)
 
     const stageInfos: StageInfo[] = stages.map((stage, i) => ({

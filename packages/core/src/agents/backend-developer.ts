@@ -16,7 +16,15 @@ Deliverables (write code to the working directory, and record in implementation-
 
 Principles: Write code directly without asking for confirmation. Follow the API spec strictly — do not change the contract unilaterally; escalate contract issues upstream. Do not refactor unrelated code. Run commands and report evidence.`
 
-const TASK = `## Architecture Design
+const TASK = `## Task Scope
+{{file:task-plan.json}}
+
+Find the entry where id == "backend-developer" and treat its scope as the primary guide for your work.
+If task-plan.json is not found, determine your scope from the architecture design and API specification below.
+
+---
+
+## Architecture Design
 {{file:architecture.md}}
 
 ## API Specification
