@@ -6,11 +6,6 @@ import { select, input } from "@inquirer/prompts"
 // ─── Agent Block Definitions ──────────────────────────────────────────────────
 
 const AGENT_BLOCKS: Record<string, string> = {
-  simple: `    agents.architect(),
-    agents.archDesignReviewer({ dependsOn: ["architect"] }),
-    agents.backendDeveloper({ dependsOn: ["arch-design-reviewer"] }),
-    agents.codeReviewer({ dependsOn: ["backend-developer"] }),`,
-
   backend: `    agents.productManager(),
     agents.architect({ dependsOn: ["product-manager"] }),
     agents.archDesignReviewer({ dependsOn: ["architect"] }),
@@ -19,21 +14,29 @@ const AGENT_BLOCKS: Record<string, string> = {
     agents.codeReviewer({ dependsOn: ["tester"] }),
     agents.devops({ dependsOn: ["tester"] }),`,
 
+  frontend: `    agents.architect(),
+    agents.uiDesigner({ dependsOn: ["architect"] }),
+    agents.uiDesignReviewer({ dependsOn: ["ui-designer"] }),
+    agents.frontendDeveloper({ dependsOn: ["ui-design-reviewer"] }),
+    agents.tester({ dependsOn: ["frontend-developer"] }),
+    agents.codeReviewer({ dependsOn: ["tester"] }),`,
+
   fullstack: `    agents.productManager(),
     agents.architect({ dependsOn: ["product-manager"] }),
     agents.archDesignReviewer({ dependsOn: ["architect"] }),
     agents.backendDeveloper({ dependsOn: ["arch-design-reviewer"] }),
     agents.uiDesigner({ dependsOn: ["arch-design-reviewer"] }),
     agents.uiDesignReviewer({ dependsOn: ["ui-designer"] }),
-    agents.frontendDeveloper({ dependsOn: ["ui-design-reviewer"] }),
-    agents.codeReviewer({ dependsOn: ["backend-developer", "frontend-developer"] }),
-    agents.devops({ dependsOn: ["backend-developer", "frontend-developer"] }),`,
+    agents.frontendDeveloper({ dependsOn: ["backend-developer", "ui-design-reviewer"] }),
+    agents.tester({ dependsOn: ["frontend-developer"] }),
+    agents.codeReviewer({ dependsOn: ["tester"] }),
+    agents.devops({ dependsOn: ["tester"] }),`,
 }
 
 const PRESET_DESCRIPTIONS: Record<string, string> = {
-  simple:    "Architect → Arch Design Reviewer → Backend Developer → Code Reviewer  (4 agents)",
   backend:   "Product Manager → Architect → Arch Design Reviewer → Backend Developer → Tester → Code Reviewer + DevOps  (7 agents)",
-  fullstack: "Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Code Reviewer + DevOps  (9 agents)",
+  frontend:  "Architect → UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer  (6 agents)",
+  fullstack: "Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer + DevOps  (10 agents)",
 }
 
 const RUNTIME_INSTALL: Record<string, string> = {
@@ -81,8 +84,8 @@ export async function initCommand(): Promise<void> {
   const preset = await select({
     message: "Select a preset:",
     choices: [
-      { value: "simple",    name: `simple     — ${PRESET_DESCRIPTIONS.simple}` },
       { value: "backend",   name: `backend    — ${PRESET_DESCRIPTIONS.backend}` },
+      { value: "frontend",  name: `frontend   — ${PRESET_DESCRIPTIONS.frontend}` },
       { value: "fullstack", name: `fullstack  — ${PRESET_DESCRIPTIONS.fullstack}` },
     ],
   })
