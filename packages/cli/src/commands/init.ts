@@ -120,7 +120,8 @@ export async function initCommand(): Promise<void> {
 }
 
 function checkRuntime(): void {
-  const runtimes = ["claude", "codex", "opencode"]
+  // const runtimes = ["claude", "codex", "opencode", "cursor"]
+  const runtimes = ["claude"]
   const available = runtimes.filter((r) => {
     try { execSync(`${r} --version`, { stdio: "ignore" }); return true }
     catch { return false }
