@@ -30,7 +30,7 @@
   "dependencies": {
     "@multiclawcli/core": "workspace:*",
     "ws": "^8.16.0",
-    "zustand": "^4.5.0",
+    "zustand": "^5.0.15",
     "react": "^19.3.0",
     "react-dom": "^18.2.0",
     "class-variance-authority": "^0.7.0",
