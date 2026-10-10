@@ -10,8 +10,9 @@ export async function withRetry<T>(
 ): Promise<T> {
   let lastError: Error = new Error("Unknown error")
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
-    try { return await fn(attempt) }
-    catch (err) {
+    try {
+      return await fn(attempt)
+    } catch (err) {
       lastError = err as Error
       if (attempt <= retries) {
         onRetry?.(attempt, err)
@@ -21,4 +22,3 @@ export async function withRetry<T>(
   }
   throw lastError
 }
-

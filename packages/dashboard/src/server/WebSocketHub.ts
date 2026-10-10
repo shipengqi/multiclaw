@@ -1,5 +1,5 @@
-import { WebSocketServer, WebSocket } from "ws"
 import type { MultiClawEvent } from "@multiclawcli/core"
+import type { WebSocket, WebSocketServer } from "ws"
 
 export class WebSocketHub {
   private wss: WebSocketServer
@@ -17,7 +17,9 @@ export class WebSocketHub {
           try {
             const event = JSON.parse(data.toString()) as MultiClawEvent
             this.broadcast(event)
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         })
       }
 

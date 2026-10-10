@@ -1,5 +1,5 @@
-import * as fs from "fs"
-import * as path from "path"
+import * as fs from "node:fs"
+import * as path from "node:path"
 import type { EventBus, MultiClawEvent } from "@multiclawcli/core"
 
 export class FileLogWriter {
@@ -18,22 +18,18 @@ export class FileLogWriter {
       this.getStream(e.payload.agentId).write(e.payload.chunk)
     }
     if (e.type === "orchestration:complete") {
-      fs.writeFileSync(
-        path.join(this.logDir, "report.json"),
-        JSON.stringify(e.payload, null, 2)
-      )
+      fs.writeFileSync(path.join(this.logDir, "report.json"), JSON.stringify(e.payload, null, 2))
       this.closeAll()
     }
   }
 
   private getStream(agentId: string): fs.WriteStream {
-    if (!this.streams.has(agentId)) {
-      this.streams.set(
-        agentId,
-        fs.createWriteStream(path.join(this.logDir, `${agentId}.log`))
-      )
+    let stream = this.streams.get(agentId)
+    if (!stream) {
+      stream = fs.createWriteStream(path.join(this.logDir, `${agentId}.log`))
+      this.streams.set(agentId, stream)
     }
-    return this.streams.get(agentId)!
+    return stream
   }
 
   private closeAll(): void {

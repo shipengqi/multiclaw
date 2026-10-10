@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react"
 import type { MultiClawEvent } from "@multiclawcli/core"
+import { useEffect, useRef } from "react"
 
 export function useWebSocket(onEvent: (e: MultiClawEvent) => void): void {
   const ref = useRef(onEvent)
@@ -28,6 +28,9 @@ export function useWebSocket(onEvent: (e: MultiClawEvent) => void): void {
     }
     connect()
 
-    return () => { clearTimeout(retry); ws?.close() }
+    return () => {
+      clearTimeout(retry)
+      ws?.close()
+    }
   }, [])
 }

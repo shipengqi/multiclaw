@@ -1,5 +1,5 @@
-import * as path from "path"
-import * as fs from "fs"
+import * as fs from "node:fs"
+import * as path from "node:path"
 import type { MultiClawConfig } from "@multiclawcli/core"
 
 const DEFAULT_CONFIG_NAMES = ["multiclaw.config.ts", "multiclaw.config.js"]
@@ -14,10 +14,15 @@ function findConfig(configPath?: string): string {
     const abs = path.resolve(process.cwd(), name)
     if (fs.existsSync(abs)) return abs
   }
-  throw new Error(`No config file found. Create multiclaw.config.ts in the current directory or use --config to specify a path.`)
+  throw new Error(
+    `No config file found. Create multiclaw.config.ts in the current directory or use --config to specify a path.`
+  )
 }
 
-export async function loadConfig(configPath?: string, requirement?: string): Promise<MultiClawConfig> {
+export async function loadConfig(
+  configPath?: string,
+  requirement?: string
+): Promise<MultiClawConfig> {
   const absPath = findConfig(configPath)
 
   // The compiled CLI cannot natively import .ts files — register tsx ESM hook

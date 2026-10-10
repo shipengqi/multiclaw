@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import * as fs from "fs/promises"
-import * as os from "os"
-import * as path from "path"
+import * as fs from "node:fs/promises"
+import * as os from "node:os"
+import * as path from "node:path"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { renderPrompt } from "./prompt"
 
 let workDir: string
@@ -50,11 +50,7 @@ describe("renderPrompt", () => {
 
   it("handles files and context placeholders in the same template", async () => {
     await fs.writeFile(path.join(workDir, "ctx.txt"), "FILE")
-    const out = await renderPrompt(
-      "{{file:ctx.txt}} + {{extra}}",
-      { extra: "CTX" },
-      workDir
-    )
+    const out = await renderPrompt("{{file:ctx.txt}} + {{extra}}", { extra: "CTX" }, workDir)
     expect(out).toBe("FILE + CTX")
   })
 })

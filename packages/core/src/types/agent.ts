@@ -1,6 +1,12 @@
 export type ToolName =
-  | "Read" | "Write" | "Edit" | "MultiEdit"
-  | "Bash" | "Glob" | "Grep" | "WebFetch"
+  | "Read"
+  | "Write"
+  | "Edit"
+  | "MultiEdit"
+  | "Bash"
+  | "Glob"
+  | "Grep"
+  | "WebFetch"
 
 export interface AgentDefinition {
   id: string
@@ -21,8 +27,7 @@ export interface AgentDefinition {
   workDir?: string
 }
 
-export type AgentStatus =
-  | "pending" | "running" | "retrying" | "success" | "failed" | "skipped"
+export type AgentStatus = "pending" | "running" | "retrying" | "success" | "failed" | "skipped"
 
 export interface AgentResult {
   agentId: string
@@ -37,7 +42,7 @@ export interface AgentResult {
 }
 
 export interface SubTask {
-  id: string       // matches AgentDefinition.id
+  id: string // matches AgentDefinition.id
   title: string
   scope: string
   plan?: string[]

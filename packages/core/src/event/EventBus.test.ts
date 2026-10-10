@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, afterEach } from "vitest"
-import { EventBus } from "./EventBus"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import type { MultiClawEvent } from "../types/event"
+import { EventBus } from "./EventBus"
 
 const event: MultiClawEvent = {
   type: "stage:complete",

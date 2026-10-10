@@ -1,2 +1,2 @@
-export { defineConfig, agents } from "@multiclawcli/core"
-export type { MultiClawConfig, AgentDefinition } from "@multiclawcli/core"
+export type { AgentDefinition, MultiClawConfig } from "@multiclawcli/core"
+export { agents, defineConfig } from "@multiclawcli/core"

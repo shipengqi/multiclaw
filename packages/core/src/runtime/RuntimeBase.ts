@@ -1,4 +1,4 @@
-import type { AgentRuntime, AgentTask, AgentOutput } from "../types/runtime"
+import type { AgentOutput, AgentRuntime, AgentTask } from "../types/runtime"
 
 export abstract class RuntimeBase implements AgentRuntime {
   abstract readonly name: string

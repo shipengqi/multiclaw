@@ -1,4 +1,4 @@
-import { defineConfig, agents } from "multiclaw"
+import { agents, defineConfig } from "multiclaw"
 
 export default defineConfig({
   name: "Dev Team Demo",

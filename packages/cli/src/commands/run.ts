@@ -1,4 +1,4 @@
-import * as path from "path"
+import * as path from "node:path"
 import type { Orchestrator } from "@multiclawcli/core"
 import { Orchestrator as OrchestratorImpl, runtimeRegistry } from "@multiclawcli/core"
 import { loadConfig } from "../loader/loadConfig"
@@ -25,13 +25,15 @@ export async function runCommand(requirement: string, options: RunOptions): Prom
 
   const runtimeNames = new Set(config.agents.map((a) => a.runtime ?? "claude"))
   for (const name of runtimeNames) {
-    let rt
-    try { rt = runtimeRegistry.get(name) } catch {
+    if (!runtimeRegistry.has(name)) {
       console.error(`\x1b[31mError: Unknown runtime "${name}". Supported: claude\x1b[0m`)
       process.exit(1)
     }
+    const rt = runtimeRegistry.get(name)
     if (!(await rt.checkAvailable())) {
-      console.error(`\x1b[31mError: Runtime "${name}" is not available. Make sure the CLI is installed.\x1b[0m`)
+      console.error(
+        `\x1b[31mError: Runtime "${name}" is not available. Make sure the CLI is installed.\x1b[0m`
+      )
       process.exit(1)
     }
   }
@@ -45,7 +47,9 @@ export async function runCommand(requirement: string, options: RunOptions): Prom
   console.log(`\x1b[2mLogs: ${logDir}\x1b[0m`)
 
   if (options.ui && options.serverUrl) {
-    console.warn("\x1b[33mWarning: --ui and --server-url cannot be used together. Using --ui.\x1b[0m")
+    console.warn(
+      "\x1b[33mWarning: --ui and --server-url cannot be used together. Using --ui.\x1b[0m"
+    )
   }
 
   if (options.ui) {
@@ -78,17 +82,23 @@ async function attachDashboard(
   }
 }
 
-async function attachRemoteServer(
-  orchestrator: Orchestrator,
-  serverUrl: string
-): Promise<void> {
+async function attachRemoteServer(orchestrator: Orchestrator, serverUrl: string): Promise<void> {
   const { WebSocket } = await import("ws")
-  const wsUrl = serverUrl.replace(/^https?/, (p) => p === "https" ? "wss" : "ws")
+  const wsUrl = serverUrl.replace(/^https?/, (p) => (p === "https" ? "wss" : "ws"))
   const ws = new WebSocket(wsUrl)
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Connection to serve timed out: ${serverUrl}`)), 5000)
-    ws.on("open", () => { clearTimeout(timer); resolve() })
-    ws.on("error", (err) => { clearTimeout(timer); reject(err) })
+    const timer = setTimeout(
+      () => reject(new Error(`Connection to serve timed out: ${serverUrl}`)),
+      5000
+    )
+    ws.on("open", () => {
+      clearTimeout(timer)
+      resolve()
+    })
+    ws.on("error", (err) => {
+      clearTimeout(timer)
+      reject(err)
+    })
   })
   console.log(`\x1b[36mConnected to Dashboard server: ${serverUrl}\x1b[0m`)
   orchestrator.eventBus.subscribe((e) => {

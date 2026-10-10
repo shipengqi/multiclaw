@@ -1,12 +1,12 @@
-import * as fs from "fs"
-import * as path from "path"
-import type { AgentDefinition, AgentResult } from "../types/agent"
+import * as fs from "node:fs"
+import * as path from "node:path"
+import type { EventBus } from "../event/EventBus"
 import { runtimeRegistry } from "../runtime"
-import { EventBus } from "../event/EventBus"
-import { ContextManager } from "./ContextManager"
+import type { AgentDefinition, AgentResult } from "../types/agent"
+import { renderPrompt } from "../utils/prompt"
 import { withRetry } from "../utils/retry"
 import { withTimeout } from "../utils/timeout"
-import { renderPrompt } from "../utils/prompt"
+import type { ContextManager } from "./ContextManager"
 
 export class AgentRunner {
   constructor(
@@ -31,7 +31,13 @@ export class AgentRunner {
     this.eventBus.emit({
       type: "agent:start",
       timestamp: new Date().toISOString(),
-      payload: { agentId: agent.id, agentName: agent.name, icon: agent.icon, model, taskTitle: agent.taskTitle },
+      payload: {
+        agentId: agent.id,
+        agentName: agent.name,
+        icon: agent.icon,
+        model,
+        taskTitle: agent.taskTitle,
+      },
     })
 
     let attempts = 0
@@ -39,71 +45,91 @@ export class AgentRunner {
 
     try {
       output = await withTimeout(
-        (signal) => withRetry(async (attempt) => {
-          attempts = attempt
-          const agentContext: Record<string, string> = {
-            ...this.contextManager.snapshot(),
-            ...(agent.agentScope ? { agentScope: agent.agentScope } : {}),
-            ...(agent.agentPlan ? { agentPlan: agent.agentPlan } : {}),
-          }
-          const prompt = await renderPrompt(
-            agent.taskPrompt,
-            agentContext,
-            this.globalWorkDir
-          )
-          return (await runtime.execute({
-            agentId: agent.id,
-            systemPrompt: agent.systemPrompt,
-            prompt, tools, workDir, timeout, signal,
-            model,
-            onOutput: (chunk) => {
+        (signal) =>
+          withRetry(
+            async (attempt) => {
+              attempts = attempt
+              const agentContext: Record<string, string> = {
+                ...this.contextManager.snapshot(),
+                ...(agent.agentScope ? { agentScope: agent.agentScope } : {}),
+                ...(agent.agentPlan ? { agentPlan: agent.agentPlan } : {}),
+              }
+              const prompt = await renderPrompt(agent.taskPrompt, agentContext, this.globalWorkDir)
+              return (
+                await runtime.execute({
+                  agentId: agent.id,
+                  systemPrompt: agent.systemPrompt,
+                  prompt,
+                  tools,
+                  workDir,
+                  timeout,
+                  signal,
+                  model,
+                  onOutput: (chunk) => {
+                    this.eventBus.emit({
+                      type: "agent:output",
+                      timestamp: new Date().toISOString(),
+                      payload: { agentId: agent.id, chunk },
+                    })
+                  },
+                })
+              ).output
+            },
+            retries,
+            (attempt, err) => {
               this.eventBus.emit({
-                type: "agent:output",
+                type: "agent:retrying",
                 timestamp: new Date().toISOString(),
-                payload: { agentId: agent.id, chunk },
+                payload: {
+                  agentId: agent.id,
+                  agentName: agent.name,
+                  attempt,
+                  maxAttempts: retries + 1,
+                  error: (err as Error).message,
+                },
               })
-            },
-          })).output
-        }, retries, (attempt, err) => {
-          this.eventBus.emit({
-            type: "agent:retrying",
-            timestamp: new Date().toISOString(),
-            payload: {
-              agentId: agent.id,
-              agentName: agent.name,
-              attempt,
-              maxAttempts: retries + 1,
-              error: (err as Error).message,
-            },
-          })
-        }),
+            }
+          ),
         timeout,
         agent.name
       )
 
       const endTime = new Date()
       const result: AgentResult = {
-        agentId: agent.id, agentName: agent.name, status: "success",
-        output, duration: endTime.getTime() - startTime.getTime(),
-        attempts, startTime: startTime.toISOString(), endTime: endTime.toISOString(),
+        agentId: agent.id,
+        agentName: agent.name,
+        status: "success",
+        output,
+        duration: endTime.getTime() - startTime.getTime(),
+        attempts,
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString(),
       }
       this.eventBus.emit({
-        type: "agent:complete", timestamp: new Date().toISOString(), payload: result,
+        type: "agent:complete",
+        timestamp: new Date().toISOString(),
+        payload: result,
       })
       return result
     } catch (err) {
       const endTime = new Date()
       const result: AgentResult = {
-        agentId: agent.id, agentName: agent.name, status: "failed",
-        output, duration: endTime.getTime() - startTime.getTime(),
-        attempts, error: (err as Error).message,
-        startTime: startTime.toISOString(), endTime: endTime.toISOString(),
+        agentId: agent.id,
+        agentName: agent.name,
+        status: "failed",
+        output,
+        duration: endTime.getTime() - startTime.getTime(),
+        attempts,
+        error: (err as Error).message,
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString(),
       }
       this.eventBus.emit({
-        type: "agent:failed", timestamp: new Date().toISOString(), payload: result,
+        type: "agent:failed",
+        timestamp: new Date().toISOString(),
+        payload: result,
       })
       return result
     }
   }
 }
-

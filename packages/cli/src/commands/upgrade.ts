@@ -1,5 +1,5 @@
-import { execSync } from "child_process"
-import { createRequire } from "module"
+import { execSync } from "node:child_process"
+import { createRequire } from "node:module"
 
 const require = createRequire(import.meta.url)
 
@@ -29,7 +29,9 @@ export async function upgradeCommand(): Promise<void> {
     execSync("npm install -g multiclaw@latest", { stdio: "inherit" })
     console.log(`\x1b[32m✓\x1b[0m Successfully upgraded to v${latestVersion}`)
   } catch {
-    console.error("\x1b[31mError: Upgrade failed. Try running manually: npm install -g multiclaw@latest\x1b[0m")
+    console.error(
+      "\x1b[31mError: Upgrade failed. Try running manually: npm install -g multiclaw@latest\x1b[0m"
+    )
     process.exit(1)
   }
 }

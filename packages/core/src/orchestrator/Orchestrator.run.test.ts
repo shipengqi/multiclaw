@@ -1,14 +1,14 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest"
-import * as fs from "fs"
-import * as os from "os"
-import * as path from "path"
-import { Orchestrator } from "./Orchestrator"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { runtimeRegistry } from "../runtime"
 import { fakeRuntime, makeAgent } from "../testing/helpers"
-import type { AgentTask, AgentOutput } from "../types/runtime"
-import type { MultiClawEvent } from "../types/event"
-import type { MultiClawConfig } from "../types/config"
 import type { AgentDefinition } from "../types/agent"
+import type { MultiClawConfig } from "../types/config"
+import type { MultiClawEvent } from "../types/event"
+import type { AgentOutput, AgentTask } from "../types/runtime"
+import { Orchestrator } from "./Orchestrator"
 
 const RUNTIME = "test-orchestrator-run"
 
@@ -91,10 +91,7 @@ describe("Orchestrator.run", () => {
       if (task.agentId === "a") throw new Error("boom")
       return { output: "ok", exitCode: 0 }
     }
-    const { result, events } = await runOrch([
-      agent("a"),
-      agent("b", { dependsOn: ["a"] }),
-    ])
+    const { result, events } = await runOrch([agent("a"), agent("b", { dependsOn: ["a"] })])
 
     expect(result.success).toBe(false)
     expect(result.agentResults.map((r) => r.agentId)).toEqual(["a"])
@@ -109,10 +106,9 @@ describe("Orchestrator.run", () => {
       if (task.agentId === "a") throw new Error("boom")
       return { output: "ok", exitCode: 0 }
     }
-    const { result } = await runOrch(
-      [agent("a"), agent("b", { dependsOn: ["a"] })],
-      { continueOnError: true }
-    )
+    const { result } = await runOrch([agent("a"), agent("b", { dependsOn: ["a"] })], {
+      continueOnError: true,
+    })
 
     expect(result.success).toBe(false)
     expect(result.agentResults.map((r) => r.agentId)).toEqual(["a", "b"])
@@ -130,10 +126,9 @@ describe("Orchestrator.run", () => {
       return { output: `out:${task.agentId}`, exitCode: 0 }
     }
 
-    const { result } = await runOrch(
-      [agent("a"), agent("b"), agent("c"), agent("d")],
-      { maxConcurrency: 2 }
-    )
+    const { result } = await runOrch([agent("a"), agent("b"), agent("c"), agent("d")], {
+      maxConcurrency: 2,
+    })
 
     expect(result.agentResults).toHaveLength(4)
     expect(peak).toBeLessThanOrEqual(2)
@@ -172,5 +167,51 @@ describe("Orchestrator.run", () => {
     const dev = starts.find((p) => p.agentId === "dev")
     expect(dev?.taskTitle).toBe("Implement")
     expect(result.agentResults.find((r) => r.agentId === "dev")?.status).toBe("success")
+  })
+
+  const warningsOf = (events: MultiClawEvent[]) =>
+    events.filter(
+      (e): e is Extract<MultiClawEvent, { type: "orchestration:warning" }> =>
+        e.type === "orchestration:warning"
+    )
+
+  it("warns instead of failing silently when task-plan.json is malformed", async () => {
+    fs.writeFileSync(path.join(workDir, "task-plan.json"), "{ not valid json")
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      agents: [agent("architect"), agent("dev", { dependsOn: ["architect"] })],
+    }
+    const orch = new Orchestrator(config)
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => events.push(e))
+
+    const result = await orch.run()
+
+    const warnings = warningsOf(events)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0].payload.message).toMatch(/task-plan\.json/)
+    // Degrades gracefully: the original agent set still runs.
+    expect(result.success).toBe(true)
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["architect", "dev"])
+  })
+
+  it("warns when task-plan.json has no tasks array", async () => {
+    fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify({ projectName: "x" }))
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      agents: [agent("architect"), agent("dev", { dependsOn: ["architect"] })],
+    }
+    const orch = new Orchestrator(config)
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => events.push(e))
+
+    const result = await orch.run()
+
+    const warnings = warningsOf(events)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0].payload.message).toMatch(/tasks/)
+    expect(result.success).toBe(true)
   })
 })

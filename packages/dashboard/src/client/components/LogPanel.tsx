@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react"
+import { useEffect, useRef } from "react"
 import { useOrchestrationStore } from "../store/useOrchestrationStore"
 
 export function LogPanel({ agentId }: { agentId: string | null }) {
@@ -16,6 +16,7 @@ export function LogPanel({ agentId }: { agentId: string | null }) {
     userScrolled.current = el.scrollHeight - el.scrollTop - el.clientHeight > 50
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `logs` is an intentional trigger — re-scroll when new output arrives
   useEffect(() => {
     if (userScrolled.current) return
     const el = scrollRef.current

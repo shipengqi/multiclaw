@@ -1,7 +1,7 @@
-import * as fs from "fs"
-import * as path from "path"
-import { execSync } from "child_process"
-import { select, input } from "@inquirer/prompts"
+import { execSync } from "node:child_process"
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { input, select } from "@inquirer/prompts"
 
 // ─── Agent Block Definitions ──────────────────────────────────────────────────
 
@@ -34,13 +34,16 @@ const AGENT_BLOCKS: Record<string, string> = {
 }
 
 const PRESET_DESCRIPTIONS: Record<string, string> = {
-  backend:   "Product Manager → Architect → Arch Design Reviewer → Backend Developer → Tester → Code Reviewer + DevOps  (7 agents)",
-  frontend:  "Architect → UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer  (6 agents)",
-  fullstack: "Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer + DevOps  (10 agents)",
+  backend:
+    "Product Manager → Architect → Arch Design Reviewer → Backend Developer → Tester → Code Reviewer + DevOps  (7 agents)",
+  frontend:
+    "Architect → UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer  (6 agents)",
+  fullstack:
+    "Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer + DevOps  (10 agents)",
 }
 
 const RUNTIME_INSTALL: Record<string, string> = {
-  claude:    "npm install -g @anthropic-ai/claude-code"
+  claude: "npm install -g @anthropic-ai/claude-code",
 }
 
 // const RUNTIME_INSTALL: Record<string, string> = {
@@ -88,8 +91,8 @@ export async function initCommand(): Promise<void> {
   const preset = await select({
     message: "Select a preset:",
     choices: [
-      { value: "backend",   name: `backend    — ${PRESET_DESCRIPTIONS.backend}` },
-      { value: "frontend",  name: `frontend   — ${PRESET_DESCRIPTIONS.frontend}` },
+      { value: "backend", name: `backend    — ${PRESET_DESCRIPTIONS.backend}` },
+      { value: "frontend", name: `frontend   — ${PRESET_DESCRIPTIONS.frontend}` },
       { value: "fullstack", name: `fullstack  — ${PRESET_DESCRIPTIONS.fullstack}` },
     ],
   })
@@ -123,8 +126,12 @@ function checkRuntime(): void {
   // const runtimes = ["claude", "codex", "opencode", "cursor"]
   const runtimes = ["claude"]
   const available = runtimes.filter((r) => {
-    try { execSync(`${r} --version`, { stdio: "ignore" }); return true }
-    catch { return false }
+    try {
+      execSync(`${r} --version`, { stdio: "ignore" })
+      return true
+    } catch {
+      return false
+    }
   })
   if (available.length === 0) {
     console.log("")

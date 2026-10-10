@@ -1,10 +1,8 @@
 import type { AgentDefinition } from "../types/agent"
-import type { AgentRuntime, AgentTask, AgentOutput } from "../types/runtime"
+import type { AgentOutput, AgentRuntime, AgentTask } from "../types/runtime"
 
 /** Build a minimal AgentDefinition, overriding only what a test cares about. */
-export function makeAgent(
-  partial: Partial<AgentDefinition> & { id: string }
-): AgentDefinition {
+export function makeAgent(partial: Partial<AgentDefinition> & { id: string }): AgentDefinition {
   return {
     name: partial.id,
     systemPrompt: "system",

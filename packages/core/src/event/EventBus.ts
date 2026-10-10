@@ -1,4 +1,4 @@
-import type { MultiClawEvent, EventListener } from "../types/event"
+import type { EventListener, MultiClawEvent } from "../types/event"
 
 export class EventBus {
   private listeners = new Set<EventListener>()
@@ -10,10 +10,15 @@ export class EventBus {
 
   emit(event: MultiClawEvent): void {
     for (const listener of this.listeners) {
-      try { listener(event) }
-      catch (err) { console.error("EventBus listener error:", err) }
+      try {
+        listener(event)
+      } catch (err) {
+        console.error("EventBus listener error:", err)
+      }
     }
   }
 
-  clear(): void { this.listeners.clear() }
+  clear(): void {
+    this.listeners.clear()
+  }
 }

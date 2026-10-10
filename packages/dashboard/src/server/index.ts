@@ -1,2 +1,2 @@
-export { DashboardServer } from "./DashboardServer"
 export type { DashboardServerOptions } from "./DashboardServer"
+export { DashboardServer } from "./DashboardServer"

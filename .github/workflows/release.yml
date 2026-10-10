@@ -1,48 +1,35 @@
 name: Release
 
 on:
-  pull_request:
-    types: [closed]
+  push:
     branches: [main]
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
   release:
-    # Only run when a release/v* branch is merged (not just closed)
-    if: >
-      github.event.pull_request.merged == true &&
-      startsWith(github.event.pull_request.head.ref, 'release/v')
-
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
       id-token: write
-
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/setup@v3
+
+      # Changesets publishes straight from the built dist folders.
       - name: Build all packages
-        run: |
-          pnpm --filter @multiclawcli/core build
-          pnpm --filter @multiclawcli/dashboard build
-          pnpm --filter multiclaw build
+        run: pnpm -r build
 
-      - name: Get version
-        id: pkg
-        run: echo "version=$(node -p "require('./packages/cli/package.json').version")" >> $GITHUB_OUTPUT
-
-      - name: Publish to npm
-        run: |
-          pnpm --filter @multiclawcli/core    publish --no-git-checks --access public
-          pnpm --filter @multiclawcli/dashboard publish --no-git-checks --access public
-          pnpm --filter multiclaw          publish --no-git-checks --access public
-
-      - name: Create git tag and GitHub Release
+      # Opens/updates a "Version Packages" PR while changesets are pending;
+      # once that PR is merged it publishes the bumped packages to npm and
+      # creates the git tag + GitHub release.
+      - name: Create release PR or publish
+        uses: changesets/action@v1
+        with:
+          version: pnpm version-packages
+          publish: pnpm release
+          commit: "chore: release"
+          title: "chore: release"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION=${{ steps.pkg.outputs.version }}
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
-          gh release create "v${VERSION}" \
-            --title "v${VERSION}" \
-            --generate-notes
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

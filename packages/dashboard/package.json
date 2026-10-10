@@ -19,6 +19,9 @@
   },
   "scripts": {
     "build": "vite build && tsc -p tsconfig.server.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.server.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "dev:client": "vite"
   },
   "publishConfig": {
@@ -48,6 +51,7 @@
     "typescript": "^5.4.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
-    "@types/ws": "^8.5.0"
+    "@types/ws": "^8.5.0",
+    "vitest": "^3.2.7"
   }
 }

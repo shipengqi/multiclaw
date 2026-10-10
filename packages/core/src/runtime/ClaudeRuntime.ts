@@ -1,20 +1,21 @@
-import { spawn, execSync } from "child_process"
+import { execSync, spawn } from "node:child_process"
+import type { AgentOutput, AgentTask } from "../types/runtime"
 import { RuntimeBase } from "./RuntimeBase"
-import type { AgentTask, AgentOutput } from "../types/runtime"
 
 export class ClaudeRuntime extends RuntimeBase {
   readonly name = "claude"
 
   async checkAvailable(): Promise<boolean> {
-    try { execSync("claude --version", { stdio: "ignore" }); return true }
-    catch { return false }
+    try {
+      execSync("claude --version", { stdio: "ignore" })
+      return true
+    } catch {
+      return false
+    }
   }
 
   async execute(task: AgentTask): Promise<AgentOutput> {
-    const args = [
-      "-p", task.prompt,
-      "--allowedTools", task.tools.join(","),
-    ]
+    const args = ["-p", task.prompt, "--allowedTools", task.tools.join(",")]
     if (task.systemPrompt) args.push("--system-prompt", task.systemPrompt)
     if (task.model) args.push("--model", task.model)
 
@@ -25,9 +26,13 @@ export class ClaudeRuntime extends RuntimeBase {
       let output = ""
       let errorOutput = ""
       child.stdout.on("data", (d: Buffer) => {
-        const chunk = d.toString(); output += chunk; task.onOutput?.(chunk)
+        const chunk = d.toString()
+        output += chunk
+        task.onOutput?.(chunk)
       })
-      child.stderr.on("data", (d: Buffer) => { errorOutput += d.toString() })
+      child.stderr.on("data", (d: Buffer) => {
+        errorOutput += d.toString()
+      })
       child.on("close", (code) => {
         if (task.signal?.aborted) return
         code === 0
@@ -38,4 +43,3 @@ export class ClaudeRuntime extends RuntimeBase {
     })
   }
 }
-

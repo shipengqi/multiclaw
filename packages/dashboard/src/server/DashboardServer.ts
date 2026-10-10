@@ -1,8 +1,8 @@
-import * as http from "http"
-import * as path from "path"
-import * as fs from "fs"
-import { WebSocketServer } from "ws"
+import * as fs from "node:fs"
+import * as http from "node:http"
+import * as path from "node:path"
 import type { EventBus } from "@multiclawcli/core"
+import { WebSocketServer } from "ws"
 import { WebSocketHub } from "./WebSocketHub"
 
 export interface DashboardServerOptions {
@@ -21,19 +21,22 @@ export class DashboardServer {
     const clientDist = path.resolve(new URL(import.meta.url).pathname, "../../client")
 
     this.server = http.createServer((req, res) => {
-      let filePath = path.join(
-        clientDist,
-        req.url === "/" ? "index.html" : req.url!
-      )
+      const urlPath = req.url ?? "/"
+      let filePath = path.join(clientDist, urlPath === "/" ? "index.html" : urlPath)
       if (!fs.existsSync(filePath)) filePath = path.join(clientDist, "index.html")
 
       const ext = path.extname(filePath)
       const mime: Record<string, string> = {
-        ".html": "text/html", ".js": "text/javascript",
-        ".css": "text/css", ".svg": "image/svg+xml",
+        ".html": "text/html",
+        ".js": "text/javascript",
+        ".css": "text/css",
+        ".svg": "image/svg+xml",
       }
       const stream = fs.createReadStream(filePath)
-      stream.on("error", () => { res.writeHead(404); res.end() })
+      stream.on("error", () => {
+        res.writeHead(404)
+        res.end()
+      })
       res.writeHead(200, { "Content-Type": mime[ext] ?? "text/plain" })
       stream.pipe(res)
     })

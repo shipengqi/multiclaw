@@ -1,11 +1,12 @@
-import * as fs from "fs"
-import * as path from "path"
-import type { MultiClawConfig, OrchestratorResult } from "../types/config"
-import type { AgentDefinition, AgentResult, TaskPlan } from "../types/agent"
-import type { StageInfo } from "../types/event"
+import * as fs from "node:fs"
+import * as path from "node:path"
 import { EventBus } from "../event/EventBus"
-import { ContextManager } from "./ContextManager"
+import type { AgentDefinition, AgentResult, TaskPlan } from "../types/agent"
+import type { MultiClawConfig, OrchestratorResult } from "../types/config"
+import type { StageInfo } from "../types/event"
+import { extractJsonObjects } from "../utils/json"
 import { AgentRunner } from "./AgentRunner"
+import { ContextManager } from "./ContextManager"
 import { buildStages } from "./StageBuilder"
 
 export class Orchestrator {
@@ -24,10 +25,7 @@ export class Orchestrator {
   async run(): Promise<OrchestratorResult> {
     const startTime = new Date()
     const agents = await this.resolveAgents()
-    this.contextManager.set(
-      "pipelineAgents",
-      agents.map((a) => `${a.id}: ${a.name}`).join("\n")
-    )
+    this.contextManager.set("pipelineAgents", agents.map((a) => `${a.id}: ${a.name}`).join("\n"))
 
     let stages = buildStages(agents)
 
@@ -37,13 +35,24 @@ export class Orchestrator {
 
     const stageInfos: StageInfo[] = stages.map((stage, i) => ({
       stageIndex: i,
-      agents: stage.map((a) => ({ id: a.id, name: a.name, icon: a.icon, model: getModel(a), taskTitle: a.taskTitle })),
+      agents: stage.map((a) => ({
+        id: a.id,
+        name: a.name,
+        icon: a.icon,
+        model: getModel(a),
+        taskTitle: a.taskTitle,
+      })),
     }))
 
     this.eventBus.emit({
       type: "orchestration:start",
       timestamp: new Date().toISOString(),
-      payload: { name: this.config.name, requirement: this.config.context?.requirement, totalAgents: agents.length, stages: stageInfos },
+      payload: {
+        name: this.config.name,
+        requirement: this.config.context?.requirement,
+        totalAgents: agents.length,
+        stages: stageInfos,
+      },
     })
 
     const results: AgentResult[] = []
@@ -53,7 +62,8 @@ export class Orchestrator {
       const stage = stages[i]
 
       this.eventBus.emit({
-        type: "stage:start", timestamp: new Date().toISOString(),
+        type: "stage:start",
+        timestamp: new Date().toISOString(),
         payload: { stageIndex: i, agentIds: stage.map((a) => a.id) },
       })
 
@@ -61,7 +71,11 @@ export class Orchestrator {
       results.push(...stageResults)
 
       // After architect stage completes, apply task plan and rebuild stages
-      if (i === 0 && stage.some((a) => a.id === "architect") && stageResults.some((r) => r.status === "success")) {
+      if (
+        i === 0 &&
+        stage.some((a) => a.id === "architect") &&
+        stageResults.some((r) => r.status === "success")
+      ) {
         await this.applyTaskPlan(agents)
         stages = buildStages(agents)
       }
@@ -74,7 +88,8 @@ export class Orchestrator {
       }
 
       this.eventBus.emit({
-        type: "stage:complete", timestamp: new Date().toISOString(),
+        type: "stage:complete",
+        timestamp: new Date().toISOString(),
         payload: { stageIndex: i },
       })
 
@@ -94,14 +109,18 @@ export class Orchestrator {
 
     const endTime = new Date()
     const result: OrchestratorResult = {
-      name: this.config.name, success: allSuccess,
+      name: this.config.name,
+      success: allSuccess,
       totalDuration: endTime.getTime() - startTime.getTime(),
       agentResults: results,
-      startTime: startTime.toISOString(), endTime: endTime.toISOString(),
+      startTime: startTime.toISOString(),
+      endTime: endTime.toISOString(),
     }
 
     this.eventBus.emit({
-      type: "orchestration:complete", timestamp: new Date().toISOString(), payload: result,
+      type: "orchestration:complete",
+      timestamp: new Date().toISOString(),
+      payload: result,
     })
     return result
   }
@@ -117,16 +136,11 @@ export class Orchestrator {
     const result = await this.runner.run(this.config.leader)
     if (result.status !== "success") return this.config.agents
 
-    const match = result.output.match(/\{[\s\S]*?"run"\s*:\s*\[[\s\S]*?\]\s*\}/)
-    if (!match) return this.config.agents
-
-    let plan: { run: string[] }
-    try { plan = JSON.parse(match[0]) } catch { return this.config.agents }
+    const plan = extractJsonObjects(result.output).find(isAgentPlan)
+    if (!plan) return this.config.agents
 
     const runSet = new Set(plan.run)
-    const skippedIds = new Set(
-      this.config.agents.filter((a) => !runSet.has(a.id)).map((a) => a.id)
-    )
+    const skippedIds = new Set(this.config.agents.filter((a) => !runSet.has(a.id)).map((a) => a.id))
 
     for (const agent of this.config.agents.filter((a) => skippedIds.has(a.id))) {
       this.eventBus.emit({
@@ -158,27 +172,57 @@ export class Orchestrator {
   }
 
   private async applyTaskPlan(agents: AgentDefinition[]): Promise<void> {
+    const taskPlanPath = path.join(this.workDir, "task-plan.json")
+    if (!fs.existsSync(taskPlanPath)) return
+
+    let taskPlan: TaskPlan
     try {
-      const taskPlanPath = path.join(this.workDir, "task-plan.json")
-      if (!fs.existsSync(taskPlanPath)) return
+      taskPlan = JSON.parse(fs.readFileSync(taskPlanPath, "utf-8")) as TaskPlan
+    } catch (err) {
+      // The architect produced a task-plan.json but we cannot read it. Running
+      // the original agent set is a reasonable degradation — but it must not be
+      // silent, otherwise a broken plan is indistinguishable from a missing one.
+      this.warn(
+        `Could not parse task-plan.json — continuing with the original agent set: ${errorMessage(err)}`
+      )
+      return
+    }
 
-      const content = fs.readFileSync(taskPlanPath, "utf-8")
-      const taskPlan: TaskPlan = JSON.parse(content)
+    if (!Array.isArray(taskPlan.tasks)) {
+      this.warn("task-plan.json has no `tasks` array — ignoring it.")
+      return
+    }
 
-      const taskMap = new Map(taskPlan.tasks.map((t) => [t.id, t]))
-      for (const agent of agents) {
-        const task = taskMap.get(agent.id)
-        if (task) {
-          agent.taskTitle = task.title
-          agent.dependsOn = task.dependsOn
-          agent.agentScope = task.scope
-          if (task.plan?.length) {
-            agent.agentPlan = task.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")
-          }
+    const taskMap = new Map(taskPlan.tasks.map((t) => [t.id, t]))
+    for (const agent of agents) {
+      const task = taskMap.get(agent.id)
+      if (task) {
+        agent.taskTitle = task.title
+        agent.dependsOn = task.dependsOn
+        agent.agentScope = task.scope
+        if (task.plan?.length) {
+          agent.agentPlan = task.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")
         }
       }
-    } catch {
-      // Silently ignore parsing errors
     }
   }
+
+  private warn(message: string): void {
+    this.eventBus.emit({
+      type: "orchestration:warning",
+      timestamp: new Date().toISOString(),
+      payload: { message },
+    })
+  }
+}
+
+/** Narrow an unknown value to the `{ run: string[] }` shape a leader is asked to emit. */
+function isAgentPlan(value: unknown): value is { run: string[] } {
+  if (typeof value !== "object" || value === null) return false
+  const run = (value as { run?: unknown }).run
+  return Array.isArray(run) && run.every((id) => typeof id === "string")
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }

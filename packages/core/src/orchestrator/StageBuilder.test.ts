@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
-import { buildStages } from "./StageBuilder"
+import { describe, expect, it } from "vitest"
 import { makeAgent } from "../testing/helpers"
+import { buildStages } from "./StageBuilder"
 
 describe("buildStages", () => {
   it("puts a single dependency-free agent in one stage", () => {
@@ -52,9 +52,7 @@ describe("buildStages", () => {
 
   it("throws when an agent depends on an unknown agent", () => {
     const a = makeAgent({ id: "a", dependsOn: ["ghost"] })
-    expect(() => buildStages([a])).toThrowError(
-      'Agent "a" depends on "ghost" which does not exist'
-    )
+    expect(() => buildStages([a])).toThrowError('Agent "a" depends on "ghost" which does not exist')
   })
 
   it("throws on a two-node circular dependency", () => {

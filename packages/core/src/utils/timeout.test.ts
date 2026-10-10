@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { withTimeout } from "./timeout"
 
 afterEach(() => {
@@ -13,10 +13,14 @@ describe("withTimeout", () => {
 
   it("passes an AbortSignal to the factory", async () => {
     let received: AbortSignal | undefined
-    await withTimeout(async (signal) => {
-      received = signal
-      return "ok"
-    }, 1000, "Signal")
+    await withTimeout(
+      async (signal) => {
+        received = signal
+        return "ok"
+      },
+      1000,
+      "Signal"
+    )
     expect(received).toBeInstanceOf(AbortSignal)
     expect(received!.aborted).toBe(false)
   })
@@ -24,9 +28,13 @@ describe("withTimeout", () => {
   it("propagates a factory rejection", async () => {
     const err = new Error("factory failed")
     await expect(
-      withTimeout(async () => {
-        throw err
-      }, 1000, "Boom")
+      withTimeout(
+        async () => {
+          throw err
+        },
+        1000,
+        "Boom"
+      )
     ).rejects.toBe(err)
   })
 
@@ -44,9 +52,7 @@ describe("withTimeout", () => {
       500,
       "SlowAgent"
     )
-    const assertion = expect(promise).rejects.toThrow(
-      "[SlowAgent] timed out (0.5s)"
-    )
+    const assertion = expect(promise).rejects.toThrow("[SlowAgent] timed out (0.5s)")
 
     await vi.advanceTimersByTimeAsync(500)
     await assertion

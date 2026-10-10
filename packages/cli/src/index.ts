@@ -1,10 +1,10 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { Command } from "commander"
-import { readFileSync } from "fs"
-import { dirname, join } from "path"
-import { fileURLToPath } from "url"
-import { runCommand } from "./commands/run"
 import { initCommand } from "./commands/init"
+import { runCommand } from "./commands/run"
 import { serveCommand } from "./commands/serve"
 import { upgradeCommand } from "./commands/upgrade"
 

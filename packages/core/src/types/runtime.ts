@@ -20,4 +20,3 @@ export interface AgentRuntime {
   checkAvailable(): Promise<boolean>
   execute(task: AgentTask): Promise<AgentOutput>
 }
-

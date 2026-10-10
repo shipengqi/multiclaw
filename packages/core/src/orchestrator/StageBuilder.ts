@@ -15,15 +15,13 @@ export function buildStages(agents: AgentDefinition[]): AgentDefinition[][] {
   }
 
   while (remaining.length > 0) {
-    const stage = remaining.filter((a) =>
-      (a.dependsOn ?? []).every((dep) => completed.has(dep))
-    )
+    const stage = remaining.filter((a) => (a.dependsOn ?? []).every((dep) => completed.has(dep)))
     if (stage.length === 0) {
       const ids = remaining.map((a) => a.id).join(", ")
       throw new Error(`Circular or unsatisfiable dependency detected: ${ids}`)
     }
     stages.push(stage)
-    stage.forEach((a) => completed.add(a.id))
+    for (const a of stage) completed.add(a.id)
     remaining = remaining.filter((a) => !stage.includes(a))
   }
   return stages

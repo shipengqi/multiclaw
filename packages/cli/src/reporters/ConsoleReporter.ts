@@ -2,9 +2,7 @@ import type { EventBus, MultiClawEvent } from "@multiclawcli/core"
 
 // Degraded to plain ASCII when NO_COLOR is set, TERM=dumb, or stdout is not a TTY (pipe/CI).
 const isFancy =
-  !process.env.NO_COLOR &&
-  process.env.TERM !== "dumb" &&
-  process.stdout.isTTY === true
+  !process.env.NO_COLOR && process.env.TERM !== "dumb" && process.stdout.isTTY === true
 
 const S = isFancy
   ? { ok: "✓", fail: "✗", run: "›", retry: "↻", skip: "⊘", warn: "⚠", bullet: "·" }
@@ -12,14 +10,24 @@ const S = isFancy
 
 const C = isFancy
   ? {
-      reset: "\x1b[0m", bold: "\x1b[1m", dim: "\x1b[2m",
-      cyan: "\x1b[36m", green: "\x1b[32m",
-      yellow: "\x1b[33m", red: "\x1b[31m", purple: "\x1b[35m",
+      reset: "\x1b[0m",
+      bold: "\x1b[1m",
+      dim: "\x1b[2m",
+      cyan: "\x1b[36m",
+      green: "\x1b[32m",
+      yellow: "\x1b[33m",
+      red: "\x1b[31m",
+      purple: "\x1b[35m",
     }
   : {
-      reset: "", bold: "", dim: "",
-      cyan: "", green: "",
-      yellow: "", red: "", purple: "",
+      reset: "",
+      bold: "",
+      dim: "",
+      cyan: "",
+      green: "",
+      yellow: "",
+      red: "",
+      purple: "",
     }
 
 export class ConsoleReporter {
@@ -35,7 +43,9 @@ export class ConsoleReporter {
         console.log(`\n${C.bold}${C.purple}${edge[0]}${line}${edge[3]}`)
         console.log(`${edge[1]}  ${S.run} ${e.payload.name.padEnd(46)}${edge[1]}`)
         console.log(`${edge[2]}${line}${edge[4]}${C.reset}`)
-        console.log(`${C.cyan}${S.bullet} Agents: ${e.payload.totalAgents}  Stages: ${e.payload.stages.length}${C.reset}\n`)
+        console.log(
+          `${C.cyan}${S.bullet} Agents: ${e.payload.totalAgents}  Stages: ${e.payload.stages.length}${C.reset}\n`
+        )
         break
       }
       case "stage:start": {
@@ -65,7 +75,13 @@ export class ConsoleReporter {
         break
       }
       case "agent:retrying": {
-        console.log(`${C.yellow}${S.retry} ${e.payload.agentName} retry ${e.payload.attempt}/${e.payload.maxAttempts}: ${e.payload.error}${C.reset}`)
+        console.log(
+          `${C.yellow}${S.retry} ${e.payload.agentName} retry ${e.payload.attempt}/${e.payload.maxAttempts}: ${e.payload.error}${C.reset}`
+        )
+        break
+      }
+      case "orchestration:warning": {
+        console.log(`${C.yellow}${S.warn} ${e.payload.message}${C.reset}`)
         break
       }
       case "orchestration:complete": {
@@ -83,7 +99,9 @@ export class ConsoleReporter {
           const icon = r.status === "success" ? S.ok : S.fail
           const color = r.status === "success" ? C.green : C.red
           const dur = `${(r.duration / 1000).toFixed(1)}s`
-          console.log(`  ${color}${icon}${C.reset} ${r.agentName.padEnd(nameWidth)}   ${dur.padStart(7)}`)
+          console.log(
+            `  ${color}${icon}${C.reset} ${r.agentName.padEnd(nameWidth)}   ${dur.padStart(7)}`
+          )
         }
         console.log()
         break

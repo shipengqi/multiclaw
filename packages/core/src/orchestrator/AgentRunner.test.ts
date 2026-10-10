@@ -1,14 +1,14 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest"
-import * as fs from "fs"
-import * as os from "os"
-import * as path from "path"
-import { AgentRunner } from "./AgentRunner"
-import { ContextManager } from "./ContextManager"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { EventBus } from "../event/EventBus"
 import { runtimeRegistry } from "../runtime"
 import { fakeRuntime, makeAgent } from "../testing/helpers"
-import type { AgentTask, AgentOutput } from "../types/runtime"
 import type { MultiClawEvent } from "../types/event"
+import type { AgentOutput, AgentTask } from "../types/runtime"
+import { AgentRunner } from "./AgentRunner"
+import { ContextManager } from "./ContextManager"
 
 const RUNTIME = "test-agent-runner"
 
@@ -80,9 +80,7 @@ describe("AgentRunner.run", () => {
       return { output: "ok", exitCode: 0 }
     }
 
-    const promise = makeRunner().run(
-      makeAgent({ id: "a", runtime: RUNTIME, retries: 1 })
-    )
+    const promise = makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME, retries: 1 }))
     await vi.advanceTimersByTimeAsync(2000) // default backoff
     const result = await promise
 
@@ -97,9 +95,7 @@ describe("AgentRunner.run", () => {
     vi.useFakeTimers()
     handler = () => new Promise<AgentOutput>(() => {})
 
-    const promise = makeRunner().run(
-      makeAgent({ id: "a", runtime: RUNTIME, timeout: 100 })
-    )
+    const promise = makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME, timeout: 100 }))
     await vi.advanceTimersByTimeAsync(100)
     const result = await promise
 
@@ -150,9 +146,7 @@ describe("AgentRunner.run", () => {
       return { output: "ok", exitCode: 0 }
     }
 
-    await makeRunner().run(
-      makeAgent({ id: "a", runtime: RUNTIME, workDir: "sub/dir" })
-    )
+    await makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME, workDir: "sub/dir" }))
 
     const expected = path.join(workDir, "sub", "dir")
     expect(fs.existsSync(expected)).toBe(true)

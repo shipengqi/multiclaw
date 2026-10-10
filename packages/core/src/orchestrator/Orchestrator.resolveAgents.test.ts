@@ -1,14 +1,14 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest"
-import * as fs from "fs"
-import * as os from "os"
-import * as path from "path"
-import { Orchestrator } from "./Orchestrator"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { runtimeRegistry } from "../runtime"
 import { fakeRuntime, makeAgent } from "../testing/helpers"
-import type { AgentOutput } from "../types/runtime"
-import type { MultiClawEvent } from "../types/event"
-import type { MultiClawConfig } from "../types/config"
 import type { AgentDefinition } from "../types/agent"
+import type { MultiClawConfig } from "../types/config"
+import type { MultiClawEvent } from "../types/event"
+import type { AgentOutput } from "../types/runtime"
+import { Orchestrator } from "./Orchestrator"
 
 const RUNTIME = "test-resolve-agents"
 
@@ -120,6 +120,24 @@ describe("Orchestrator.resolveAgents", () => {
     const agents = [makeAgent({ id: "a" }), makeAgent({ id: "b" })]
     const leader = makeAgent({ id: "leader", runtime: RUNTIME })
     leaderOutput = '{"run": [not valid json]}'
+    const { orch } = build(agents, leader)
+
+    expect(await resolveAgents(orch)).toEqual(agents)
+  })
+
+  it("skips earlier JSON that has no run plan and uses a later valid one", async () => {
+    const agents = [makeAgent({ id: "a" }), makeAgent({ id: "b" }), makeAgent({ id: "c" })]
+    const leader = makeAgent({ id: "leader", runtime: RUNTIME })
+    leaderOutput = '{"meta":{"note":"}"},"ok":true}\nand the answer is {"run":["b"]}'
+    const { orch } = build(agents, leader)
+
+    expect((await resolveAgents(orch)).map((a) => a.id)).toEqual(["b"])
+  })
+
+  it("falls back when `run` is not an array of strings", async () => {
+    const agents = [makeAgent({ id: "a" }), makeAgent({ id: "b" })]
+    const leader = makeAgent({ id: "leader", runtime: RUNTIME })
+    leaderOutput = '{"run": "a"}'
     const { orch } = build(agents, leader)
 
     expect(await resolveAgents(orch)).toEqual(agents)

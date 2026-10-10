@@ -1,14 +1,23 @@
-import React, { useState, useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
+import { LogPanel } from "./components/LogPanel"
+import { PipelineBar } from "./components/PipelineBar"
 import { useWebSocket } from "./hooks/useWebSocket"
 import { useOrchestrationStore } from "./store/useOrchestrationStore"
-import { PipelineBar } from "./components/PipelineBar"
-import { LogPanel } from "./components/LogPanel"
 
 export function App() {
   const apply = useOrchestrationStore((s) => s.apply)
-  const { name, requirement, running, success, totalDuration, stages, agents, preflightAgentIds, preflightBuffer } =
-    useOrchestrationStore()
+  const {
+    name,
+    requirement,
+    running,
+    success,
+    totalDuration,
+    stages,
+    agents,
+    preflightAgentIds,
+    preflightBuffer,
+  } = useOrchestrationStore()
   const [selected, setSelected] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState(0)
   const autoSelectedRef = useRef(false)
@@ -16,7 +25,10 @@ export function App() {
   useWebSocket(apply)
 
   useEffect(() => {
-    if (!running) { setElapsed(0); return }
+    if (!running) {
+      setElapsed(0)
+      return
+    }
     const start = Date.now()
     const id = setInterval(() => setElapsed(Date.now() - start), 1000)
     return () => clearInterval(id)
@@ -44,13 +56,15 @@ export function App() {
 
   const hasPipelineBar = leaderIds.length > 0 || stages.length > 0
 
-  const statusBadge = running
-    ? <Badge className="bg-green-500 hover:bg-green-500/80">Running</Badge>
-    : success === undefined
-      ? <Badge variant="secondary">Waiting</Badge>
-      : success
-        ? <Badge className="bg-green-500 hover:bg-green-500/80">Done</Badge>
-        : <Badge variant="destructive">Failed</Badge>
+  const statusBadge = running ? (
+    <Badge className="bg-green-500 hover:bg-green-500/80">Running</Badge>
+  ) : success === undefined ? (
+    <Badge variant="secondary">Waiting</Badge>
+  ) : success ? (
+    <Badge className="bg-green-500 hover:bg-green-500/80">Done</Badge>
+  ) : (
+    <Badge variant="destructive">Failed</Badge>
+  )
 
   const displayDuration = totalDuration != null ? totalDuration : running ? elapsed : null
 
@@ -68,11 +82,7 @@ export function App() {
             {statusBadge}
           </div>
         </div>
-        {requirement && (
-          <p className="text-sm text-muted-foreground line-clamp-2">
-            {requirement}
-          </p>
-        )}
+        {requirement && <p className="text-sm text-muted-foreground line-clamp-2">{requirement}</p>}
       </header>
 
       {hasPipelineBar && (

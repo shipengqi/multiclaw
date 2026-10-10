@@ -13,4 +13,3 @@ export function withTimeout<T>(
   })
   return Promise.race([factory(controller.signal), timeout]).finally(() => clearTimeout(timer))
 }
-

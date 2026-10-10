@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { withRetry } from "./retry"
 
 afterEach(() => {
@@ -48,10 +48,7 @@ describe("withRetry", () => {
   it("throws the last error after exhausting all retries", async () => {
     const first = new Error("first")
     const second = new Error("second")
-    const fn = vi
-      .fn()
-      .mockRejectedValueOnce(first)
-      .mockRejectedValueOnce(second)
+    const fn = vi.fn().mockRejectedValueOnce(first).mockRejectedValueOnce(second)
     const onRetry = vi.fn()
 
     await expect(withRetry(fn, 1, onRetry, 0)).rejects.toBe(second)
@@ -62,10 +59,7 @@ describe("withRetry", () => {
 
   it("waits with linear backoff between attempts", async () => {
     vi.useFakeTimers()
-    const fn = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("boom"))
-      .mockResolvedValue("ok")
+    const fn = vi.fn().mockRejectedValueOnce(new Error("boom")).mockResolvedValue("ok")
 
     const promise = withRetry(fn, 3, undefined, 1000)
     let settled = false
