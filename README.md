@@ -318,3 +318,10 @@ See [`examples/dev-team/`](examples/dev-team/) for a working three-agent pipelin
 cd examples/dev-team
 pnpm dev
 ```
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development workflow and quality gates.
+
+See [`RELEASING.md`](RELEASING.md) for how the packages are versioned and released — including **when a
+pull request must include a changeset**.

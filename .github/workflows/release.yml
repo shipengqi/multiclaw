@@ -1,35 +1,92 @@
 name: Release
 
-on:
-  push:
-    branches: [main]
+# One-click, manually triggered release. Nothing publishes on its own.
+#
+# A maintainer starts this from the Actions tab. It:
+#   1. refuses to run when there are no pending changesets,
+#   2. turns the pending changesets into version bumps + CHANGELOG entries,
+#   3. commits and pushes the version bump to main,
+#   4. publishes the bumped packages to npm,
+#   5. pushes the release tags that `changeset publish` created locally.
+#
+# npm authentication is handled by npm trusted publishing (OIDC) — no NPM_TOKEN
+# secret and no ~/.npmrc. See "Prerequisites" in RELEASING.md.
+#
+# Full process: RELEASING.md (English) / RELEASING.zh-CN.md (中文).
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — version and build, but do not commit, push or publish"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
-      id-token: write
+      contents: write # push the version commit and the release tags
+      id-token: write # npm trusted publishing (OIDC)
     steps:
+      # Always release from main, whatever branch the dispatch UI had selected.
+      # fetch-depth: 0 because changesets walks git history to link each
+      # CHANGELOG entry to the commit that introduced it.
       - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
       - uses: pnpm/setup@v3
 
-      # Changesets publishes straight from the built dist folders.
-      - name: Build all packages
+      - name: Check for pending changesets
+        run: |
+          pending=$(find .changeset -maxdepth 1 -name '*.md' ! -name 'README.md' | wc -l | tr -d ' ')
+          if [ "$pending" -eq 0 ]; then
+            echo "::error::No pending changesets — add one with 'pnpm changeset' and merge it before releasing."
+            exit 1
+          fi
+          echo "Found $pending pending changeset(s):"
+          find .changeset -maxdepth 1 -name '*.md' ! -name 'README.md'
+
+      - name: Build
         run: pnpm -r build
 
-      # Opens/updates a "Version Packages" PR while changesets are pending;
-      # once that PR is merged it publishes the bumped packages to npm and
-      # creates the git tag + GitHub release.
-      - name: Create release PR or publish
-        uses: changesets/action@v1
-        with:
-          version: pnpm version-packages
-          publish: pnpm release
-          commit: "chore: release"
-          title: "chore: release"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Apply version bumps and changelogs
+        run: pnpm version-packages
+
+      - name: Show the resulting diff (dry run)
+        if: ${{ inputs.dry_run }}
+        run: git --no-pager diff --stat
+
+      - name: Commit and push the version bump
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "::error::changeset version produced no changes — nothing to release."
+            exit 1
+          fi
+          git commit -m "chore: release"
+          git push origin HEAD:main
+
+      # Authentication is npm trusted publishing (OIDC). The job-level
+      # `id-token: write` permission lets the publish step mint a short-lived
+      # identity for this repo + workflow file; the registry matches it against
+      # the trusted publisher configured on npmjs.com. There is no NPM_TOKEN and
+      # no ~/.npmrc — adding either would make the package manager take the
+      # legacy token path instead of the OIDC exchange.
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        run: pnpm release
+
+      # `changeset publish` creates the tags locally but never pushes them.
+      - name: Push release tags
+        if: ${{ !inputs.dry_run }}
+        run: git push origin --tags

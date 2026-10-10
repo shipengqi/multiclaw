@@ -319,3 +319,10 @@ export default defineConfig({
 cd examples/dev-team
 pnpm dev
 ```
+
+## 贡献
+
+开发流程与质量门禁见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+
+包的版本管理与发布流程见 [`RELEASING.zh-CN.md`](RELEASING.zh-CN.md) —— 其中明确了**什么情况下 Pull
+Request 必须附带 changeset**。

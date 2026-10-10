@@ -10,7 +10,8 @@
   - `pnpm typecheck` = `pnpm -r typecheck`
   - `pnpm test` = `pnpm -r test`(跑全部 3 个包)
   - `pnpm test:coverage` = `pnpm -r test:coverage`(跑测试并强制覆盖率门槛,CI 用这个)
-- 发布:changesets 驱动。`pnpm changeset`(写变更) → `pnpm version-packages` → `pnpm release`;CI 由 `.github/workflows/release.yml`(changesets/action)自动开 Version Packages PR。三包锁步(fixed 组)。
+- 发布:**手动触发**。changesets 驱动,但 `.github/workflows/release.yml` 只由 `workflow_dispatch` 触发——合并 PR 不会发布任何东西。维护者在 Actions 手动跑一次即完成 version → commit → publish → push tags。三包锁步(fixed 组)。
+  - 文档:`RELEASING.md`(英)/ `RELEASING.zh-CN.md`(中)。改动发布流程时同步更新这两份。
 
 ## Lint / Format
 - Biome 2.5(单一工具管 lint + format + import 排序),配置在根 `biome.json`。
@@ -31,7 +32,7 @@
 
 ## 环境坑(pnpm)
 - pnpm 12 + `node-linker=hoisted`:新增依赖后 `.bin` 软链可能缺失或指向不存在目录,报 `vitest: command not found`。**再跑一次 `pnpm install` 通常自愈**,不要手工补软链。
-- 不要在测试运行时并发 `pnpm install`,会出现「no tests / 1 error」的假失败。
+- **`pnpm -r <script>` 会先校验并自动补齐依赖**(pnpm 12 的 verifyDepsBeforeRun)。若 `node_modules` 与 lockfile 不一致——例如手工放进 `node_modules/@biomejs/cli-darwin-arm64` 的那个二进制——它会隐式跑一次 install、`+24 -19` 重新链接 `.bin`。此时若 vitest 正在启动,就会出现「no tests / 1 error」的**假失败**(已实测复现)。单独重跑对应包即绿,不是代码问题。
 - 本机 pnpm store 偶发写入失败(尤以 `@biomejs/cli-darwin-arm64` 为甚),重装通常能成功。
 
 ## 待办(已识别,未修复)

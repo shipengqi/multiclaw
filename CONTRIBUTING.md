@@ -100,29 +100,32 @@ chore(deps): bump vitest to 3.2.7
 
 The three published packages are versioned in lockstep (a `fixed` group in `.changeset/config.json`).
 
-1. For any PR that changes `@multiclawcli/core`, `@multiclawcli/dashboard` or `multiclaw`, run:
+Any PR that changes the runtime behaviour or public API of `@multiclawcli/core`,
+`@multiclawcli/dashboard` or `multiclaw` must include a changeset:
 
-   ```bash
-   pnpm changeset
-   ```
+```bash
+pnpm changeset
+```
 
-   Pick the affected packages and the bump type, then commit the generated `.changeset/*.md` file with
-   your change. Internal-only changes (tests, CI, docs) do not need one.
-
-2. When your PR lands on `main`, the `Release` workflow opens (or updates) a **Version Packages** PR
-   that bumps versions and writes `CHANGELOG.md` files.
-
-3. Merging that PR publishes the affected packages to npm and creates the git tag / GitHub release.
+Pick the affected packages and the bump type, then commit the generated `.changeset/*.md` file with
+your change. Internal-only changes (tests, CI, docs) do not need one — but a missing changeset on a
+published package **silently skips a release**, so when in doubt add one.
 
 ## Release process (maintainers)
 
-Releases are driven entirely by changesets — there is no manual version bump. The `Release` workflow
-(`.github/workflows/release.yml`) either opens the Version Packages PR or, when that PR is merged,
-publishes. Publishing needs one of:
+Releases are **manual**. Merging a PR never publishes anything.
 
-- an npm automation token stored as the `NPM_TOKEN` secret, **or**
-- npm trusted publishing (OIDC) configured for this repository — the workflow already requests
-  `id-token: write`.
+Open **Actions → Release → Run workflow** on `main`. The workflow then applies the pending changesets
+(version bumps + CHANGELOGs), commits the bump to `main`, publishes to npm and pushes the release
+tags. Tick **Dry run** to preview the resulting diff without committing or publishing.
+
+Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` secret. The
+workflow requests `id-token: write`, and each package has a trusted publisher configured on
+npmjs.com with the workflow filename `release.yml`. If you rename that file, update the
+trusted publisher to match or publishing will start failing.
+
+See [`RELEASING.md`](./RELEASING.md) (English) or [`RELEASING.zh-CN.md`](./RELEASING.zh-CN.md) (中文)
+for the full process, versioning rules and troubleshooting.
 
 ## Dependency updates
 
