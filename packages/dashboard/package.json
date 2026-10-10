@@ -35,7 +35,7 @@
     "react-dom": "^18.2.0",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
-    "tailwind-merge": "^2.2.0",
+    "tailwind-merge": "^3.7.0",
     "lucide-react": "^0.400.0",
     "@radix-ui/react-scroll-area": "^1.0.5",
     "@radix-ui/react-slot": "^1.0.2",
