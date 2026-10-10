@@ -14,13 +14,16 @@
     "url": "https://github.com/shipengqi/multiclaw/issues"
   },
   "scripts": {
-    "build": "tsup"
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "publishConfig": {
     "access": "public"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^3.2.7"
   }
 }
