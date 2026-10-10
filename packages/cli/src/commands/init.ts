@@ -40,11 +40,15 @@ const PRESET_DESCRIPTIONS: Record<string, string> = {
 }
 
 const RUNTIME_INSTALL: Record<string, string> = {
-  claude:    "npm install -g @anthropic-ai/claude-code",
-  codex:     "npm install -g @openai/codex",
-  opencode:  "npm install -g opencode",
-  cursor:    "curl https://cursor.com/install | bash",
+  claude:    "npm install -g @anthropic-ai/claude-code"
 }
+
+// const RUNTIME_INSTALL: Record<string, string> = {
+//   claude:    "npm install -g @anthropic-ai/claude-code",
+//   codex:     "npm install -g @openai/codex",
+//   opencode:  "npm install -g opencode",
+//   cursor:    "curl https://cursor.com/install | bash",
+// }
 
 // ─── Config Generator ─────────────────────────────────────────────────────────
 
