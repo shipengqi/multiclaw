@@ -14,10 +14,10 @@ Deliverables (write code to the working directory, and record results in impleme
 Principles: Write code directly without asking for confirmation. Do not change the API contract — escalate contract issues upstream. Do not refactor unrelated code. Run commands and report evidence.`
 
 const TASK = `## Task Scope
-{{file:task-plan.json}}
+{{agentScope}}
 
-Find the entry where id == "frontend-developer" and treat its scope as the primary guide for your work.
-If task-plan.json is not found, determine your scope from the UI design specification and architecture design below.
+## Plan
+{{agentPlan}}
 
 ---
 

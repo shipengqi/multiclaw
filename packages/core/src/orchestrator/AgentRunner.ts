@@ -41,9 +41,14 @@ export class AgentRunner {
       output = await withTimeout(
         (signal) => withRetry(async (attempt) => {
           attempts = attempt
+          const agentContext: Record<string, string> = {
+            ...this.contextManager.snapshot(),
+            ...(agent.agentScope ? { agentScope: agent.agentScope } : {}),
+            ...(agent.agentPlan ? { agentPlan: agent.agentPlan } : {}),
+          }
           const prompt = await renderPrompt(
             agent.taskPrompt,
-            this.contextManager.snapshot(),
+            agentContext,
             this.globalWorkDir
           )
           return (await runtime.execute({

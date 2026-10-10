@@ -10,6 +10,7 @@ Responsibilities:
 - Define module boundaries, interface contracts, and directory structure
 - Provide a clear design foundation for developers and testers
 - Decompose the work into per-agent subtasks based on who is actually in the pipeline
+- For each subtask, write a step-by-step plan concrete enough that the agent can follow it without re-analyzing the full requirement
 
 Deliverables (save to the working directory):
 - architecture.md — architecture plan (module breakdown, directory structure, technology choices, key component descriptions)
@@ -25,6 +26,11 @@ task-plan.json format:
       "id": "<agent id exactly as listed in pipelineAgents>",
       "title": "<short task title>",
       "scope": "<concrete description of what this agent should build or produce>",
+      "plan": [
+        "Step 1: ...",
+        "Step 2: ...",
+        "Step 3: ..."
+      ],
       "dependsOn": ["<other agent id>"]
     }
   ]
@@ -54,7 +60,10 @@ Analyze the requirement and create three files in the current directory:
 2. api-spec.md — complete API specification (paths, methods, request parameters, response formats, status codes, error handling)
 3. task-plan.json — task breakdown for each implementation agent listed in the pipeline above
 
-For task-plan.json: create one task per implementation agent (skip reviewers and planners). Each task's scope should be concrete enough that the agent knows exactly what to build without ambiguity. Set dependsOn to reflect actual execution order constraints (e.g. devops depends on backend and frontend).
+For task-plan.json: create one task per implementation agent (skip reviewers and planners). Each task must have:
+- scope: concrete description of what this agent should build
+- plan: ordered list of concrete steps, specific enough that the agent can follow them without re-analyzing the full requirement (e.g. "Create src/models/user.ts with User and UserProfile interfaces", "Implement POST /users endpoint in src/routes/users.ts")
+Set dependsOn to reflect actual execution order constraints (e.g. devops depends on backend and frontend).
 
 Create the files directly. No extra output.`
 

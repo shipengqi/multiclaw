@@ -12,6 +12,8 @@ export interface AgentDefinition {
   systemPrompt: string
   taskPrompt: string
   taskTitle?: string
+  agentScope?: string
+  agentPlan?: string
   tools?: ToolName[]
   dependsOn?: string[]
   timeout?: number
@@ -38,6 +40,7 @@ export interface SubTask {
   id: string       // matches AgentDefinition.id
   title: string
   scope: string
+  plan?: string[]
   dependsOn?: string[]
 }
 

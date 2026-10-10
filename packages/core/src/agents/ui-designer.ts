@@ -18,10 +18,10 @@ Deliverables (save to the working directory):
 Principles: Be specific enough that a developer can implement without guessing. Every component gets a name, purpose, props/variants, and states. Flag anything that depends on backend data.`
 
 const TASK = `## Task Scope
-{{file:task-plan.json}}
+{{agentScope}}
 
-Find the entry where id == "ui-designer" and treat its scope as the primary guide for your work.
-If task-plan.json is not found, determine your scope from the architecture design and API specification below.
+## Plan
+{{agentPlan}}
 
 ---
 

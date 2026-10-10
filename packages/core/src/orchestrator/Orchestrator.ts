@@ -171,6 +171,10 @@ export class Orchestrator {
         if (task) {
           agent.taskTitle = task.title
           agent.dependsOn = task.dependsOn
+          agent.agentScope = task.scope
+          if (task.plan?.length) {
+            agent.agentPlan = task.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")
+          }
         }
       }
     } catch {

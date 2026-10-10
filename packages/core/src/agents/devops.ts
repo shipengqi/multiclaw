@@ -22,10 +22,10 @@ Deliverables (save to the working directory):
 Principles: Follow security best practices (non-root user, minimal base image, no secrets in image). Make CI fail fast. Document every non-obvious decision in devops-notes.md.`
 
 const TASK = `## Task Scope
-{{file:task-plan.json}}
+{{agentScope}}
 
-Find the entry where id == "devops" and treat its scope as the primary guide for your work.
-If task-plan.json is not found, determine your scope from the architecture design below.
+## Plan
+{{agentPlan}}
 
 ---
 
