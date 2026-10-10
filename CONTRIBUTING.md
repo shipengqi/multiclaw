@@ -83,7 +83,8 @@ A change is ready to merge when **all** of the following hold:
       weakening the threshold silently. A test-runner **major** upgrade can change what the coverage
       provider counts — re-measure, state the new numbers in the PR, and adjust the baseline; that is
       a re-baseline, not a lowering.
-- [ ] User-facing changes to a published package come with a changeset (see below).
+- [ ] The pull request title follows Conventional Commits and describes the change — it becomes
+      the release note (see "Commits").
 - [ ] `pnpm lint` is clean — no new warnings.
 - [ ] Public API changes are reflected in the relevant `README`.
 
@@ -107,33 +108,28 @@ fix(cli): handle a missing config path explicitly
 chore(deps): bump vitest to 3.2.7
 ```
 
-## Changesets
-
-The three published packages are versioned in lockstep (a `fixed` group in `.changeset/config.json`).
-
-Any PR that changes the runtime behaviour or public API of `@multiclawcli/core`,
-`@multiclawcli/dashboard` or `multiclaw` must include a changeset:
-
-```bash
-pnpm changeset
-```
-
-Pick the affected packages and the bump type, then commit the generated `.changeset/*.md` file with
-your change. Internal-only changes (tests, CI, docs) do not need one — but a missing changeset on a
-published package **silently skips a release**, so when in doubt add one.
-
 ## Release process (maintainers)
 
-Releases are **manual**. Merging a PR never publishes anything.
+Releases are **manual and take two steps**, and they do **not** use changesets — there is no
+`.changeset` directory and no `CHANGELOG.md`. Merging an ordinary PR never publishes anything.
 
-Open **Actions → Release → Run workflow** on `main`. The workflow then applies the pending changesets
-(version bumps + CHANGELOGs), commits the bump to `main`, publishes to npm and pushes the release
-tags. Tick **Dry run** to preview the resulting diff without committing or publishing.
+1. Run **Actions → Bump Version → Run workflow** on `main` and pick a bump type (`patch`, `minor` or
+   `major`). It opens a `chore: release vX.Y.Z` pull request that moves all three published packages
+   together.
+2. **Merge that pull request.** The merge starts the `Release` workflow, which builds the packages,
+   publishes them to npm, pushes the `vX.Y.Z` tag and creates the GitHub Release — with notes
+   generated from the titles of the pull requests merged since the previous release.
 
-Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` secret. The
+`main` is protected by a ruleset that requires a pull request, so neither workflow pushes to `main`
+directly and no bypass is needed: the bump lands through the release PR, while the `release/v*`
+branch and the `v*` tag are outside the ruleset's scope. One thing to know: the release PR shows
+**no CI checks**, because GitHub does not start workflow runs for events caused by `GITHUB_TOKEN` —
+the token that opens it.
+
+Publishing uses **npm trusted publishing (OIDC)** — there is no `NPM_TOKEN` secret. The `Release`
 workflow requests `id-token: write`, and each package has a trusted publisher configured on
-npmjs.com with the workflow filename `release.yml`. If you rename that file, update the
-trusted publisher to match or publishing will start failing.
+npmjs.com with the workflow filename `release.yml`. If you rename that file, update the trusted
+publisher to match or publishing will start failing.
 
 See [`RELEASING.md`](./RELEASING.md) (English) or [`RELEASING.zh-CN.md`](./RELEASING.zh-CN.md) (中文)
 for the full process, versioning rules and troubleshooting.

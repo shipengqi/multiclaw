@@ -10,79 +10,26 @@
 | `multiclaw` | The CLI |
 | `@multiclawcli/dashboard` | Live web dashboard |
 
-All three are versioned **in lockstep** — they always share the same version. This is
-enforced by a `fixed` group in `.changeset/config.json`.
+All three are versioned **in lockstep** — they always share the same version, and the
+`Bump Version` workflow moves them together.
 
-Releases are driven by [Changesets](https://github.com/changesets/changesets) and are
-**started by hand**. Nothing is published automatically when a pull request is merged.
+Releasing is **manual and takes two steps**: a maintainer runs `Bump Version`, which opens a
+release pull request; merging that pull request runs `Release`, which publishes. Merging an
+ordinary pull request never publishes anything.
 
 ---
 
 ## Part 1 — If you are opening a pull request
 
-### You must add a changeset when
+There is nothing release-specific to do. There are no changeset files to write.
 
-your change affects the **runtime behaviour or public API** of any published package
-(`@multiclawcli/core`, `multiclaw`, `@multiclawcli/dashboard`).
+Keep the **pull request title** in [Conventional Commits](https://www.conventionalcommits.org/)
+style (`feat:`, `fix:`, `chore:` …). GitHub builds the release notes for each release from the
+titles of the pull requests merged since the previous one, so the title is what users end up
+reading.
 
-### You do not need one when
-
-the change only touches:
-
-- tests (`*.test.ts`)
-- CI, workflows or tooling configuration
-- documentation
-- the private `examples/dev-team` package
-
-> When in doubt, add one. An extra changeset is cheap; a missing one silently skips a
-> release.
-
-### How to add one
-
-```bash
-pnpm changeset
-```
-
-The CLI asks three things:
-
-1. **Which packages changed** — space to select, enter to confirm.
-2. **The bump type** — `major`, `minor` or `patch`.
-3. **A summary** — one or two sentences describing the change from a user's point of
-   view. This text becomes the CHANGELOG entry, so write it for users, not for reviewers.
-
-It writes a file named `.changeset/<random-name>.md`. **Commit that file together with
-your code.**
-
-A changeset looks like this:
-
-```markdown
----
-"@multiclawcli/core": minor
-"multiclaw": patch
----
-
-Emit an `orchestration:warning` event when `task-plan.json` cannot be parsed.
-```
-
-### Choosing the bump type
-
-While the packages are on `0.x`:
-
-| Type | Use for |
-| --- | --- |
-| `patch` | Bug fixes and internal refactors with no API change |
-| `minor` | New features, behaviour changes, anything a user would notice |
-| `major` | Breaking changes (reserved until the API stabilises) |
-
-Because the three packages form a `fixed` group, the **highest** bump among them wins and
-is applied to all three. A `patch` on `multiclaw` plus a `minor` on `@multiclawcli/core`
-releases **all three** as a `minor`.
-
-### What happens if you forget
-
-Nothing. Your pull request merges, CI stays green, and no release is produced — the
-version simply never moves. This is the one failure mode the process cannot catch on its
-own, so reviewers should look for a changeset whenever a published package is touched.
+Whether a change ships is decided when a maintainer cuts the next release, not when your pull
+request merges — a merged change simply waits for the next version bump.
 
 ---
 
@@ -120,94 +67,113 @@ on npmjs.com:
 > runs, and the publish fails with an authentication error even though trusted publishing is
 > configured correctly.
 
-> **Branch protection:** the workflow pushes the `chore: release` commit straight to `main`. If
-> `main` is protected by required pull requests or required status checks, allow the GitHub Actions
-> app to bypass those rules — otherwise the push is rejected and the release stops there.
+### Branch protection
+
+`main` is protected by a ruleset that requires changes to go through a pull request. Both
+workflows are built around that, so **no bypass configuration is needed**:
+
+| What the workflows push | Covered by the ruleset? |
+| --- | --- |
+| the `release/v<version>` branch | no — the ruleset only targets `refs/heads/main` |
+| the `v<version>` tag | no — the ruleset only targets branches |
+| the version bump itself | it reaches `main` by **merging the release pull request**, which is exactly what the ruleset asks for |
+
+Two consequences worth knowing:
+
+- **The release pull request shows no CI checks.** GitHub does not start workflow runs for events
+  caused by `GITHUB_TOKEN`, and that token is what opens the pull request — so `ci.yml` never runs
+  on it. That is harmless today, because the ruleset requires a pull request but **no** status
+  checks. If you ever add required status checks, the release pull request becomes unmergeable:
+  either keep a bypass actor on the ruleset, or open the pull request with a token that is not
+  `GITHUB_TOKEN` (a GitHub App installation token or a fine-grained PAT) so that CI does run.
+- The release pull request contains **only** version numbers. The code it ships was already
+  reviewed and tested in the pull requests that introduced it.
 
 ### Cutting the release
 
-1. Open **Actions → Release → Run workflow**.
-2. Keep the branch set to `main`.
-3. Leave **Dry run** unchecked.
-4. Press **Run workflow**.
+1. Open **Actions → Bump Version → Run workflow**.
+2. Keep the branch set to `main` and pick the **bump type** (`patch`, `minor` or `major`).
+3. Press **Run workflow**. It opens a pull request titled `chore: release vX.Y.Z`.
+4. Review the pull request (the three version numbers) and **merge it**.
+5. Merging starts **Actions → Release**, which publishes to npm, pushes the `vX.Y.Z` tag and
+   creates the GitHub Release.
 
-That is the entire release. There is no pull request to merge and no version number to
-type.
+There is no version number to type — the bump type chooses it.
 
-### Previewing first (optional)
+### Choosing the bump type
 
-Tick **Dry run** to build and apply the version bumps **without** committing, pushing or
-publishing. The run prints the resulting diff, so you can confirm the version numbers and
-the CHANGELOG wording before doing it for real.
+While the packages are on `0.x`:
 
-### What the workflow does
+| Type | Use for | Example |
+| --- | --- | --- |
+| `patch` | Bug fixes and internal refactors with no API change | `0.3.2` → `0.3.3` |
+| `minor` | New features, behaviour changes, anything a user would notice | `0.3.2` → `0.4.0` |
+| `major` | Breaking changes (reserved until the API stabilises) | `0.3.2` → `1.0.0` |
 
-1. **Checks out `main`** with **full history** (`fetch-depth: 0`). This exists purely for
-   CHANGELOG attribution: to render an entry like `- abc1234: Fix the thing`, changesets runs
-   `git log --diff-filter=AC --follow --max-count=1 .changeset/<id>.md` to find the commit that
-   added each changeset file. On a shallow clone the boundary commit has no visible parent, so
-   changesets falls back to deepening the clone (`git fetch --deepen=50`) in a loop — slower,
-   and it can fail outright.
-2. **Refuses to continue when there are no pending changesets** — a release with nothing
-   to release is a mistake, not a no-op.
-3. **Builds every package** (`pnpm -r build`).
-4. **Applies version bumps and CHANGELOG entries** (`pnpm version-packages`, which runs
-   `changeset version`). The consumed `.changeset/*.md` files are deleted at this point;
-   their text lives on in the per-package `CHANGELOG.md`.
-5. **Commits and pushes** the bump to `main` as `chore: release`.
-6. **Publishes** the bumped packages to npm (`pnpm release`, which runs
-   `changeset publish`).
-7. **Pushes the release tags** — `changeset publish` creates tags such as
-   `@multiclawcli/core@0.4.0` locally but does not push them itself.
+All three packages share one version, so a single bump type applies to all of them. The
+workflow refuses to run when they are not already in sync.
 
-> **Why not just derive the release from git history?** Steps 1 and 2 are unrelated.
-> `fetch-depth: 0` only lets the CHANGELOG *label* an entry with the commit that introduced
-> it. Deciding *what ships and how far the version moves* is what the changeset files do, and
-> history cannot answer that: a commit does not say whether it is a `patch`, `minor` or
-> `major`; it carries no user-facing prose; it does not know which commits are release-worthy
-> at all (docs, CI and test commits should bump nothing); and when several PRs pile up,
-> history has no idea where one release ends and the next begins. That call is made by a human
-> in the pull request, and the changeset file is how it is recorded.
->
-> So the workflow can never detect a *missing* changeset from history — the only thing it can
-> see is that there is **nothing pending at all**, which is why it refuses to run.
+### What the workflows do
+
+**`Bump Version` — `workflow_dispatch` (you pressed the button):**
+
+1. **Checks out `main`.**
+2. **Rewrites the `version` field** of `packages/core`, `packages/cli` and
+   `packages/dashboard` to the next version. Nothing else changes — no lockfile, no build.
+   There is deliberately no build here: the packages are built in `Release`, on the commit
+   that actually lands on `main`, rather than on a runner that gets thrown away.
+3. **Pushes the `release/v<version>` branch** and **opens the release pull request**. Re-running
+   for the same version is safe: the branch is refreshed with `--force` and an already-open pull
+   request simply picks up the new commit.
+
+**`Release` — `pull_request: closed`, when that pull request is merged:**
+
+4. **Builds every package** (`pnpm -r build`) on the merged commit.
+5. **Publishes** the three packages to npm.
+6. **Tags the release** — `v<version>`, read from `packages/core/package.json`. The three
+   packages are locked in step, so one number describes the whole release.
+7. **Creates the GitHub Release** for that tag (`gh release create --generate-notes`), with
+   notes generated by GitHub from the pull requests merged since the previous release.
+
+> **Why the publish step lives in `release.yml`.** npm trusted publishing matches the **workflow
+> filename** — `release.yml`. Splitting publishing into its own `publish.yml` would silently
+> break publishing until all three packages are reconfigured on npmjs.com, so the two steps are
+> separate workflows but the publishing one keeps its name.
+
+> **Why only one `v<version>` tag.** This repository has always published a single `v<version>`
+> tag and one GitHub Release per release, and the three packages share one version anyway, so a
+> per-package tag would only add noise.
 
 ### Verifying
 
-- The workflow run is green.
-- A `chore: release` commit is on `main`.
+- The `Bump Version` run is green and a `chore: release vX.Y.Z` pull request is open.
+- After merging it, the `Release` run is green.
+- A `chore: release vX.Y.Z` commit is on `main`.
 - `npm view @multiclawcli/core version` returns the new version.
-- Tags like `@multiclawcli/core@0.4.0` exist on the remote.
+- The tag `vX.Y.Z` exists on the remote and `gh release view vX.Y.Z` shows the GitHub Release.
 
 ### If it fails
 
-Every step is idempotent, so **simply run the workflow again**:
+Every step is idempotent, so **run it again** — but which "it" depends on where it stopped:
 
-- Failed before the commit → nothing changed on `main`; a re-run starts clean.
-- Failed during publish → some packages may already be published. `changeset publish`
-  skips versions that already exist on the registry, so a re-run finishes the rest.
-- Failed pushing tags → re-run; tags that already exist are skipped.
+- **`Bump Version` failed before the branch was pushed** → nothing changed anywhere; re-run the
+  workflow from the Actions tab.
+- **`Bump Version` failed after pushing the branch** → re-run the workflow; it refreshes the
+  branch and reuses the existing pull request.
+- **`Release` failed** → open that run in the Actions tab and use **Re-run failed jobs**. The
+  original `pull_request` payload is preserved, so the job's `if` conditions still match, and
+  `pnpm publish` skips versions that are already on the registry — so a re-run finishes whatever
+  is left. Tags and releases that already exist are skipped too.
 
 ---
 
 ## Versioning rules
 
-`.changeset/config.json`:
-
-```json
-{
-  "fixed": [["@multiclawcli/core", "@multiclawcli/dashboard", "multiclaw"]],
-  "access": "public",
-  "baseBranch": "main",
-  "updateInternalDependencies": "patch"
-}
-```
-
-- `fixed` keeps the three published packages on one shared version.
-- `updateInternalDependencies: "patch"` bumps internal dependency ranges when a
-  dependency moves.
-
-`dev-team-example` is private and is never published.
+- The three published packages are versioned **in lockstep**: they always share one version. The
+  `Bump Version` workflow enforces this — it aborts when the manifests disagree, and bumps all
+  three at once.
+- `examples/dev-team` is private and is never published. The `Release` workflow publishes
+  `packages/*` only.
 
 ---
 
@@ -215,20 +181,21 @@ Every step is idempotent, so **simply run the workflow again**:
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Workflow fails with "No pending changesets" | Every changeset was already consumed | Add one with `pnpm changeset`, merge it, then release |
+| `Bump Version` fails with "Packages are out of sync" | The three `package.json` files do not share a version | Align them in a pull request, then run the bump again |
 | `EOTP`, `401 Unauthorized` or `404 Not Found` while publishing | The registry did not accept the OIDC identity | Check the trusted publisher on npmjs.com: owner, repository and **workflow filename `release.yml`** must match exactly, and the job must keep `id-token: write`. Also confirm no `NPM_TOKEN` / `~/.npmrc` is present |
-| `EPUBLISHCONFLICT` | That version is already on npm | Re-run; already-published versions are skipped |
-| The version did not change after merging a PR | The pull request had no changeset | Expected behaviour — see "What happens if you forget" |
+| `EPUBLISHCONFLICT` | That version is already on npm | Re-run; `pnpm -r publish` skips versions that are already published |
+| The release pull request shows no CI checks | Expected — a pull request opened with `GITHUB_TOKEN` does not start workflow runs | Nothing to fix while the ruleset requires no status checks. If you need CI on it, open the pull request with a GitHub App installation token or a fine-grained PAT |
+| `Release` did not run after merging | The merged pull request's head branch did not start with `release/v` | Merge a branch named `release/vX.Y.Z`; run `Bump Version` again to get a fresh pull request |
 
 ---
 
 ## Notes
 
-- The workflow does **not** create a GitHub Release. `changeset publish` creates and pushes
-  git tags only. To add GitHub Releases, append a `gh release create` step after
-  "Push release tags".
-- `changeset publish` is a no-op when there is nothing new to publish, but the workflow's
-  early check means you should never reach that state by accident.
+- A GitHub Release is created for every release, for the `v<version>` tag, with notes generated
+  by GitHub from the merged pull requests. Keep pull request titles descriptive — they become
+  the release notes.
+- There is **no `CHANGELOG.md`** and there are no changeset files. The per-release notes live in
+  the GitHub Release.
 
 ---
 
@@ -236,8 +203,6 @@ Every step is idempotent, so **simply run the workflow again**:
 
 | Command | What it does |
 | --- | --- |
-| `pnpm changeset` | Create a changeset |
-| `pnpm version-packages` | `changeset version` — apply changesets to versions and CHANGELOGs |
-| `pnpm release` | `changeset publish` — publish unpublished versions to npm |
-| `.github/workflows/release.yml` | The release workflow (manual) |
+| `.github/workflows/bump-version.yml` | Step 1 — opens the release pull request (manual) |
+| `.github/workflows/release.yml` | Step 2 — publishes on merge of the release pull request |
 | `.github/workflows/ci.yml` | The quality gate that runs on every pull request |

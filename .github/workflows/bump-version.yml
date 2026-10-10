@@ -1,0 +1,132 @@
+name: Bump Version
+
+# Step 1 of the release flow. Pick a bump type and this opens a pull request
+# that moves all three published packages to the next version. Merging that
+# pull request fires the Release workflow, which publishes.
+#
+# Nothing here pushes to `main`. `main` is protected by a ruleset that requires
+# a pull request, and this workflow pushes only the `release/v*` branch — which
+# the ruleset does not cover — so no bypass configuration is needed.
+#
+# Full process: RELEASING.md (English) / RELEASING.zh-CN.md (中文).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options: [patch, minor, major]
+
+# Two concurrent bumps would read the same starting version and push branches
+# that disagree, so let them queue instead of racing.
+concurrency:
+  group: bump-version
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the release/v<version> branch
+      pull-requests: write # open the release pull request
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      # Installs pnpm, the Node version declared in `devEngines` (package.json),
+      # and the workspace dependencies.
+      - uses: pnpm/setup@v3
+
+      # Only the version fields change here, and there is deliberately no build:
+      # the packages are built in the Release workflow, on the commit that
+      # actually lands on `main`.
+      - name: Bump every package to the same version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const dirs = ["packages/core", "packages/cli", "packages/dashboard"];
+          const manifest = (dir) => path.join(dir, "package.json");
+          const versionOf = (dir) => JSON.parse(fs.readFileSync(manifest(dir), "utf8")).version;
+
+          const current = dirs.map(versionOf);
+          if (new Set(current).size !== 1) {
+            console.log(
+              `::error::Packages are out of sync: ${dirs.map((d, i) => `${d}=${current[i]}`).join(", ")}`,
+            );
+            process.exit(1);
+          }
+
+          const [major, minor, patch] = current[0].split(".").map(Number);
+          const bump = process.env.BUMP;
+          const next =
+            bump === "major" ? `${major + 1}.0.0` :
+            bump === "minor" ? `${major}.${minor + 1}.0` :
+            bump === "patch" ? `${major}.${minor}.${patch + 1}` : null;
+
+          if (next === null) {
+            console.log(`::error::Unknown bump type: ${bump}`);
+            process.exit(1);
+          }
+
+          for (const dir of dirs) {
+            const file = manifest(dir);
+            const source = fs.readFileSync(file, "utf8");
+            // Rewrite only the top-level "version" key, so the rest of the
+            // manifest keeps its existing formatting.
+            const updated = source.replace(/("version"\s*:\s*")[^"]+(")/, `$1${next}$2`);
+            if (updated === source) {
+              console.log(`::error::Could not rewrite the version in ${file}`);
+              process.exit(1);
+            }
+            fs.writeFileSync(file, updated);
+          }
+
+          console.log(`Bumping ${current[0]} -> ${next}`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `VERSION=${next}\n`);
+          NODE
+
+      - name: Push the release branch and open the pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="release/v${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$branch"
+          git add packages/core/package.json packages/cli/package.json packages/dashboard/package.json
+          git commit -m "chore: release v${VERSION}"
+
+          # Forced on purpose: re-running the workflow for the same version
+          # refreshes the branch instead of failing. This scratch branch is not
+          # covered by the ruleset, which targets refs/heads/main.
+          git push --force origin "HEAD:refs/heads/$branch"
+
+          if gh pr view "$branch" --json number >/dev/null 2>&1; then
+            echo "A release pull request for $branch is already open — it now carries the new commit."
+            exit 0
+          fi
+
+          body=$(printf '%s\n' \
+            "Bumps \`@multiclawcli/core\`, \`multiclaw\` and \`@multiclawcli/dashboard\` to **v${VERSION}**." \
+            "" \
+            "Merging this pull request triggers \`.github/workflows/release.yml\`, which builds the packages," \
+            "publishes them to npm, pushes the \`v${VERSION}\` tag and creates the GitHub Release." \
+            "" \
+            "Only the version fields change here — the code itself was reviewed in the pull requests that" \
+            "introduced it.")
+
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore: release v${VERSION}" \
+            --body "$body"

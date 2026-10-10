@@ -6,9 +6,6 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "test:coverage": "pnpm -r test:coverage",
-    "changeset": "changeset",
-    "version-packages": "changeset version",
-    "release": "changeset publish",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
@@ -18,7 +15,6 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
-    "@changesets/cli": "^3.0.3",
     "@types/node": "^26.6.4",
     "@vitest/coverage-v8": "^4.1.11",
     "husky": "^9.1.7",

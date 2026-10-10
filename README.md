@@ -323,5 +323,5 @@ pnpm dev
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development workflow and quality gates.
 
-See [`RELEASING.md`](RELEASING.md) for how the packages are versioned and released — including **when a
-pull request must include a changeset**.
+See [`RELEASING.md`](RELEASING.md) for how the packages are versioned and released — including how
+release notes are generated from pull request titles.

@@ -10,8 +10,13 @@
   - `pnpm typecheck` = `pnpm -r typecheck`
   - `pnpm test` = `pnpm -r test`(跑全部 3 个包)
   - `pnpm test:coverage` = `pnpm -r test:coverage`(跑测试并强制覆盖率门槛,CI 用这个)
-- 发布:**手动触发**。changesets 驱动,但 `.github/workflows/release.yml` 只由 `workflow_dispatch` 触发——合并 PR 不会发布任何东西。维护者在 Actions 手动跑一次即完成 version → commit → publish → push tags。三包锁步(fixed 组)。
-  - 文档:`RELEASING.md`(英)/ `RELEASING.zh-CN.md`(中)。改动发布流程时同步更新这两份。
+- 发布:**手动两步,不用 changesets**(仓库里没有 `.changeset/`,也没有 CHANGELOG.md)。
+  - ① `.github/workflows/bump-version.yml`(`workflow_dispatch` + `bump` choice patch/minor/major)→ 一起改写三个包的 `version` → 推 `release/v<version>` 分支 → 开 PR `chore: release vX.Y.Z`。
+  - ② `.github/workflows/release.yml`(`pull_request: closed`,job `if` = merged && 同仓 && head.ref 以 `release/v` 开头)→ `pnpm -r build` → `pnpm -r --filter "./packages/*" publish --no-git-checks --access public` → 推 `v<version>` tag → `gh release create --generate-notes`。
+  - 鉴权:npm trusted publishing(OIDC),仓库内**没有任何 secret**(`gh secret list` 为空)。trusted publisher 匹配 **workflow 文件名 `release.yml`** → 发布步骤不能改名或拆到别的文件;job 需 `id-token: write`。**pnpm 原生支持 OIDC**(不必用 `npm publish`)。
+  - 两个 workflow 都**不推 `main`**(只推 `release/v*` 分支与 `v*` tag)→ 与 main 的规则集天然兼容,**不需要任何 bypass**。
+  - 已知代价:用 `GITHUB_TOKEN` 开的发布 PR **不会触发任何 workflow**(所以没有 CI 检查);若以后加 required status checks,发布 PR 会无法合并。
+  - 文档:`RELEASING.md`(英)/ `RELEASING.zh-CN.md`(中);改发布流程时同步更新这两份 + `CONTRIBUTING.md` 的 Release process 段 + README 里的入口。
 
 ## 工具链版本(互相约束,不能单独升)
 - **Vite 8 + `@vitejs/plugin-react` 6 + vitest 4** 是一组,必须同时升:
