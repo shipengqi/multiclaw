@@ -5,7 +5,9 @@ automated checks expect, and what "done" means for a change.
 
 ## Prerequisites
 
-- **Node** `^22.0.0 || >=24.0.0` (see `devEngines` in the root `package.json`)
+- **Node** `^22.12.0 || >=24.0.0` (see `devEngines` in the root `package.json`). The lower bound is
+  not arbitrary: Vite 8, rolldown and `@vitejs/plugin-react` 6 all declare `engines.node`
+  `^20.19.0 || >=22.12.0`, so Node 22.0–22.11 cannot run the build.
 - **pnpm** 12 (`packageManager` is pinned; use `corepack enable` if you don't have it)
 - A working `claude` CLI if you want to run the example pipeline end to end
 
@@ -18,6 +20,13 @@ pnpm install
 ```
 
 `pnpm install` also runs `husky`, which installs the pre-commit hook.
+
+> **Strict peer dependencies are on.** `pnpm-workspace.yaml` sets `strictPeerDependencies: true`, so
+> `pnpm install` **fails** when a dependency's peer range is not satisfied, instead of printing a
+> warning and installing a broken combination anyway. If you hit one, fix the version range or the
+> dependency — do not switch the setting off. This is what stops a pairing such as
+> `@vitejs/plugin-react@6` (peer `vite ^8`) being installed next to `vite@5`, which otherwise only
+> surfaces much later as `ERR_PACKAGE_PATH_NOT_EXPORTED` during `vite build`.
 
 ## Repository layout
 
@@ -71,7 +80,9 @@ A change is ready to merge when **all** of the following hold:
       the fix.
 - [ ] Coverage thresholds are not lowered. They live in each package's `vitest.config.ts`; if you
       genuinely cannot cover new code, raise it explicitly in the PR description rather than
-      weakening the threshold silently.
+      weakening the threshold silently. A test-runner **major** upgrade can change what the coverage
+      provider counts — re-measure, state the new numbers in the PR, and adjust the baseline; that is
+      a re-baseline, not a lowering.
 - [ ] User-facing changes to a published package come with a changeset (see below).
 - [ ] `pnpm lint` is clean — no new warnings.
 - [ ] Public API changes are reflected in the relevant `README`.

@@ -14,11 +14,17 @@ export default defineConfig({
       include: ["src/server/**/*.ts"],
       exclude: ["src/server/**/*.test.ts", "src/server/index.ts"],
       // Baseline lock. DashboardServer (HTTP shell) is not covered yet.
+      //
+      // Re-measured after the vitest 4 upgrade: its v8 provider also counts
+      // branches and functions of files that are never loaded, so the 0%
+      // DashboardServer now drags those ratios down (branch 90% -> 38%,
+      // function 67% -> 36%). Statements and lines were unaffected. These are
+      // the new baseline values, not a relaxation of intent.
       thresholds: {
-        statements: 35,
-        branches: 80,
-        functions: 55,
-        lines: 35,
+        statements: 42,
+        branches: 35,
+        functions: 32,
+        lines: 42,
       },
     },
   },

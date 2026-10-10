@@ -5,3 +5,10 @@ packages:
 allowBuilds:
   esbuild: true
   node: true
+
+# Fail the install when a dependency's peer range is not satisfied. pnpm only
+# warns by default, so an incompatible pair such as @vitejs/plugin-react@6
+# (peer: vite ^8.0.0) sitting next to vite@5 installs "successfully" and then
+# explodes much later as a confusing ERR_PACKAGE_PATH_NOT_EXPORTED in
+# `vite build`. Better to fail here, with the range printed.
+strictPeerDependencies: true
