@@ -1,4 +1,5 @@
 import type { AgentDefinition } from "./agent"
+import type { LeaderMessage } from "./leader"
 
 export interface MultiClawConfig {
   name: string
@@ -10,10 +11,6 @@ export interface MultiClawConfig {
   continueOnError?: boolean
   maxConcurrency?: number
   useLeader?: boolean
-  dashboard?: {
-    port?: number
-    autoOpen?: boolean
-  }
 }
 
 export interface OrchestratorResult {
@@ -23,4 +20,11 @@ export interface OrchestratorResult {
   agentResults: import("./agent").AgentResult[]
   startTime: string
   endTime: string
+  /**
+   * Set when the turn ended in words instead of a pipeline — the leader answered
+   * or asked a question, so no agent ran. Without it, "the team worked and
+   * succeeded" and "nobody worked" look identical: both are `success: true` with
+   * an empty `agentResults`.
+   */
+  reply?: LeaderMessage
 }

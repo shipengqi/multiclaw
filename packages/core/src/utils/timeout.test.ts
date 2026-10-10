@@ -66,4 +66,43 @@ describe("withTimeout", () => {
     // The timer must be cleared, otherwise it would keep the process alive.
     expect(vi.getTimerCount()).toBe(0)
   })
+
+  it("rejects without starting work when the caller signal is already aborted", async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const factory = vi.fn(async () => "never")
+
+    const error = await withTimeout(factory, 1000, "Cancelled", controller.signal).then(
+      () => undefined,
+      (err: Error) => err
+    )
+
+    expect(error?.name).toBe("AbortError")
+    expect(factory).not.toHaveBeenCalled()
+  })
+
+  it("rejects and aborts the factory signal when the caller cancels mid-flight", async () => {
+    const controller = new AbortController()
+    let inner: AbortSignal | undefined
+
+    const promise = withTimeout(
+      (signal) => {
+        inner = signal
+        return new Promise<never>(() => {
+          /* never resolves */
+        })
+      },
+      10_000,
+      "Cancelled",
+      controller.signal
+    )
+
+    controller.abort()
+    const error = await promise.then(
+      () => undefined,
+      (err: Error) => err
+    )
+    expect(error?.name).toBe("AbortError")
+    expect(inner?.aborted).toBe(true)
+  })
 })

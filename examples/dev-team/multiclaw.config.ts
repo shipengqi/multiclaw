@@ -7,7 +7,6 @@ export default defineConfig({
     projectName: "Todo App",
     requirement: "Build a Todo API with CRUD operations",
   },
-  dashboard: { port: 3210, autoOpen: true },
   leader: agents.leader({ model: "haiku" }),
   agents: [
     agents.architect({ model: "haiku" }),

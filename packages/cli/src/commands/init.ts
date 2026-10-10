@@ -64,7 +64,6 @@ export default defineConfig({
   context: {
     projectName: "${opts.projectName}",
   },
-  dashboard: { port: 3210, autoOpen: true },
   agents: [
 ${AGENT_BLOCKS[opts.preset]}
   ],
@@ -117,7 +116,8 @@ export async function initCommand(): Promise<void> {
   console.log(`  preset:   ${preset}  (${PRESET_DESCRIPTIONS[preset]})`)
   console.log(`  workDir:  ${workDir}`)
   console.log("")
-  console.log(`> Run: multiclaw run "describe your requirement" --ui`)
+  console.log(`> Run: multiclaw            (interactive console)`)
+  console.log(`       multiclaw run "..."  (headless)`)
 
   checkRuntime()
 }

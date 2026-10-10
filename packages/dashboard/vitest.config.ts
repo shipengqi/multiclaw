@@ -2,29 +2,33 @@ import { defineConfig } from "vitest/config"
 
 export default defineConfig({
   test: {
-    include: ["src/server/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     environment: "node",
     clearMocks: true,
     restoreMocks: true,
+    // Ink styles its output through chalk, which disables colour when the
+    // stream is not a real TTY. The render tests assert on styled frames
+    // (e.g. the inverse-video caret), so colour has to stay on.
+    env: { FORCE_COLOR: "1" },
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary"],
-      // Client code (React/JSX) is not unit-tested yet; scope coverage to the
-      // server runtime that these tests exercise.
-      include: ["src/server/**/*.ts"],
-      exclude: ["src/server/**/*.test.ts", "src/server/index.ts"],
-      // Baseline lock. DashboardServer (HTTP shell) is not covered yet.
-      //
-      // Re-measured after the vitest 4 upgrade: its v8 provider also counts
-      // branches and functions of files that are never loaded, so the 0%
-      // DashboardServer now drags those ratios down (branch 90% -> 38%,
-      // function 67% -> 36%). Statements and lines were unaffected. These are
-      // the new baseline values, not a relaxation of intent.
+      // Coverage is scoped to the modules that carry decisions: the reducer, the
+      // formatters, the command palette and the layout arithmetic. The Ink
+      // components are render glue — they are exercised by the frame assertions
+      // in components.test.tsx and App.test.tsx, which check output rather than
+      // lines, so counting them here would measure the wrong thing.
+      include: [
+        "src/tui/state.ts",
+        "src/tui/format.ts",
+        "src/tui/commands.ts",
+        "src/tui/layout.ts",
+      ],
       thresholds: {
-        statements: 42,
-        branches: 35,
-        functions: 32,
-        lines: 42,
+        statements: 90,
+        branches: 85,
+        functions: 90,
+        lines: 90,
       },
     },
   },

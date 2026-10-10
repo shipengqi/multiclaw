@@ -34,6 +34,7 @@ export function productManager(overrides?: Overrides): AgentDefinition {
     id: "product-manager",
     name: "Product Manager",
     icon: "≡",
+    description: "writes the requirements",
     models: { claude: "sonnet" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,

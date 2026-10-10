@@ -36,6 +36,7 @@ export function archDesignReviewer(overrides?: Overrides): AgentDefinition {
     id: "arch-design-reviewer",
     name: "Arch Design Reviewer",
     icon: "△",
+    description: "reviews the design",
     models: { claude: "haiku" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,

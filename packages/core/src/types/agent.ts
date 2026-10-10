@@ -17,6 +17,15 @@ export interface AgentDefinition {
   models?: Partial<Record<string, string>>
   systemPrompt: string
   taskPrompt: string
+  /**
+   * One-line role, for display. Every built-in agent declares one.
+   *
+   * Distinct from {@link taskTitle}, which the orchestrator fills in per turn
+   * from the leader's task plan — "what this agent was asked to do *this* run".
+   * A `description` is "what this agent is for", so it is the one that is still
+   * available before the first turn has been planned.
+   */
+  description?: string
   taskTitle?: string
   agentScope?: string
   agentPlan?: string

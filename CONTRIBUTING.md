@@ -6,8 +6,8 @@ automated checks expect, and what "done" means for a change.
 ## Prerequisites
 
 - **Node** `^22.12.0 || >=24.0.0` (see `devEngines` in the root `package.json`). The lower bound is
-  not arbitrary: Vite 8, rolldown and `@vitejs/plugin-react` 6 all declare `engines.node`
-  `^20.19.0 || >=22.12.0`, so Node 22.0–22.11 cannot run the build.
+  not arbitrary: Vitest 4 pulls in Vite 8, whose `engines.node` is `^20.19.0 || >=22.12.0`, and Ink 8
+  requires `>=22`. So Node 22.0–22.11 cannot run the build or the console.
 - **pnpm** 12 (`packageManager` is pinned; use `corepack enable` if you don't have it)
 - A working `claude` CLI if you want to run the example pipeline end to end
 
@@ -25,8 +25,8 @@ pnpm install
 > `pnpm install` **fails** when a dependency's peer range is not satisfied, instead of printing a
 > warning and installing a broken combination anyway. If you hit one, fix the version range or the
 > dependency — do not switch the setting off. This is what stops a pairing such as
-> `@vitejs/plugin-react@6` (peer `vite ^8`) being installed next to `vite@5`, which otherwise only
-> surfaces much later as `ERR_PACKAGE_PATH_NOT_EXPORTED` during `vite build`.
+> `@vitest/coverage-v8@4` (peer `vitest` pinned to one exact version) being installed next to
+> `vitest@3`, which otherwise only surfaces much later as a coverage run that cannot start.
 
 ## Repository layout
 
@@ -34,10 +34,12 @@ pnpm install
 |------|---------|---------|
 | `packages/core` | `@multiclawcli/core` | Orchestration engine: event bus, stage builder, agent runner, runtimes |
 | `packages/cli` | `multiclaw` | The CLI: config loading, commands, reporters |
-| `packages/dashboard` | `@multiclawcli/dashboard` | Live web dashboard (React client + WebSocket server) |
+| `packages/dashboard` | `@multiclawcli/dashboard` | Interactive terminal console (Ink TUI + pure state reducer) |
 | `examples/dev-team` | `dev-team-example` (private) | Runnable example pipeline |
 
-`core` is the only package with no internal dependencies; `cli` and `dashboard` both depend on it.
+`core` is the only package with no internal dependencies; `dashboard` depends on `core`, and `cli`
+depends on both. The package name is historical — it previously shipped a React web dashboard, and
+is kept because npm trusted publishing matches the package name exactly.
 
 ## Everyday commands
 
@@ -55,8 +57,9 @@ Run these from the repository root:
 | `pnpm dev:example` | Run the `dev-team` example pipeline |
 
 > **Why `build` comes before `typecheck`:** `cli` and `dashboard` resolve cross-package types from
-> `packages/core/dist/*.d.ts`. On a clean checkout, type-checking without building `core` first fails
-> with `TS2307: Cannot find module '@multiclawcli/core'`. Do not reorder these steps in CI.
+> `packages/*/dist/*.d.ts` — `dashboard` from `core`, and `cli` from both. On a clean checkout,
+> type-checking without building `core` and `dashboard` first fails with
+> `TS2307: Cannot find module '@multiclawcli/core'`. Do not reorder these steps in CI.
 
 ## Quality gates
 

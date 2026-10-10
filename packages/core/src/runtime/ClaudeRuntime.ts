@@ -1,5 +1,6 @@
 import { execSync, spawn } from "node:child_process"
 import type { AgentOutput, AgentTask } from "../types/runtime"
+import { abortError } from "../utils/abort"
 import { RuntimeBase } from "./RuntimeBase"
 
 export class ClaudeRuntime extends RuntimeBase {
@@ -34,7 +35,12 @@ export class ClaudeRuntime extends RuntimeBase {
         errorOutput += d.toString()
       })
       child.on("close", (code) => {
-        if (task.signal?.aborted) return
+        // Settle on cancellation too — returning here without resolving or
+        // rejecting would leave the caller's promise pending forever.
+        if (task.signal?.aborted) {
+          reject(abortError())
+          return
+        }
         code === 0
           ? resolve({ output, exitCode: code })
           : reject(new Error(`claude exited with code ${code}: ${errorOutput}`))

@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "outDir": "dist", "rootDir": "src" },
-  "references": [{ "path": "../core" }, { "path": "../dashboard/tsconfig.server.json" }],
+  "references": [{ "path": "../core" }, { "path": "../dashboard" }],
   "include": ["src"]
 }

@@ -38,13 +38,10 @@
     "@multiclawcli/core": "workspace:*",
     "@multiclawcli/dashboard": "workspace:*",
     "commander": "^15.0.0",
-    "open": "^10.0.0",
-    "tsx": "^4.7.0",
-    "ws": "^8.16.0"
+    "tsx": "^4.7.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
-    "@types/ws": "^8.5.0",
     "typescript": "^5.4.0",
     "vitest": "^4.1.11"
   }

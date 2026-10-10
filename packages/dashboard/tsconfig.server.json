@@ -1,9 +1,0 @@
-{
-  "extends": "../../tsconfig.base.json",
-  "compilerOptions": {
-    "outDir": "dist/server",
-    "rootDir": "src/server",
-    "lib": ["ES2021"]
-  },
-  "include": ["src/server"]
-}

@@ -1,12 +1,9 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2021", "DOM"],
-    "jsx": "react-jsx",
-    "noEmit": true,
-    "paths": {
-      "@/*": ["./src/client/*"]
-    }
+    "outDir": "dist",
+    "rootDir": "src",
+    "jsx": "react-jsx"
   },
-  "include": ["src/client"]
+  "include": ["src"]
 }

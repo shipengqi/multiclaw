@@ -8,7 +8,7 @@
 | --- | --- |
 | `@multiclawcli/core` | Orchestration engine |
 | `multiclaw` | The CLI |
-| `@multiclawcli/dashboard` | Live web dashboard |
+| `@multiclawcli/dashboard` | Interactive terminal console (TUI) |
 
 All three are versioned **in lockstep** — they always share the same version, and the
 `Bump Version` workflow moves them together.

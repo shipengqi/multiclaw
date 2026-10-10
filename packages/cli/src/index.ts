@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 import { Command } from "commander"
 import { initCommand } from "./commands/init"
 import { runCommand } from "./commands/run"
-import { serveCommand } from "./commands/serve"
+import { tuiCommand } from "./commands/tui"
 import { upgradeCommand } from "./commands/upgrade"
 
 const __filename = fileURLToPath(import.meta.url)
@@ -18,6 +18,9 @@ program
   .name("multiclaw")
   .description("Multi-agent orchestration CLI")
   .version(pkg.version, "-v, --version", "Display version number")
+  .option("--config <path>", "Config file path (default: auto-discover ./multiclaw.config.ts)")
+  // No subcommand opens the interactive console.
+  .action((options: { config?: string }) => tuiCommand(options))
 
 program
   .command("init")
@@ -26,19 +29,10 @@ program
 
 program
   .command("run <requirement>")
-  .description("Run an orchestration")
+  .description("Run an orchestration headlessly")
   .option("--config <path>", "Config file path (default: auto-discover ./multiclaw.config.ts)")
-  .option("--ui", "Start Dashboard and open in browser")
-  .option("--port <port>", "Dashboard port (requires --ui)", (v) => parseInt(v, 10))
-  .option("--server-url <url>", "Connect to a running serve process")
   .option("--no-leader", "Skip the leader agent and use the default pipeline")
   .action((requirement, opts) => runCommand(requirement, opts))
-
-program
-  .command("serve")
-  .description("Start a persistent Dashboard server")
-  .option("--port <port>", "Port", (v) => parseInt(v, 10))
-  .action((opts) => serveCommand(opts))
 
 program
   .command("upgrade")

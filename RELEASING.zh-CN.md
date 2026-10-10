@@ -8,7 +8,7 @@
 | --- | --- |
 | `@multiclawcli/core` | 编排引擎 |
 | `multiclaw` | 命令行工具(CLI) |
-| `@multiclawcli/dashboard` | 实时 Web 面板 |
+| `@multiclawcli/dashboard` | 交互式终端控制台(TUI) |
 
 三个包**锁步发布**——版本号永远一致,由 `Bump Version` workflow 一起推动。
 

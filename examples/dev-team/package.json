@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx ../../packages/cli/src/index.ts run 'Build a Todo API' --config ./multiclaw.config.ts --ui"
+    "dev": "tsx ../../packages/cli/src/index.ts --config ./multiclaw.config.ts",
+    "run": "tsx ../../packages/cli/src/index.ts run 'Build a Todo API' --config ./multiclaw.config.ts"
   },
   "dependencies": {
     "multiclaw": "workspace:*"

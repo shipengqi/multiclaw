@@ -81,4 +81,36 @@ describe("withRetry", () => {
     await expect(promise).resolves.toBe("ok")
     expect(fn).toHaveBeenCalledTimes(2)
   })
+
+  it("fails fast without calling fn when the signal is already aborted", async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const fn = vi.fn()
+
+    const error = await withRetry(fn, 3, undefined, 0, controller.signal).then(
+      () => undefined,
+      (err: Error) => err
+    )
+
+    expect(error?.name).toBe("AbortError")
+    expect(fn).not.toHaveBeenCalled()
+  })
+
+  it("stops retrying once the signal aborts", async () => {
+    const controller = new AbortController()
+    const onRetry = vi.fn()
+    const fn = vi.fn(async () => {
+      controller.abort()
+      throw new Error("boom")
+    })
+
+    const error = await withRetry(fn, 3, onRetry, 0, controller.signal).then(
+      () => undefined,
+      (err: Error) => err
+    )
+
+    expect(error?.message).toBe("boom")
+    expect(fn).toHaveBeenCalledTimes(1)
+    expect(onRetry).not.toHaveBeenCalled()
+  })
 })

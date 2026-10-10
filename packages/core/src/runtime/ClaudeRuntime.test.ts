@@ -107,28 +107,23 @@ describe("ClaudeRuntime.execute", () => {
     await expect(p).rejects.toThrow("claude exited with code 1: boom")
   })
 
-  it("kills the child on abort and leaves the promise unsettled", async () => {
+  it("kills the child on abort and rejects instead of leaving the promise pending", async () => {
     const child = new FakeChild()
     spawnMock.mockReturnValue(child)
     const controller = new AbortController()
 
-    let settled = false
     const p = new ClaudeRuntime().execute(makeTask({ signal: controller.signal }))
-    p.then(
-      () => {
-        settled = true
-      },
-      () => {
-        settled = true
-      }
-    )
-
     controller.abort()
     expect(child.kill).toHaveBeenCalled()
 
     child.emit("close", 0)
-    await new Promise((r) => setTimeout(r, 10))
-    expect(settled).toBe(false)
+    // Abort must settle the promise. Leaving it pending would hang the
+    // orchestrator — and with it the TUI's cancel path — forever.
+    const error = await p.then(
+      () => undefined,
+      (err: Error) => err
+    )
+    expect(error?.name).toBe("AbortError")
   })
 
   it("rejects when the process fails to start", async () => {

@@ -44,6 +44,7 @@ export function tester(overrides?: Overrides): AgentDefinition {
     id: "tester",
     name: "Tester",
     icon: "⊙",
+    description: "verifies the behaviour",
     models: { claude: "sonnet" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,

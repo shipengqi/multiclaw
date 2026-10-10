@@ -29,11 +29,15 @@ npm install -g multiclaw
 # 1. Scaffold a config in the current directory
 multiclaw init
 
-# 2. Run an orchestration
-multiclaw run "Build a REST API for a todo list" --ui
+# 2. Open the interactive console
+multiclaw
+
+# ...or run a single orchestration headlessly
+multiclaw run "Build a REST API for a todo list"
 ```
 
-`--ui` opens a real-time Dashboard in the browser. Omit it to run headless.
+`multiclaw` with no subcommand opens a full-screen terminal console. Use `multiclaw run` for
+headless execution (CI, piped output).
 
 ## Commands
 
@@ -53,24 +57,11 @@ Runs the orchestration defined in your config file.
 | Option | Description |
 |--------|-------------|
 | `--config <path>` | Path to config file. Auto-discovers `multiclaw.config.ts` if omitted. |
-| `--ui` | Start the Dashboard server and open it in the browser. |
-| `--port <port>` | Dashboard port. Requires `--ui`. Default: `3210`. |
-| `--server-url <url>` | Stream events to a running `multiclaw serve` instance. |
 | `--no-leader` | Skip the leader agent and use the default pipeline directly. |
 
 The `<requirement>` string is injected into every agent's prompt as `{{requirement}}`.
 
-Each run creates an isolated timestamped subdirectory inside `workDir` (e.g. `workspace/run-2026-10-08T12-00-00`).
-
-### `multiclaw serve [options]`
-
-Start a persistent Dashboard server. Useful for CI or when you want a permanent URL to monitor runs.
-
-| Option | Description |
-|--------|-------------|
-| `--port <port>` | Port to listen on. Default: `3210`. |
-
-Connect a run to it with `multiclaw run "..." --server-url http://localhost:3210`.
+Each run creates an isolated timestamped subdirectory inside `workDir` (e.g. `workspace/.multiclaw/runs/run-2026-10-08T12-00-00`).
 
 ## Config file
 
@@ -96,16 +87,11 @@ export default defineConfig({
   continueOnError: false,   // optional; keep running if an agent fails
   maxConcurrency: 4,        // optional; max agents running at once
 
-  dashboard: {
-    port: 3210,
-    autoOpen: true,
-  },
-
   agents: [
     {
       id: "architect",        // unique identifier, used in dependsOn
       name: "Architect",      // display name
-      icon: "◆",              // optional; shown in terminal and dashboard
+      icon: "◆",              // optional; shown in the console
       runtime: "claude",      // optional; default: "claude"
       model: "opus",          // optional; override default model for this agent
       systemPrompt: "You are a software architect.", // optional
@@ -133,8 +119,8 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | ✓ | Project name, shown in the dashboard. |
-| `workDir` | string | ✓ | Base directory where agents read and write files. |
+| `name` | string | ✓ | Project name, shown in the console header. |
+| `workDir` | string | ✓ | Base directory where agents read and write files. Every console turn shares it. |
 | `agents` | AgentDefinition[] | ✓ | The agent pipeline (see Agent fields below). |
 | `leader` | AgentDefinition | | Optional routing agent (see [Leader](#leader)). |
 | `useLeader` | boolean | | Enable or disable the leader agent. Default: `true` when leader is configured. |
@@ -142,18 +128,17 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `logDir` | string | | Log output directory. Default: `workDir/.multiclaw/logs`. |
 | `continueOnError` | boolean | | Keep running when an agent fails. Default: `false`. |
 | `maxConcurrency` | number | | Max agents running in parallel. Default: unlimited. |
-| `dashboard.port` | number | | Dashboard port. Default: `3210`. |
-| `dashboard.autoOpen` | boolean | | Open the dashboard in a browser automatically. Default: `true`. |
 
 ### Agent fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | ✓ | Unique identifier. Used in `dependsOn`. |
-| `name` | string | ✓ | Display name shown in terminal and dashboard. |
+| `name` | string | ✓ | Display name shown in the agent list. |
 | `taskPrompt` | string | ✓ | Prompt sent to the AI runtime. Supports template variables. |
 | `systemPrompt` | string | | Optional system prompt prepended to `taskPrompt`. |
 | `icon` | string | | Unicode icon shown next to the agent name. |
+| `description` | string | | One-line role, shown beside the agent's name on the console's first screen. Every built-in preset sets one. |
 | `runtime` | string | | `claude` (default). Additional runtimes coming soon. |
 | `model` | string | | Override the default model for this agent. E.g. `"opus"`, `"sonnet"`, `"haiku"`. Takes precedence over `models`. |
 | `models` | Record<string, string> | | Map of runtime names to model names. Used when `model` is not set. E.g. `{ claude: "opus", openai: "gpt-4" }`. |
@@ -184,16 +169,122 @@ Stage 3:  backend-developer  │  ui-designer      ← parallel
 Stage 4:  code-reviewer      │  devops            ← parallel
 ```
 
-## Dashboard
+## Interactive console
 
-The real-time web UI shows:
+`multiclaw` with no subcommand opens a full-screen terminal console. It is a **turn-based
+conductor loop**, not a chat: each turn you type is one complete orchestration run of the whole
+pipeline, and the console stays open so you can run the next one.
 
-- Stage timeline with agent status (running / done / failed / skipped)
-- Live streaming logs per agent
-- Per-agent duration and retry count
-- Elapsed time while running; total time on completion
+```
+◆ multiclaw · dev-team                                          turn 2 · 00:12
+────────────────────────────────────────────────────────────────────────────
+✓ ◆ Leader  ──▸ ① ⠹ ◇ Architect  ──▸ ② ○ ◇ Developer  ──▸ ③ ○ ◇ Reviewer
 
-Start it with `--ui` on `run`, or run `multiclaw serve` for a persistent instance.
+TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s ▼
+  ✓ ◆ Leader       3.1s │ Read packages/core/src/orchestrator/…
+› ⠹ ◇ Architect    4.2s │ Grep "withTimeout" in packages/core/src
+  ○ ◇ Developer       — │ Edit utils/timeout.ts — abort-safe
+  ○ ◇ Reviewer        — │ Bash pnpm -r test
+
+» also add tests
+› type to queue a follow-up…
+⠹ running 4.2s · 1/4 agents · 1 queued          enter queues · ctrl+c cancel
+```
+
+| Region | Shows |
+|--------|-------|
+| Header | Project name, turn number, and the phase or elapsed time |
+| Pipeline rail | The leader, then each stage in order, joined by `──▸` |
+| Team panel | One row per agent: status glyph, name, live time, and progress (`1/4`) |
+| Stream panel | Live output of the focused agent, with a `▼` live / `⏸` parked marker |
+| Reply panel | What the leader answered, when a turn needed no pipeline |
+| Review banner | `viewing turn N …` while a past turn is open |
+| Queue strip | Follow-ups typed mid-run, in the order they will run |
+| Prompt | Where you type — live even while a turn is running |
+| Hint bar | Aggregate status on the left, the keys that work *right now* on the right |
+
+Status glyphs: `○` queued · `◐` running (a spinner while live) · `↻` retrying · `✓` done ·
+`✗` failed · `⊘` skipped.
+
+**First run.** Before the first turn the body shows the team from your config — each agent with the
+`description` of what it is for — rather than an empty pane. `tab` moves the `›` caret down the list;
+once a turn is running the caret follows whichever agent is speaking.
+
+**Not every turn needs the team.** The leader decides that first. Ask it a question, or say hello,
+and it answers in prose: the body swaps to the reply, the footer reads `✓ answered`, and no agent
+runs. When the request is a real task but too vague to plan, the leader asks instead — the footer
+reads `? needs your input` and your next line is the answer.
+
+### Keys
+
+The prompt always holds focus, so exactly two keys are reserved: `?` and `/`, and only while the
+line is empty *and* the console is idle. Everything else is a named key or an ordinary character,
+which is what keeps typing a requirement from tripping over shortcuts.
+
+| Key | Action |
+|-----|--------|
+| `enter` | Run the typed requirement — or queue it while a turn is running |
+| `tab` / `shift+tab` | Cycle the focused agent |
+| `↑` `↓` `pgup` `pgdn` | Scroll the focused agent's stream |
+| `←` `→` `home` `end` | Move the caret |
+| `esc` | Stop reading a past turn, clear the line, or close an overlay |
+| `?` | Key map (idle, empty line only) |
+| `/` | Command menu (empty line only) |
+| `ctrl+l` | Clear the focused agent's log |
+| `ctrl+c` | Cancel the running turn *and its queue*; again when idle to quit |
+
+Scrolling up parks the stream and scrolling back to the bottom resumes it, so there is no follow
+toggle to remember. While a turn runs the pane follows whichever agent starts next, until you cycle
+the focus by hand.
+
+**Typing while the team works.** The prompt stays live. Anything you submit mid-run joins the queue
+strip above it and starts as the next turn the moment the console goes idle — so a thought you have
+while watching the output is never lost. Cancelling drops the queue with the turn, since "cancel"
+should mean stop.
+
+Cancelling aborts the in-flight agents and their child processes rather than leaving them running in
+the background.
+
+### Commands
+
+Type `/` on an empty line for a filtered list.
+
+| Command | Action |
+|---------|--------|
+| `/agents` | List the configured team |
+| `/focus <id>` | Focus an agent by id |
+| `/clear` | Clear the focused agent's log |
+| `/history` | Browse finished turns |
+| `/cancel` | Cancel the running turn and its queue |
+| `/help` | Key map |
+| `/quit` | Exit |
+
+The console renders on the alternate screen buffer, so your shell scrollback is preserved.
+
+### Workspace
+
+The console is iterative, so every turn runs against the **same** `workDir` — a follow-up like "now
+add tests for that" sees the files the previous turn wrote. `task-plan.json` is cleared at the start
+of each turn so a plan left over from an earlier requirement can never be re-applied. Only the logs
+are per-run: `workDir/.multiclaw/runs/run-<timestamp>/logs/`.
+
+`multiclaw run` is deliberately different: it sandboxes each invocation in its own
+`run-<timestamp>/` directory.
+
+### History
+
+`/history` lists finished turns newest first, with each turn's outcome, duration, agent count and
+requirement. `↑` `↓` select and `enter` opens one for reading — the panes render that turn behind a
+`viewing turn N` banner, and `esc` returns to the live turn. Scrolling and `tab` apply to what you
+are reading, never to the turn that is still running. The turn on screen is not listed, and the last
+20 finished turns are kept.
+
+On a narrow terminal (under 72 columns) the team panel is dropped and the stream takes the full
+width; on a short one (under 16 rows) the pipeline rail goes too. The header, prompt and hint bar are
+never dropped.
+
+> **No TTY?** The console needs an interactive terminal. In CI, in a pipe, or over a non-TTY SSH
+> session it exits with a message pointing at `multiclaw run`, which runs the same pipeline headless.
 
 ## Logs
 
@@ -229,7 +320,24 @@ Presets are pipeline templates you can pick during `multiclaw init`:
 
 ## Leader
 
-The `leader` field adds a routing agent that runs **before** the main pipeline. It reads the requirement and inspects the codebase, then decides which agents are actually needed for this task. Agents the leader omits are skipped.
+The `leader` field adds a routing agent that runs **before** the main pipeline. It reads the requirement and inspects the codebase, then decides what the turn actually needs:
+
+| Decision | Meaning |
+|----------|---------|
+| `run` | It is a task the leader can scope — name the minimum set of agents needed |
+| `reply` | A greeting or a question it can answer on the spot; no agent runs |
+| `ask` | A real task, but too vague to plan; it asks the one question that unblocks it |
+
+The leader is asked for a single JSON object:
+
+```json
+{"mode": "run", "run": ["backend-developer", "code-reviewer"]}
+{"mode": "reply", "message": "Hi — ask me for a change to this project."}
+{"mode": "ask", "message": "Which database should I target?"}
+```
+
+A bare `{"run": [...]}` with no `mode` is still accepted as a run. Anything else the leader writes is
+treated as its answer, so a leader that replies in prose still ends the turn in words.
 
 ```typescript
 export default defineConfig({
@@ -243,9 +351,9 @@ export default defineConfig({
 })
 ```
 
-For a minor bug fix the leader might decide only `backend-developer` and `code-reviewer` are needed, skipping the design stages. For a greenfield feature it runs the full pipeline.
+For a minor bug fix the leader might decide only `backend-developer` and `code-reviewer` are needed, skipping the design stages. For a greenfield feature it runs the full pipeline. For `hello` it answers, and nobody is spent on it.
 
-If the leader fails or produces invalid output, multiclaw falls back to running all agents.
+Agent IDs are always a **subset** of the configured team: an invented id is reported and dropped, never added. A `run` naming no configured agent is a failure, not a green "done". If the leader cannot be reached at all, multiclaw warns and falls back to the full configured team.
 
 ### Disabling the leader
 
@@ -319,7 +427,8 @@ See [`examples/dev-team/`](https://github.com/shipengqi/multiclaw/tree/main/exam
 
 ```bash
 cd examples/dev-team
-pnpm dev
+pnpm dev        # opens the interactive console
+pnpm run run    # ...or one headless run
 ```
 
 ## License

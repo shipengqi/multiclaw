@@ -15,7 +15,7 @@ export class AgentRunner {
     private globalWorkDir: string
   ) {}
 
-  async run(agent: AgentDefinition): Promise<AgentResult> {
+  async run(agent: AgentDefinition, signal?: AbortSignal): Promise<AgentResult> {
     const startTime = new Date()
     const workDir = agent.workDir
       ? path.resolve(this.globalWorkDir, agent.workDir)
@@ -45,7 +45,7 @@ export class AgentRunner {
 
     try {
       output = await withTimeout(
-        (signal) =>
+        (innerSignal) =>
           withRetry(
             async (attempt) => {
               attempts = attempt
@@ -63,7 +63,7 @@ export class AgentRunner {
                   tools,
                   workDir,
                   timeout,
-                  signal,
+                  signal: innerSignal,
                   model,
                   onOutput: (chunk) => {
                     this.eventBus.emit({
@@ -88,10 +88,13 @@ export class AgentRunner {
                   error: (err as Error).message,
                 },
               })
-            }
+            },
+            2000,
+            innerSignal
           ),
         timeout,
-        agent.name
+        agent.name,
+        signal
       )
 
       const endTime = new Date()

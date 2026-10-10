@@ -38,6 +38,7 @@ export function reviewer(overrides?: Overrides): AgentDefinition {
     id: "reviewer",
     name: "Reviewer",
     icon: "◉",
+    description: "reviews the delivery",
     models: { claude: "haiku" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,

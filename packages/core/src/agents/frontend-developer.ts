@@ -47,6 +47,7 @@ export function frontendDeveloper(overrides?: Overrides): AgentDefinition {
     id: "frontend-developer",
     name: "Frontend Developer",
     icon: "◇",
+    description: "builds the interface",
     models: { claude: "sonnet" },
     systemPrompt: SYSTEM,
     taskPrompt: TASK,

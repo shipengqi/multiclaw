@@ -3,11 +3,15 @@
   "version": "0.3.2",
   "type": "module",
   "exports": {
-    "./server": {
-      "types": "./dist/server/index.d.ts",
-      "default": "./dist/server/index.js"
+    "./tui": {
+      "types": "./dist/tui.d.ts",
+      "default": "./dist/tui.js"
     }
   },
+  "files": [
+    "dist",
+    "package.json"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/shipengqi/multiclaw.git",
@@ -18,40 +22,23 @@
     "url": "https://github.com/shipengqi/multiclaw/issues"
   },
   "scripts": {
-    "build": "vite build && tsc -p tsconfig.server.json",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.server.json --noEmit",
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
-    "dev:client": "vite"
+    "test:coverage": "vitest run --coverage"
   },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
     "@multiclawcli/core": "workspace:*",
-    "ws": "^8.16.0",
-    "zustand": "^5.0.15",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "class-variance-authority": "^0.7.0",
-    "clsx": "^2.1.0",
-    "tailwind-merge": "^3.7.0",
-    "lucide-react": "^0.400.0",
-    "@radix-ui/react-scroll-area": "^1.0.5",
-    "@radix-ui/react-slot": "^1.0.2",
-    "@radix-ui/react-separator": "^1.0.3"
+    "ink": "^8.0.0",
+    "react": "^19.3.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^6.1.2",
-    "vite": "^8.3.4",
-    "tailwindcss": "^3.4.0",
-    "tailwindcss-animate": "^1.0.7",
-    "autoprefixer": "^10.4.0",
-    "postcss": "^8.4.0",
-    "typescript": "^5.4.0",
+    "@types/node": "^26.6.4",
     "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0",
-    "@types/ws": "^8.5.0",
+    "typescript": "^5.4.0",
     "vitest": "^4.1.11"
   }
 }

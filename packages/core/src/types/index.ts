@@ -1,4 +1,5 @@
 export * from "./agent"
 export * from "./config"
 export * from "./event"
+export * from "./leader"
 export * from "./runtime"

@@ -85,10 +85,22 @@ export class ConsoleReporter {
         break
       }
       case "orchestration:complete": {
-        const { success, totalDuration, agentResults } = e.payload
+        const { success, totalDuration, agentResults, reply } = e.payload
+        // A turn that ran no pipeline has no table worth printing — the leader's
+        // words are the whole result, so they go above the summary box.
+        if (reply) {
+          const mark = reply.mode === "ask" ? "?" : S.ok
+          console.log(`\n${C.cyan}${mark} ${reply.message}${C.reset}`)
+        }
         const line = (isFancy ? "═" : "=").repeat(50)
         const edge = isFancy ? ["╔", "║", "╚", "╗", "╝"] : ["+", "|", "+", "+", "+"]
-        const title = success ? `${S.ok} All done` : `${S.warn} Done (with failures)`
+        const title = reply
+          ? reply.mode === "ask"
+            ? `${S.warn} Needs your input`
+            : `${S.ok} Answered`
+          : success
+            ? `${S.ok} All done`
+            : `${S.warn} Done (with failures)`
         console.log(`\n${C.bold}${C.purple}${edge[0]}${line}${edge[3]}`)
         console.log(`${edge[1]}  ${title.padEnd(48)}${edge[1]}`)
         console.log(`${edge[2]}${line}${edge[4]}${C.reset}`)

@@ -2,7 +2,14 @@ import type { AgentResult, OrchestratorResult } from "./index"
 
 export interface StageInfo {
   stageIndex: number
-  agents: Array<{ id: string; name: string; icon?: string; model?: string; taskTitle?: string }>
+  agents: Array<{
+    id: string
+    name: string
+    icon?: string
+    model?: string
+    description?: string
+    taskTitle?: string
+  }>
 }
 
 export type MultiClawEvent =

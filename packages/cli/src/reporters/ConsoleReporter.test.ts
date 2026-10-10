@@ -109,6 +109,35 @@ describe("ConsoleReporter", () => {
     expect(out()).toContain("Done (with failures)")
   })
 
+  // A turn the leader answered ran no pipeline. Calling it "All done" would
+  // claim work that never happened, and the empty agent table says nothing.
+  it("prints the leader's answer instead of an empty summary", () => {
+    reporter().emit(
+      event("orchestration:complete", {
+        success: true,
+        totalDuration: 800,
+        agentResults: [],
+        reply: { mode: "reply", message: "Hi — ask me for a change." },
+      })
+    )
+    expect(out()).toContain("Hi — ask me for a change.")
+    expect(out()).toContain("Answered")
+    expect(out()).not.toContain("All done")
+  })
+
+  it("asks for input when the leader needs a decision", () => {
+    reporter().emit(
+      event("orchestration:complete", {
+        success: true,
+        totalDuration: 800,
+        agentResults: [],
+        reply: { mode: "ask", message: "Which database?" },
+      })
+    )
+    expect(out()).toContain("Which database?")
+    expect(out()).toContain("Needs your input")
+  })
+
   it("renders orchestration warnings", () => {
     reporter().emit(event("orchestration:warning", { message: "task-plan.json ignored" }))
     expect(out()).toContain("task-plan.json ignored")
