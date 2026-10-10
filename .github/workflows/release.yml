@@ -25,7 +25,7 @@ jobs:
       # once that PR is merged it publishes the bumped packages to npm and
       # creates the git tag + GitHub release.
       - name: Create release PR or publish
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
           version: pnpm version-packages
           publish: pnpm release
