@@ -1,4 +1,9 @@
-import { type MultiClawConfig, runtimeRegistry } from "@multiclawcli/core"
+import {
+  detectProviders,
+  type MultiClawConfig,
+  presentProviders,
+  runtimeRegistry,
+} from "@multiclawcli/core"
 
 export type { AgentDefinition, MultiClawConfig } from "@multiclawcli/core"
 export { agents, defineConfig } from "@multiclawcli/core"
@@ -18,7 +23,7 @@ export async function assertRuntimesAvailable(config: MultiClawConfig): Promise<
   // `codex-acp`), and both must be checked.
   const checked = new Set<string>()
   for (const agent of config.agents) {
-    const name = agent.runtime ?? "claude"
+    const name = agent.runtime ?? "acp"
     if (!runtimeRegistry.has(name)) {
       const supported = runtimeRegistry.list().join(", ")
       console.error(`\x1b[31mError: Unknown runtime "${name}". Supported: ${supported}\x1b[0m`)
@@ -40,11 +45,16 @@ export async function assertRuntimesAvailable(config: MultiClawConfig): Promise<
   }
 }
 
-/** Registered runtimes that report themselves as installed. Advisory only. */
+/** Re-export for consumers that need full detection details. */
+export { detectProviders, presentProviders }
+
+/**
+ * Legacy alias: returns runtime names that have at least one provider present.
+ * Prefer `detectProviders()` for new code.
+ */
 export async function availableRuntimes(): Promise<string[]> {
-  const available: string[] = []
-  for (const name of runtimeRegistry.list()) {
-    if ((await runtimeRegistry.get(name).describe()).available) available.push(name)
-  }
-  return available
+  const detected = await detectProviders()
+  const present = presentProviders(detected)
+  // Today the only runtime is "acp"; if any provider is present, acp is available.
+  return present.length > 0 ? ["acp"] : []
 }
