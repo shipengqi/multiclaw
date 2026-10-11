@@ -6,13 +6,21 @@ Multi-agent orchestration CLI. Define a pipeline of AI agents, give them a requi
 
 ## Prerequisites
 
-At least one AI runtime must be installed:
+multiclaw orchestrates agents from any installed **provider**. Every provider talks
+to multiclaw over the same [Agent Client Protocol (ACP)](https://agentclientprotocol.com)
+— the underlying *runtime* is always `acp`; the **provider** is the agent product you
+choose. Install one or more:
 
-| Runtime | Install |
-|---------|---------|
-| `claude` (default) | `npm install -g @anthropic-ai/claude-code` |
+| Provider | CLI | Install |
+|----------|-----|---------|
+| OpenCode | `opencode` | `npm install -g opencode` |
+| Claude | `claude-agent-acp` | `npm install -g @agentclientprotocol/claude-agent-acp` |
+| Codex | `codex-acp` | `npm install -g @agentclientprotocol/codex-acp` |
+| Cursor | `cursor-agent` | `curl https://cursor.com/install \| bash` |
 
-> **Future support:** We plan to add support for additional runtimes (Codex, OpenCode, Cursor) in upcoming releases.
+`multiclaw init` auto-detects which providers are installed and only offers those;
+`multiclaw doctor` shows the full picture (installed versions, auth hints, available
+models). Codex and Cursor need an API key or login before they can run.
 
 ## Install
 
@@ -46,6 +54,23 @@ Prompts:
 - **Project name** — defaults to the current directory name
 - **Preset** — pipeline template (see [Presets](#presets))
 - **Work directory** — where agents read and write files
+- **Provider** — which agent product to use (`claude`, `opencode`, `codex`, `cursor`). Only installed providers are offered; missing ones are listed with install hints.
+- **Model preference** — role-based tier defaults (recommended) or a specific tier/model
+- **Per-agent overrides** (optional) — pick individual agents and set a model for each
+
+The result is a config with a single `defaults` block instead of repeating the provider
+and model across all twelve preset agents.
+
+### `multiclaw doctor`
+
+Diagnose the local environment: which providers are installed (with versions), what auth
+each needs, how many models each exposes, and whether the current config's agents all
+resolve to an installed provider. Exits non-zero if no provider is available.
+
+```bash
+multiclaw doctor            # full environment check
+multiclaw doctor --config ./multiclaw.config.ts   # also validates the config
+```
 
 ### `multiclaw run <requirement> [options]`
 
@@ -54,11 +79,25 @@ Runs the orchestration defined in your config file.
 | Option | Description |
 |--------|-------------|
 | `--config <path>` | Path to config file. Auto-discovers `multiclaw.config.ts` if omitted. |
-| `--no-leader` | Skip the leader agent and use the default pipeline directly. |
+| `--no-leader` | (Batch mode only) Skip the leader and run the full configured team. Has no effect in the interactive console — the leader is always used there. |
 
 The `<requirement>` string is injected into every agent's prompt as `{{requirement}}`.
 
 Each run creates an isolated timestamped subdirectory inside `workDir` (e.g. `workspace/.multiclaw/runs/run-2026-10-08T12-00-00`), so a one-shot run can never collide with anything else on disk. The interactive console is deliberately different — see [Workspace](#workspace).
+
+## Providers, models & tiers
+
+Two ideas keep configs short and provider-agnostic:
+
+- **`runtime` vs `provider`.** The *runtime* is the protocol multiclaw uses to talk to an agent — today that is always `acp` (the [Agent Client Protocol](https://agentclientprotocol.com)). The *provider* is the agent product (`claude`, `opencode`, `codex`, `cursor`). So `runtime` is a constant; `provider` is the thing you pick.
+- **Model tiers.** Instead of hard-coding a model that only exists on one provider, an agent declares a **tier** — `strong`, `balanced`, or `fast`. The built-in catalog maps each tier to a concrete model id *per provider* (e.g. `strong` → `opus` on Claude, `opencode/exo-free` on OpenCode). That way the same preset runs unchanged on any provider; switching providers just changes the resolved model.
+
+Resolution order for an agent's model:
+
+1. `agent.model` (explicit id) → 2. `agent.models[provider]` → 3. legacy `agent.models["acp"]` →
+4. `agent.modelTier` (catalog-resolved) → 5. `config.defaults.model` → 6. the provider's default model.
+
+A single `defaults: { provider, model }` block at the top of the config supplies steps 2/5 for every agent, so you rarely repeat yourself.
 
 ## Config file
 
@@ -84,13 +123,21 @@ export default defineConfig({
   continueOnError: false,   // optional; keep running if an agent fails
   maxConcurrency: 4,        // optional; max agents running at once
 
+  // Project-wide defaults applied to every agent that doesn't override them.
+  // One line replaces repeating provider/model across all preset agents.
+  defaults: {
+    provider: "claude",     // which agent product runs the team
+    model: "sonnet",        // default model (overridable per agent)
+  },
+
   agents: [
     {
       id: "architect",        // unique identifier, used in dependsOn
       name: "Architect",      // display name
       icon: "◆",              // optional; shown in the console
-      runtime: "claude",      // optional; default: "claude"
-      model: "opus",          // optional; override default model for this agent
+      provider: "claude",     // optional; default: config.defaults.provider
+      modelTier: "strong",    // optional; "strong" | "balanced" | "fast"
+      model: "opus",          // optional; overrides tier/default for this agent
       systemPrompt: "You are a software architect.", // optional
       taskPrompt: `Design the system for {{requirement}}.
 Read the brief at {{file:brief.md}} and write architecture.md.`,
@@ -121,6 +168,7 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `agents` | AgentDefinition[] | ✓ | The agent pipeline (see Agent fields below). |
 | `leader` | AgentDefinition | | Optional routing agent (see [Leader](#leader)). |
 | `useLeader` | boolean | | Enable or disable the leader agent. Default: `true` when leader is configured. |
+| `defaults` | object | | Project-wide `{ provider?, model?, command? }` applied to every agent that does not override them. Keeps generated configs short. |
 | `context` | Record<string, string> | | Variables available as `{{key}}` in every prompt. `requirement` is injected automatically. |
 | `logDir` | string | | Log output directory. Default: `workDir/.multiclaw/logs`. |
 | `continueOnError` | boolean | | Keep running when an agent fails. Default: `false`. |
@@ -136,9 +184,11 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `systemPrompt` | string | | Optional system prompt prepended to `taskPrompt`. |
 | `icon` | string | | Unicode icon shown next to the agent name. |
 | `description` | string | | One-line role, shown beside the agent's name on the console's first screen. Every built-in preset sets one. |
-| `runtime` | string | | `claude` (default). Additional runtimes coming soon. |
-| `model` | string | | Override the default model for this agent. E.g. `"opus"`, `"sonnet"`, `"haiku"`. Takes precedence over `models`. |
-| `models` | Record<string, string> | | Map of runtime names to model names. Used when `model` is not set. E.g. `{ claude: "opus", openai: "gpt-4" }`. |
+| `provider` | string | | Agent product this agent runs on: `claude`, `opencode`, `codex`, or `cursor`. Defaults to `config.defaults.provider`. All providers speak the same `acp` runtime. |
+| `runtime` | string | | **Legacy.** Always `"acp"` today. Use `provider` instead. Retained for backward compatibility. |
+| `modelTier` | `"strong"` \| `"balanced"` \| `"fast"` | | Declares the capability this agent needs; the catalog maps each tier to a provider-specific model id. Ignored when `model` is set. |
+| `model` | string | | Override the model id for this agent (provider-specific, e.g. `"opus"`, `"sonnet"`, `"haiku"` for Claude). Takes precedence over `modelTier` and `models`. |
+| `models` | Record<string, string> | | Map of provider id (or the legacy `"acp"`) to a model id, e.g. `{ claude: "sonnet", opencode: "opencode/big-pickle" }`. Used when `model`/`modelTier` are unset. |
 | `tools` | string[] | | Allowed tools. Default: `["Read", "Write", "Bash"]`. |
 | `dependsOn` | string[] | | Agent ids that must complete before this agent starts. |
 | `timeout` | number | | Per-agent timeout in ms. Default: `600000` (10 min). |
@@ -358,18 +408,23 @@ If the leader cannot be reached at all — a runtime failure, or no output — m
 
 ### Disabling the leader
 
+The leader is what lets a single typed line become "run these three agents, in this order" — or
+"just answer". In the interactive console it is indispensable, so `--no-leader` is a **batch-mode
+only** switch: it applies to `multiclaw run` and is ignored by the console (which shows a small
+`⚠ leader off` hint if you disable it in config).
+
 You can skip the leader and use the default pipeline directly in three ways:
 
-1. **CLI option** (for a single run):
+1. **CLI option** (for a single headless run):
    ```bash
    multiclaw run "your requirement" --no-leader
    ```
 
-2. **Config file** (per-run, via environment variable or config override):
+2. **Config file**:
    ```typescript
    export default defineConfig({
      leader: agents.leader(),
-     useLeader: false, // disable leader
+     useLeader: false, // disable leader (batch runs only; console still uses it)
      agents: [...],
    })
    ```
@@ -424,13 +479,18 @@ If the architect is not in your pipeline, dev agents fall back to reading `archi
 
 ## Example
 
-See [`examples/dev-team/`](examples/dev-team/) for a working three-agent pipeline (Architect → Developer → Reviewer).
+See [`examples/dev-team/`](examples/dev-team/) for a working three-agent pipeline (Architect → Developer → Reviewer) using a single `defaults.provider`.
 
 ```bash
 cd examples/dev-team
 pnpm dev        # opens the interactive console
 pnpm run run    # ...or one headless run
 ```
+
+For a team where each agent runs on a different provider (e.g. OpenCode for
+implementation, Claude for architecture and review), see
+[`examples/mixed-provider/`](examples/mixed-provider/). The core supports mixing
+providers per agent; `multiclaw init` (v1) generates one shared `defaults.provider`.
 
 ## Contributing
 

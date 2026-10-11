@@ -9,13 +9,21 @@ Multi-agent orchestration CLI. Define a pipeline of AI agents, give them a requi
 
 ## Prerequisites
 
-At least one AI runtime must be installed:
+multiclaw orchestrates agents from any installed **provider**. Every provider talks
+to multiclaw over the same [Agent Client Protocol (ACP)](https://agentclientprotocol.com)
+— the underlying *runtime* is always `acp`; the **provider** is the agent product you
+choose. Install one or more:
 
-| Runtime | Install |
-|---------|---------|
-| `claude` (default) | `npm install -g @anthropic-ai/claude-code` |
+| Provider | CLI | Install |
+|----------|-----|---------|
+| OpenCode | `opencode` | `npm install -g opencode` |
+| Claude | `claude-agent-acp` | `npm install -g @agentclientprotocol/claude-agent-acp` |
+| Codex | `codex-acp` | `npm install -g @agentclientprotocol/codex-acp` |
+| Cursor | `cursor-agent` | `curl https://cursor.com/install \| bash` |
 
-> **Future support:** We plan to add support for additional runtimes (Codex, OpenCode, Cursor) in upcoming releases.
+`multiclaw init` auto-detects which providers are installed and only offers those;
+`multiclaw doctor` shows the full picture (installed versions, auth hints, available
+models). Codex and Cursor need an API key or login before they can run.
 
 ## Install
 
@@ -49,6 +57,20 @@ Prompts:
 - **Project name** — defaults to the current directory name
 - **Preset** — pipeline template (see [Presets](#presets))
 - **Work directory** — where agents read and write files
+- **Provider** — which agent product to use (`claude`, `opencode`, `codex`, `cursor`). Only installed providers are offered; missing ones are listed with install hints.
+- **Model preference** — role-based tier defaults (recommended) or a specific tier/model
+- **Per-agent overrides** (optional) — pick individual agents and set a model for each
+
+### `multiclaw doctor`
+
+Diagnose the local environment: which providers are installed (with versions), what auth
+each needs, how many models each exposes, and whether the current config's agents all
+resolve to an installed provider. Exits non-zero if no provider is available.
+
+```bash
+multiclaw doctor            # full environment check
+multiclaw doctor --config ./multiclaw.config.ts   # also validates the config
+```
 
 ### `multiclaw run <requirement> [options]`
 
@@ -57,7 +79,7 @@ Runs the orchestration defined in your config file.
 | Option | Description |
 |--------|-------------|
 | `--config <path>` | Path to config file. Auto-discovers `multiclaw.config.ts` if omitted. |
-| `--no-leader` | Skip the leader agent and use the default pipeline directly. |
+| `--no-leader` | (Batch mode only) Skip the leader and run the full configured team. Has no effect in the interactive console — the leader is always used there. |
 
 The `<requirement>` string is injected into every agent's prompt as `{{requirement}}`.
 
@@ -87,13 +109,21 @@ export default defineConfig({
   continueOnError: false,   // optional; keep running if an agent fails
   maxConcurrency: 4,        // optional; max agents running at once
 
+  // Project-wide defaults applied to every agent that doesn't override them.
+  // One line replaces repeating provider/model across all preset agents.
+  defaults: {
+    provider: "claude",     // which agent product runs the team
+    model: "sonnet",        // default model (overridable per agent)
+  },
+
   agents: [
     {
       id: "architect",        // unique identifier, used in dependsOn
       name: "Architect",      // display name
       icon: "◆",              // optional; shown in the console
-      runtime: "claude",      // optional; default: "claude"
-      model: "opus",          // optional; override default model for this agent
+      provider: "claude",     // optional; default: config.defaults.provider
+      modelTier: "strong",    // optional; "strong" | "balanced" | "fast"
+      model: "opus",          // optional; overrides tier/default for this agent
       systemPrompt: "You are a software architect.", // optional
       taskPrompt: `Design the system for {{requirement}}.
 Read the brief at {{file:brief.md}} and write architecture.md.`,
@@ -124,6 +154,7 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `agents` | AgentDefinition[] | ✓ | The agent pipeline (see Agent fields below). |
 | `leader` | AgentDefinition | | Optional routing agent (see [Leader](#leader)). |
 | `useLeader` | boolean | | Enable or disable the leader agent. Default: `true` when leader is configured. |
+| `defaults` | object | | Project-wide `{ provider?, model?, command? }` applied to every agent that does not override them. Keeps generated configs short. |
 | `context` | Record<string, string> | | Variables available as `{{key}}` in every prompt. `requirement` is injected automatically. |
 | `logDir` | string | | Log output directory. Default: `workDir/.multiclaw/logs`. |
 | `continueOnError` | boolean | | Keep running when an agent fails. Default: `false`. |
@@ -139,9 +170,11 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `systemPrompt` | string | | Optional system prompt prepended to `taskPrompt`. |
 | `icon` | string | | Unicode icon shown next to the agent name. |
 | `description` | string | | One-line role, shown beside the agent's name on the console's first screen. Every built-in preset sets one. |
-| `runtime` | string | | `claude` (default). Additional runtimes coming soon. |
-| `model` | string | | Override the default model for this agent. E.g. `"opus"`, `"sonnet"`, `"haiku"`. Takes precedence over `models`. |
-| `models` | Record<string, string> | | Map of runtime names to model names. Used when `model` is not set. E.g. `{ claude: "opus", openai: "gpt-4" }`. |
+| `provider` | string | | Agent product this agent runs on: `claude`, `opencode`, `codex`, or `cursor`. Defaults to `config.defaults.provider`. All providers speak the same `acp` runtime. |
+| `runtime` | string | | **Legacy.** Always `"acp"` today. Use `provider` instead. Retained for backward compatibility. |
+| `modelTier` | `"strong"` \| `"balanced"` \| `"fast"` | | Declares the capability this agent needs; the catalog maps each tier to a provider-specific model id. Ignored when `model` is set. |
+| `model` | string | | Override the model id for this agent (provider-specific, e.g. `"opus"`, `"sonnet"`, `"haiku"` for Claude). Takes precedence over `modelTier` and `models`. |
+| `models` | Record<string, string> | | Map of provider id (or the legacy `"acp"`) to a model id, e.g. `{ claude: "sonnet", opencode: "opencode/big-pickle" }`. Used when `model`/`modelTier` are unset. |
 | `tools` | string[] | | Allowed tools. Default: `["Read", "Write", "Bash"]`. |
 | `dependsOn` | string[] | | Agent ids that must complete before this agent starts. |
 | `timeout` | number | | Per-agent timeout in ms. Default: `600000` (10 min). |

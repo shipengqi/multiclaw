@@ -6,13 +6,19 @@
 
 ## 前置条件
 
-至少需要安装以下 AI Runtime 之一：
+multiclaw 可从任意已安装的 **Provider（提供方）** 编排 Agent。每个 Provider 都通过同一套
+[Agent Client Protocol（ACP）](https://agentclientprotocol.com) 与 multiclaw 通信——底层
+**runtime 永远都是 `acp`**；你选择的是 **Provider**，即具体的 Agent 产品。安装一个或多个：
 
-| Runtime | 安装命令 |
-|---------|---------|
-| `claude`（默认）| `npm install -g @anthropic-ai/claude-code` |
+| Provider | CLI | 安装命令 |
+|----------|-----|---------|
+| OpenCode | `opencode` | `npm install -g opencode` |
+| Claude | `claude-agent-acp` | `npm install -g @agentclientprotocol/claude-agent-acp` |
+| Codex | `codex-acp` | `npm install -g @agentclientprotocol/codex-acp` |
+| Cursor | `cursor-agent` | `curl https://cursor.com/install \| bash` |
 
-> **未来计划**：我们计划在后续版本中支持更多 Runtime（Codex、OpenCode、Cursor）。
+`multiclaw init` 会自动检测已安装的 Provider 并只提供这些选项；`multiclaw doctor` 则展示完整情况
+（已安装版本、鉴权提示、可用模型）。Codex 和 Cursor 在运行前需要配置 API Key 或登录。
 
 ## 安装
 
@@ -45,6 +51,20 @@ multiclaw run "构建一个 Todo 列表 REST API"
 - **项目名称** — 默认使用当前目录名
 - **预设模板** — 选择流水线模板（见[预设模板](#预设模板)）
 - **工作目录** — Agent 读写文件的目录
+- **Provider** — 选择使用哪个 Agent 产品（`claude`、`opencode`、`codex`、`cursor`）。只提供已安装的 Provider；未安装的项会附带安装提示。
+- **模型偏好** — 基于角色的层级默认值（推荐）或指定具体层级/模型
+- **逐 Agent 覆盖**（可选）— 选择单个 Agent 并为其指定模型
+
+最终生成的配置只含一个 `defaults` 块，无需在十二个预设 Agent 间重复填写 Provider 与模型。
+
+### `multiclaw doctor`
+
+诊断本地环境：哪些 Provider 已安装（含版本）、各自需要什么鉴权、各暴露多少模型，以及当前配置中的 Agent 是否都能解析到已安装的 Provider。若没有任何可用 Provider，退出码为非 0。
+
+```bash
+multiclaw doctor                                      # 完整环境检查
+multiclaw doctor --config ./multiclaw.config.ts       # 同时校验配置
+```
 
 ### `multiclaw run <requirement> [options]`
 
@@ -53,7 +73,7 @@ multiclaw run "构建一个 Todo 列表 REST API"
 | 选项 | 说明 |
 |------|------|
 | `--config <path>` | 配置文件路径。省略时自动查找 `multiclaw.config.ts`。 |
-| `--no-leader` | 跳过 leader agent，直接使用默认流水线。 |
+| `--no-leader` | （仅批量模式）跳过 leader，直接运行完整的已配置团队。在交互式控制台中无效——控制台始终会使用 leader。 |
 
 `<requirement>` 字符串会以 `{{requirement}}` 的形式注入到每个 Agent 的 prompt 中。
 
@@ -83,13 +103,21 @@ export default defineConfig({
   continueOnError: false,   // 可选；某个 Agent 失败后是否继续
   maxConcurrency: 4,        // 可选；同时运行的最大 Agent 数
 
+  // 项目级默认值，应用到所有未单独覆盖的 Agent。
+  // 一行即可替代在十二个预设 Agent 间重复填写 Provider 与模型。
+  defaults: {
+    provider: "claude",     // 团队运行在哪个 Agent 产品上
+    model: "sonnet",        // 默认模型（可被单个 Agent 覆盖）
+  },
+
   agents: [
     {
       id: "architect",        // 唯一标识，用于 dependsOn 引用
       name: "架构师",          // 展示名称
       icon: "◆",              // 可选；在控制台中展示
-      runtime: "claude",      // 可选；默认 "claude"
-      model: "opus",          // 可选；指定此 Agent 的模型
+      provider: "claude",     // 可选；默认取 config.defaults.provider
+      modelTier: "strong",    // 可选；"strong" | "balanced" | "fast"
+      model: "opus",          // 可选；覆盖此 Agent 的层级/默认模型
       systemPrompt: "你是一名软件架构师。", // 可选
       taskPrompt: `为 {{requirement}} 设计系统架构。
 读取 {{file:brief.md}} 中的需求说明，并输出 architecture.md。`,
@@ -120,6 +148,7 @@ export default defineConfig({
 | `agents` | AgentDefinition[] | ✓ | Agent 流水线（见下方 Agent 字段说明）。 |
 | `leader` | AgentDefinition | | 可选的路由 Agent（见 [Leader](#leader)）。 |
 | `useLeader` | boolean | | 是否启用 leader agent。默认当配置了 leader 时为 `true`。 |
+| `defaults` | object | | 项目级 `{ provider?, model?, command? }` 默认值，应用到所有未单独覆盖的 Agent，使生成的配置更简洁。 |
 | `context` | Record<string, string> | | 可在每个 prompt 中通过 `{{key}}` 引用的变量，`requirement` 由 CLI 自动注入。 |
 | `logDir` | string | | 日志输出目录，默认 `workDir/.multiclaw/logs`。 |
 | `continueOnError` | boolean | | 某个 Agent 失败后是否继续运行，默认 `false`。 |
@@ -135,9 +164,11 @@ export default defineConfig({
 | `systemPrompt` | string | | 可选的系统 prompt，会拼接在 `taskPrompt` 前面。 |
 | `icon` | string | | Agent 名称旁展示的 Unicode 图标。 |
 | `description` | string | | 一句话角色说明，展示在控制台首屏的 Agent 名称旁。内置预设均已设置。 |
-| `runtime` | string | | `claude`（默认）。更多 Runtime 支持敬请期待。 |
-| `model` | string | | 指定此 Agent 使用的模型。例如 `"opus"`、`"sonnet"`、`"haiku"`。优先级高于 `models`。 |
-| `models` | Record<string, string> | | Runtime 名称到模型名称的映射。当未设置 `model` 时使用。例如 `{ claude: "opus", openai: "gpt-4" }`。 |
+| `provider` | string | | 此 Agent 运行在哪个 Agent 产品上：`claude`、`opencode`、`codex` 或 `cursor`。默认取 `config.defaults.provider`。所有 Provider 都使用同一套 `acp` runtime。 |
+| `runtime` | string | | **已废弃。** 当前永远是 `"acp"`，请改用 `provider`。保留仅为兼容旧配置。 |
+| `modelTier` | `"strong"` \| `"balanced"` \| `"fast"` | | 声明此 Agent 所需的能力层级；目录会把每个层级映射到该 Provider 对应的具体模型 id。设置了 `model` 时此项被忽略。 |
+| `model` | string | | 指定此 Agent 的模型 id（与 Provider 相关，例如 Claude 的 `"opus"`、`"sonnet"`、`"haiku"`）。优先级高于 `modelTier` 和 `models`。 |
+| `models` | Record<string, string> | | Provider id（或旧别名 `"acp"`）到模型 id 的映射，例如 `{ claude: "sonnet", opencode: "opencode/big-pickle" }`。当未设置 `model`/`modelTier` 时使用。 |
 | `tools` | string[] | | 允许使用的工具列表，默认 `["Read", "Write", "Bash"]`。 |
 | `dependsOn` | string[] | | 必须在此 Agent 启动前完成的 Agent id 列表。 |
 | `timeout` | number | | 单个 Agent 超时时间（毫秒），默认 `600000`（10 分钟）。 |
@@ -330,18 +361,20 @@ Agent ID 永远只是配置团队的**子集**。leader 编造出来的 id 会�
 
 ### 禁用 Leader Agent
 
+leader 的作用，是把一句输入变成"按此顺序运行这三个 Agent"——或者"直接回答就好"。在交互式控制台里它不可或缺，因此 `--no-leader` 是**仅批量模式的开关**：仅作用于 `multiclaw run`，在控制台中被忽略（若你在配置中关闭了它，控制台会显示一行 `⚠ leader off` 的小提示）。
+
 可以通过以下三种方式跳过 leader 并直接使用默认流水线：
 
-1. **CLI 选项**（针对单次运行）：
+1. **CLI 选项**（针对单次无头运行）：
    ```bash
    multiclaw run "你的需求" --no-leader
    ```
 
-2. **配置文件**（运行时可通过环境变量或配置覆盖）：
+2. **配置文件**：
    ```typescript
    export default defineConfig({
      leader: agents.leader(),
-     useLeader: false, // 禁用 leader
+     useLeader: false, // 禁用 leader（仅批量运行生效；控制台仍会使用它）
      agents: [...],
    })
    ```
