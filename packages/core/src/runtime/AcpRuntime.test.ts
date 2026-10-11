@@ -31,14 +31,14 @@ class FakeChild extends EventEmitter {
 
 interface AgentHandlers {
   initialize?: () => unknown
-  newSession?: () => unknown
+  newSession?: (params: unknown) => unknown
   loadSession?: (params: unknown) => unknown
   prompt?: (ctx: AgentPromptContext) => unknown
   cancel?: (params: unknown) => void
 }
 
 interface AgentPromptContext {
-  params: { sessionId: string }
+  params: { sessionId: string; prompt?: Array<{ type: string; text: string }> }
   client: {
     notify: (method: string, params: unknown) => Promise<void>
   }
@@ -67,7 +67,11 @@ function attachAgent(child: FakeChild, handlers: AgentHandlers): void {
         agentCapabilities: { loadSession: true },
       }) as never
   )
-  app.onRequest("session/new", (() => handlers.newSession?.() ?? { sessionId: "sess-1" }) as never)
+  app.onRequest(
+    "session/new",
+    ((ctx: { params: unknown }) =>
+      handlers.newSession?.(ctx.params) ?? { sessionId: "sess-1" }) as never
+  )
   app.onRequest(
     "session/load",
     ((ctx: { params: unknown }) => handlers.loadSession?.(ctx.params) ?? {}) as never
@@ -662,5 +666,148 @@ describe("AcpRuntime.execute", () => {
     child.emit("error", new Error("ENOENT"))
 
     await expect(p).rejects.toThrow("Failed to start opencode: ENOENT")
+  })
+})
+
+/** Params of a session-defining request, as captured from the fake agent. */
+type SessionParams = Record<string, unknown> & {
+  _meta?: Record<string, unknown>
+  prompt?: Array<{ type: string; text: string }>
+}
+
+describe("AcpRuntime · agent context delivery", () => {
+  it("sends the system prompt via _meta on a meta bridge, without prefixing the prompt", async () => {
+    const child = new FakeChild()
+    let newParams: SessionParams | undefined
+    let promptParams: SessionParams | undefined
+    attachAgent(child, {
+      newSession: (params) => {
+        newParams = params as SessionParams
+        return { sessionId: "sess-1" }
+      },
+      prompt: (ctx) => {
+        promptParams = ctx.params as SessionParams
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { command: "claude-agent-acp", systemPrompt: "You are a pirate." })
+
+    expect(newParams?._meta).toMatchObject({ systemPrompt: "You are a pirate." })
+    // Mutually exclusive modes: meta mode must NOT also prefix.
+    expect(promptParams?.prompt?.[0].text).toBe("do it")
+  })
+
+  it("prefixes the prompt on a non-meta bridge, and sends no _meta", async () => {
+    const child = new FakeChild()
+    let newParams: SessionParams | undefined
+    let promptParams: SessionParams | undefined
+    attachAgent(child, {
+      newSession: (params) => {
+        newParams = params as SessionParams
+        return { sessionId: "sess-1" }
+      },
+      prompt: (ctx) => {
+        promptParams = ctx.params as SessionParams
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { command: "codex-acp", systemPrompt: "You are a pirate." })
+
+    expect(newParams?._meta).toBeUndefined()
+    expect(promptParams?.prompt?.[0].text).toBe("You are a pirate.\n\n---\n\ndo it")
+  })
+
+  it("leaves the prompt untouched when the system prompt is empty, in both modes", async () => {
+    for (const command of ["claude-agent-acp", "codex-acp"]) {
+      const child = new FakeChild()
+      let newParams: SessionParams | undefined
+      let promptParams: SessionParams | undefined
+      attachAgent(child, {
+        newSession: (params) => {
+          newParams = params as SessionParams
+          return { sessionId: "sess-1" }
+        },
+        prompt: (ctx) => {
+          promptParams = ctx.params as SessionParams
+          return { stopReason: "end_turn" }
+        },
+      })
+
+      await runWith(child, { command, systemPrompt: "" })
+
+      expect(newParams?._meta?.systemPrompt).toBeUndefined()
+      expect(promptParams?.prompt?.[0].text).toBe("do it")
+    }
+  })
+
+  it("resolves a path-qualified command to the meta bridge", async () => {
+    const child = new FakeChild()
+    let newParams: SessionParams | undefined
+    attachAgent(child, {
+      newSession: (params) => {
+        newParams = params as SessionParams
+        return { sessionId: "sess-1" }
+      },
+    })
+
+    await runWith(child, { command: "/usr/local/bin/claude-agent-acp", systemPrompt: "sys" })
+
+    expect(newParams?._meta).toMatchObject({ systemPrompt: "sys" })
+  })
+
+  it("carries _meta on session/load too, when resuming", async () => {
+    const child = new FakeChild()
+    let loadParams: SessionParams | undefined
+    attachAgent(child, {
+      loadSession: (params) => {
+        loadParams = params as SessionParams
+        return {}
+      },
+    })
+
+    await runWith(child, {
+      command: "claude-agent-acp",
+      systemPrompt: "sys",
+      sessionId: "11111111-2222-3333-4444-555555555555",
+    })
+
+    expect(loadParams?._meta).toMatchObject({ systemPrompt: "sys" })
+  })
+
+  it("maps task.tools to _meta.claudeCode.options.tools in meta mode only", async () => {
+    const metaChild = new FakeChild()
+    let metaParams: SessionParams | undefined
+    attachAgent(metaChild, {
+      newSession: (params) => {
+        metaParams = params as SessionParams
+        return { sessionId: "sess-1" }
+      },
+    })
+    await runWith(metaChild, { command: "claude-agent-acp", tools: ["Read"] })
+    expect(metaParams?._meta).toMatchObject({ claudeCode: { options: { tools: ["Read"] } } })
+
+    const promptChild = new FakeChild()
+    let promptParams: SessionParams | undefined
+    attachAgent(promptChild, {
+      newSession: (params) => {
+        promptParams = params as SessionParams
+        return { sessionId: "sess-1" }
+      },
+    })
+    await runWith(promptChild, { command: "codex-acp", tools: ["Read"] })
+    expect(promptParams?._meta).toBeUndefined()
+  })
+
+  it("appends a login hint to an authentication-required error", async () => {
+    const child = new FakeChild()
+    attachAgent(child, {
+      prompt: () => {
+        throw acp.RequestError.authRequired()
+      },
+    })
+
+    await expect(runWith(child)).rejects.toThrow(/run `claude` to log in/)
   })
 })

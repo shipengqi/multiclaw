@@ -30,6 +30,15 @@ const CANCEL_GRACE_MS = 2000
 const DEFAULT_COMMAND = "opencode"
 const DEFAULT_ARGS = ["acp"]
 
+/**
+ * ACP bridges that honour `_meta.systemPrompt` / `_meta.claudeCode.options`.
+ *
+ * ACP carries no capability flag for these, so the only signal available is
+ * which binary we were told to launch. Keyed on basename so a path or a
+ * Windows `.cmd`/`.exe` suffix does not defeat the lookup.
+ */
+const META_CAPABLE_COMMANDS = new Set(["claude-agent-acp"])
+
 /** A `RuntimeEvent` before the emitter supplies its per-run envelope. */
 type RuntimeEventPayload = RuntimeEvent extends infer E
   ? E extends RuntimeEventBase
@@ -123,6 +132,66 @@ function mapStopReason(reason: string): "success" | "max_turns" | "cancelled" | 
   }
 }
 
+/** Normalise a launch command to a bare, lowercased binary name. */
+function commandKey(command: string): string {
+  return path
+    .basename(command)
+    .toLowerCase()
+    .replace(/\.(cmd|exe|bat)$/, "")
+}
+
+/**
+ * How this agent's role prompt reaches the bridge.
+ *
+ * `"meta"` — the bridge honours `_meta.systemPrompt`, so send a real
+ * system-level prompt. `"prompt"` — the safe default: prefix the prompt text,
+ * which every ACP agent understands, at the cost of weaker instruction
+ * adherence. The two modes are mutually exclusive: sending both would double
+ * the instructions on a bridge that honours both.
+ */
+function deliveryFor(command: string): "meta" | "prompt" {
+  return META_CAPABLE_COMMANDS.has(commandKey(command)) ? "meta" : "prompt"
+}
+
+/**
+ * `_meta` for a session-defining request, or undefined when it would be empty.
+ *
+ * ACP has no system-prompt field (`systemPrompt` appears in no `$defs`), so a
+ * role prompt can only travel in `_meta`. `claude-agent-acp` merges an object
+ * with its Claude Code preset, but a *string* replaces the preset — and that is
+ * what we want: multiclaw's system prompt is the agent's whole identity.
+ *
+ * Tools are deliberately NOT treated as equivalent to ClaudeRuntime's
+ * `--allowedTools`. That flag is a permission allowlist (the tools still exist,
+ * they are just not pre-approved), whereas the bridge's `tools` option governs
+ * which tools exist at all — so `tools: []` would *remove* every built-in tool
+ * rather than merely un-approve them. We therefore send `tools` only when the
+ * config actually named some; an empty `task.tools` is left to the bridge's
+ * preset instead of silently disabling everything.
+ */
+function buildMeta(task: AgentTask): Record<string, unknown> | undefined {
+  const meta: Record<string, unknown> = {}
+  if (task.systemPrompt) meta.systemPrompt = task.systemPrompt
+  if (task.tools.length > 0) meta.claudeCode = { options: { tools: task.tools } }
+  return Object.keys(meta).length > 0 ? meta : undefined
+}
+
+/**
+ * Add a login hint to a JSON-RPC "authentication required" error.
+ *
+ * `claude-agent-acp` reuses the ambient Claude Code login and advertises no ACP
+ * login flow (`authMethods: []`), so the SDK's bare "Authentication required"
+ * is a dead end for the user. Detected by the SDK's own error code — the client
+ * rejects a failed request with a real `RequestError` — not by matching text.
+ */
+function withAuthHint(acp: AcpModule, err: unknown): Error {
+  const error = err instanceof Error ? err : new Error(String(err))
+  if (error instanceof acp.RequestError && error.code === acp.RequestError.authRequired().code) {
+    return new Error(`${error.message} — run \`claude\` to log in`)
+  }
+  return error
+}
+
 export class AcpRuntime extends RuntimeBase {
   readonly name = "acp"
 
@@ -151,6 +220,15 @@ export class AcpRuntime extends RuntimeBase {
 
     const command = task.command ?? DEFAULT_COMMAND
     const args = task.args ?? DEFAULT_ARGS
+
+    // The role prompt has no ACP field, so it is delivered one of two ways (see
+    // `deliveryFor`). Both are pure functions of the task, so compute them once.
+    const delivery = deliveryFor(command)
+    const meta = delivery === "meta" ? buildMeta(task) : undefined
+    const promptText =
+      delivery === "prompt" && task.systemPrompt
+        ? `${task.systemPrompt}\n\n---\n\n${task.prompt}`
+        : task.prompt
 
     return new Promise<AgentOutput>((resolve, reject) => {
       const child = spawn(command, args, {
@@ -401,19 +479,24 @@ export class AcpRuntime extends RuntimeBase {
             sessionId: task.sessionId,
             cwd: task.workDir,
             mcpServers: [],
+            // Both session-defining requests carry `_meta`: the bridge's own
+            // session fingerprint includes it, so a changed prompt rebuilds the
+            // session on resume.
+            ...(meta ? { _meta: meta } : {}),
           })
           sessionId = task.sessionId
         } else {
           const created = await ctx.request(acp.methods.agent.session.new, {
             cwd: task.workDir,
             mcpServers: [],
+            ...(meta ? { _meta: meta } : {}),
           })
           sessionId = created.sessionId
         }
 
         const response = await ctx.request(acp.methods.agent.session.prompt, {
           sessionId,
-          prompt: [{ type: "text", text: task.prompt }],
+          prompt: [{ type: "text", text: promptText }],
         })
 
         if (task.signal?.aborted) {
@@ -430,7 +513,7 @@ export class AcpRuntime extends RuntimeBase {
       }
 
       void run().catch((err: unknown) => {
-        connectionError = err instanceof Error ? err : new Error(String(err))
+        connectionError = withAuthHint(acp, err)
         settleReject(connectionError)
         teardown()
       })
