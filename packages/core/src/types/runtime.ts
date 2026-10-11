@@ -25,11 +25,19 @@ export type RuntimeEvent =
   | (RuntimeEventBase & { type: "tool_call"; id: string; name: string; input: unknown })
   | (RuntimeEventBase & { type: "tool_result"; id: string; output: string; isError: boolean })
   | (RuntimeEventBase & { type: "plan"; entries: string[] })
-  | (RuntimeEventBase & { type: "usage"; inputTokens?: number; outputTokens?: number })
+  | (RuntimeEventBase & {
+      type: "usage"
+      inputTokens?: number
+      outputTokens?: number
+      contextTokens?: number
+      contextSize?: number
+    })
   | (RuntimeEventBase & {
       type: "cost"
       costUsd?: number
       modelBreakdown?: Record<string, unknown>
+      amount?: number
+      currency?: string
     })
   | (RuntimeEventBase & { type: "raw"; vendor: string; payload: unknown })
   | (RuntimeEventBase & {
@@ -98,7 +106,12 @@ export interface AgentOutput {
   output: string
   exitCode: number
   sessionId?: string
-  usage?: { inputTokens?: number; outputTokens?: number }
+  usage?: {
+    inputTokens?: number
+    outputTokens?: number
+    contextTokens?: number
+    contextSize?: number
+  }
   costUsd?: number
   stopReason?: string
 }

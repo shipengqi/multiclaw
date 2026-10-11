@@ -14,6 +14,12 @@ export interface AgentDefinition {
   icon?: string
   runtime?: string
   /**
+   * Agent product (e.g. "claude", "opencode", "codex", "cursor").
+   * Distinct from `runtime` (the protocol, always "acp" today).
+   * When absent it is inferred from `command` or config defaults.
+   */
+  provider?: string
+  /**
    * Command to launch for this agent's runtime, when the runtime talks to an
    * external process (e.g. ACP). Generic — "which binary to start", not a
    * protocol detail — so a built-in runtime simply ignores it.
@@ -22,7 +28,16 @@ export interface AgentDefinition {
   /** Arguments for {@link command}. */
   args?: string[]
   model?: string
+  /**
+   * Map of provider ids (or the legacy alias "acp") to model names.
+   * Provider id is preferred; "acp" is kept for backward compatibility.
+   */
   models?: Partial<Record<string, string>>
+  /**
+   * Model tier preference. Used when `model` and `models` are absent.
+   * The catalog maps each tier to a provider-specific model id.
+   */
+  modelTier?: "strong" | "balanced" | "fast"
   systemPrompt: string
   taskPrompt: string
   /**
