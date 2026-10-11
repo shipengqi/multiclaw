@@ -62,6 +62,32 @@ function Chip({ agent, fallbackName, spinner }: ChipProps) {
 }
 
 /**
+ * The rendered width of each cell the rail draws, in rail order.
+ *
+ * The rail wraps, so its height is a function of its content — which means the
+ * row budget has to be able to see this before anything is rendered. Keeping the
+ * measurement next to the component is what stops the two drifting apart: if the
+ * rail changes shape, this is the one other place that needs the same change.
+ */
+export function railCellWidths(turn: TurnView): number[] {
+  // `G` stands in for the status glyph / spinner frame — both are one cell wide.
+  const chip = (name: string, icon?: string) => `G ${icon ? `${icon} ` : ""}${name}`.length + 1
+
+  const cells: number[] = []
+  for (const id of turn.leaderIds) {
+    const agent = turn.agents[id]
+    cells.push(chip(agent?.name ?? id, agent?.icon))
+  }
+  turn.stages.forEach((stage, index) => {
+    cells.push(` ${GLYPH.connector} `.length, `${circled(index + 1)} `.length)
+    for (const agent of stage.agents) {
+      cells.push(chip(agent.name, agent.icon))
+    }
+  })
+  return cells
+}
+
+/**
  * The team's shape at a glance: who runs before the pipeline, then each stage in
  * order.
  *

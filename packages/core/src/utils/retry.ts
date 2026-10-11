@@ -1,7 +1,27 @@
 import { abortError } from "./abort"
 
-export function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
+/**
+ * Sleep, interrupted by cancellation.
+ *
+ * Without the signal, cancelling during backoff leaves the timer running for the
+ * rest of the delay. The retry loop already refuses to invoke `fn` again, so the
+ * work is safe — but the continuation lingers for up to `ms`, keeping a turn
+ * alive after the user asked it to stop.
+ */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError())
+
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(abortError())
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
 }
 
 export async function withRetry<T>(
@@ -23,7 +43,7 @@ export async function withRetry<T>(
       if (signal?.aborted) throw lastError
       if (attempt <= retries) {
         onRetry?.(attempt, err)
-        await sleep(delayMs * attempt)
+        await sleep(delayMs * attempt, signal)
       }
     }
   }

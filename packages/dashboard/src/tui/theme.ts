@@ -64,4 +64,6 @@ export const GLYPH = {
   queued: "»",
   /** The leader is asking for a decision rather than reporting one. */
   ask: "?",
+  /** A mid-turn warning that rides alongside the outcome rather than hiding it. */
+  warn: "⚠",
 } as const

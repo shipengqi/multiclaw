@@ -13,6 +13,8 @@ const { ClaudeRuntime } = await import("./ClaudeRuntime")
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter()
   stderr = new EventEmitter()
+  // The prompt is written here rather than passed as an argument.
+  stdin = { on: vi.fn(), end: vi.fn() }
   kill = vi.fn()
 }
 
@@ -51,11 +53,15 @@ describe("ClaudeRuntime.execute", () => {
     spawnMock.mockReturnValue(child)
 
     const p = new ClaudeRuntime().execute(makeTask())
-    expect(spawnMock).toHaveBeenCalledWith(
-      "claude",
-      ["-p", "do it", "--allowedTools", "Read,Bash"],
-      { cwd: "/tmp/work", env: process.env }
-    )
+    // `detached` is what gives the child its own process group, so cancellation
+    // can reach the subprocesses claude spawns itself.
+    expect(spawnMock).toHaveBeenCalledWith("claude", ["-p", "--allowedTools", "Read,Bash"], {
+      cwd: "/tmp/work",
+      env: process.env,
+      detached: true,
+    })
+    // The prompt rides on stdin: a large inlined document would overflow argv.
+    expect(child.stdin.end).toHaveBeenCalledWith("do it")
 
     child.emit("close", 0)
     await expect(p).resolves.toEqual({ output: "", exitCode: 0 })
@@ -68,7 +74,6 @@ describe("ClaudeRuntime.execute", () => {
     const p = new ClaudeRuntime().execute(makeTask({ systemPrompt: "sys", model: "sonnet" }))
     expect(spawnMock.mock.calls[0][1]).toEqual([
       "-p",
-      "do it",
       "--allowedTools",
       "Read,Bash",
       "--system-prompt",

@@ -73,7 +73,7 @@ describe("loadConfig", () => {
     await expect(loadConfig(p)).rejects.toThrow(/Invalid config format/)
   })
 
-  it("loads a TypeScript config via the tsx loader", async () => {
+  it("loads a TypeScript config", async () => {
     const p = write(
       "multiclaw.config.ts",
       `import type { MultiClawConfig } from "@multiclawcli/core"
@@ -84,5 +84,47 @@ export default {
     )
     const config = await loadConfig(p)
     expect(config.agents[0].id).toBe("ts")
+  })
+
+  it("resolves the `multiclaw` import even when the package is not installed locally", async () => {
+    // The scaffolded config imports its helpers from the published package name,
+    // which is not resolvable from a project that only has a global install.
+    const p = write(
+      "multiclaw.config.ts",
+      `import { defineConfig, agents } from "multiclaw"
+export default defineConfig({ name: "x", workDir: "./w", agents: [agents.tester()] })`
+    )
+    const config = await loadConfig(p)
+    expect(config.agents).toHaveLength(1)
+  })
+
+  // Regression: the loader used to inherit the project's module system, so any
+  // project whose package.json lacked "type": "module" (the Node default) died
+  // with a require(esm) cycle before the config ran.
+  it("loads a config in a CommonJS project (package.json without type:module)", async () => {
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "cjs-project" }))
+    const p = write(
+      "multiclaw.config.ts",
+      `import { defineConfig, agents } from "multiclaw"
+export default defineConfig({ name: "cjs", workDir: "./w", agents: [agents.tester()] })`
+    )
+    const config = await loadConfig(p)
+    expect(config.agents).toHaveLength(1)
+  })
+
+  it("loads a config in a directory with no package.json at all", async () => {
+    fs.rmSync(path.join(tmpDir, "package.json"))
+    const p = write(
+      "multiclaw.config.ts",
+      `import { defineConfig, agents } from "multiclaw"
+export default defineConfig({ name: "bare", workDir: "./w", agents: [agents.tester()] })`
+    )
+    const config = await loadConfig(p)
+    expect(config.agents).toHaveLength(1)
+  })
+
+  it("reports an actionable error when the config cannot be compiled", async () => {
+    const p = write("multiclaw.config.ts", "export default { agents: [ this is not valid ] }")
+    await expect(loadConfig(p)).rejects.toThrow(/Failed to load config/)
   })
 })

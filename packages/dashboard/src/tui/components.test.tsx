@@ -3,7 +3,13 @@ import { Text } from "ink"
 import { describe, expect, it } from "vitest"
 import { COMMANDS } from "./commands"
 import { Header, HintBar, PipelineRail, QueueStrip, Rule } from "./components/chrome"
-import { HelpOverlay, HistoryOverlay } from "./components/overlays"
+import {
+  HelpOverlay,
+  HistoryOverlay,
+  helpRows,
+  historyCapacity,
+  historyWindowStart,
+} from "./components/overlays"
 import { ReplyPanel, StreamPanel, TeamPanel, WelcomePanel } from "./components/panels"
 import { CommandMenu, Prompt } from "./components/prompt"
 import {
@@ -431,7 +437,7 @@ describe("HistoryOverlay", () => {
 
   it("says so when there is nothing to browse", async () => {
     const frame = stripAnsi(
-      await renderFrame(<HistoryOverlay turns={[]} selected={0} width={80} />)
+      await renderFrame(<HistoryOverlay turns={[]} selected={0} width={80} maxRows={24} />)
     )
     expect(frame).toContain("0 earlier")
     expect(frame).toContain("No earlier turns yet.")
@@ -447,6 +453,7 @@ describe("HistoryOverlay", () => {
           ]}
           selected={0}
           width={80}
+          maxRows={24}
         />
       )
     )
@@ -471,6 +478,7 @@ describe("HistoryOverlay", () => {
           ]}
           selected={0}
           width={80}
+          maxRows={24}
         />
       )
     )
@@ -480,7 +488,9 @@ describe("HistoryOverlay", () => {
 
   it("marks only the selected row with a caret", async () => {
     const frame = stripAnsi(
-      await renderFrame(<HistoryOverlay turns={[turn(2), turn(1)]} selected={1} width={80} />)
+      await renderFrame(
+        <HistoryOverlay turns={[turn(2), turn(1)]} selected={1} width={80} maxRows={24} />
+      )
     )
     expect(frame.split("›").length - 1).toBe(1)
     expect(frame).toContain("› turn 1")
@@ -493,16 +503,73 @@ describe("HistoryOverlay", () => {
           turns={[turn(1, { requirement: "x".repeat(200) })]}
           selected={0}
           width={40}
+          maxRows={24}
         />
       )
     )
     for (const line of frame.split("\n")) expect(line.length).toBeLessThanOrEqual(40)
   })
+
+  // Regression: the list is unbounded, so past a handful of turns the highlight
+  // walked below the visible area and `enter` opened a turn that was not on
+  // screen — which is exactly when the list is worth opening.
+  it("windows the list and keeps the selected turn visible", async () => {
+    const turns = Array.from({ length: 12 }, (_, i) => turn(12 - i))
+    const frame = stripAnsi(
+      await renderFrame(<HistoryOverlay turns={turns} selected={11} width={80} maxRows={16} />)
+    )
+
+    expect(frame).toContain("showing")
+    // The last turn is the one selected, so it has to be on screen — along with
+    // its caret, which is what makes the selection legible.
+    expect(frame).toContain("› turn 1")
+    // The top of the list has been scrolled away.
+    expect(frame).not.toContain("turn 12")
+  })
+
+  it("shows the whole list when there is room for it", async () => {
+    const frame = stripAnsi(
+      await renderFrame(
+        <HistoryOverlay turns={[turn(2), turn(1)]} selected={0} width={80} maxRows={24} />
+      )
+    )
+    expect(frame).toContain("turn 2")
+    expect(frame).toContain("turn 1")
+    expect(frame).not.toContain("showing")
+  })
+})
+
+describe("historyCapacity / historyWindowStart", () => {
+  it("never offers less than one row", () => {
+    expect(historyCapacity(0)).toBe(1)
+    expect(historyCapacity(6)).toBe(1)
+  })
+
+  it("grows one row per turn", () => {
+    expect(historyCapacity(10)).toBe(2)
+    expect(historyCapacity(13)).toBe(3)
+  })
+
+  it("does not scroll when everything already fits", () => {
+    expect(historyWindowStart(0, 2, 10)).toBe(0)
+  })
+
+  it("scrolls the selection into view from below", () => {
+    expect(historyWindowStart(9, 12, 3)).toBe(7)
+  })
+
+  it("never scrolls past the end of the list", () => {
+    expect(historyWindowStart(11, 12, 3)).toBe(9)
+  })
+
+  it("scrolls back up when the selection returns to the top", () => {
+    expect(historyWindowStart(0, 12, 3)).toBe(0)
+  })
 })
 
 describe("HelpOverlay", () => {
   it("groups keys by where they apply", async () => {
-    const frame = stripAnsi(await renderFrame(<HelpOverlay width={80} />))
+    const frame = stripAnsi(await renderFrame(<HelpOverlay width={80} maxRows={30} />))
     expect(frame).toContain("? keys")
     expect(frame).toContain("prompt")
     expect(frame).toContain("panes")
@@ -510,14 +577,37 @@ describe("HelpOverlay", () => {
   })
 
   it("documents the keys the console actually implements", async () => {
-    const frame = stripAnsi(await renderFrame(<HelpOverlay width={80} />))
+    const frame = stripAnsi(await renderFrame(<HelpOverlay width={80} maxRows={30} />))
     for (const key of ["enter", "esc", "tab", "pgup pgdn", "ctrl+l", "/"]) {
       expect(frame).toContain(key)
     }
   })
 
   it("says how to close itself", async () => {
-    expect(stripAnsi(await renderFrame(<HelpOverlay width={80} />))).toContain("esc or ? to close")
+    expect(stripAnsi(await renderFrame(<HelpOverlay width={80} maxRows={30} />))).toContain(
+      "esc or ? to close"
+    )
+  })
+
+  // Regression: on a 24-row terminal the full help does not fit, and what used
+  // to happen was worse than clipping — the body was compressed, so rows folded
+  // into each other ("Scroll the stream a pagene").
+  it("drops its spacing rather than losing the closing line on a short screen", async () => {
+    const frame = stripAnsi(await renderFrame(<HelpOverlay width={80} maxRows={19} />))
+
+    expect(helpRows(false)).toBeGreaterThan(19)
+    expect(helpRows(true)).toBeLessThanOrEqual(19)
+    // Every group survives, including the instruction for getting back out.
+    expect(frame).toContain("prompt")
+    expect(frame).toContain("panes")
+    expect(frame).toContain("commands")
+    expect(frame).toContain("esc or ? to close")
+  })
+
+  it("keeps the spacing when it has room for it", async () => {
+    const frame = stripAnsi(await renderFrame(<HelpOverlay width={80} maxRows={30} />))
+    // Spaced mode: a blank line between the header and the first group.
+    expect(frame).toMatch(/\? keys\n\n\s*prompt/)
   })
 })
 

@@ -57,6 +57,13 @@ describe("ConsoleReporter", () => {
     expect(out()).toContain("Agents: 3  Stages: 2")
   })
 
+  it("announces a regrouped plan", () => {
+    // The task plan is applied after the header was printed, so the stage count
+    // it advertised is no longer the whole truth.
+    reporter().emit(event("orchestration:stages", { totalAgents: 3, stages: [[], [], []] }))
+    expect(out()).toContain("Plan applied — 3 stages")
+  })
+
   it("renders stage and agent lifecycle events", () => {
     const bus = reporter()
     bus.emit(event("stage:start", { stageIndex: 0 }))

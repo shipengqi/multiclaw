@@ -48,6 +48,15 @@ export class ConsoleReporter {
         )
         break
       }
+      case "orchestration:stages": {
+        // The architect's plan regrouped the team after the header was printed,
+        // so the earlier "Stages: N" is no longer the whole truth. Say so rather
+        // than leaving a stale count on screen.
+        console.log(
+          `${C.dim}${S.bullet} Plan applied — ${e.payload.stages.length} stages${C.reset}`
+        )
+        break
+      }
       case "stage:start": {
         const dash = (isFancy ? "─" : "-").repeat(16)
         console.log(`${C.cyan}${dash} Stage ${e.payload.stageIndex + 1} ${dash}${C.reset}`)

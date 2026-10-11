@@ -152,4 +152,15 @@ describe("AgentRunner.run", () => {
     expect(fs.existsSync(expected)).toBe(true)
     expect(seen?.workDir).toBe(expected)
   })
+
+  it("resolves to a failed result when the agent names an unknown runtime", async () => {
+    // `run` promises never to reject — `runStage` batches agents with
+    // Promise.all, so a rejection here would also discard the results of every
+    // sibling that did finish.
+    const result = await makeRunner().run(makeAgent({ id: "a", runtime: "no-such-runtime" }))
+
+    expect(result.status).toBe("failed")
+    expect(result.error).toContain('Runtime not found: "no-such-runtime"')
+    expect(events.some((e) => e.type === "agent:failed")).toBe(true)
+  })
 })

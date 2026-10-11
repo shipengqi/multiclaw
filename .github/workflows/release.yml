@@ -44,6 +44,29 @@ jobs:
       # and the workspace dependencies.
       - uses: pnpm/setup@v3
 
+      # The three packages are versioned and released together, and the tag
+      # below is named after `packages/core` alone. `bump-version.yml` enforces
+      # that they agree, but a hand-edited manifest on this branch would publish
+      # three different versions under a single tag. Check it again here, on the
+      # commit that is actually about to ship.
+      - name: Verify the package versions agree
+        run: |
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const dirs = ["packages/core", "packages/cli", "packages/dashboard"];
+          const versions = dirs.map((d) => JSON.parse(fs.readFileSync(`${d}/package.json`, "utf8")).version);
+
+          if (new Set(versions).size !== 1) {
+            console.log(
+              `::error::Packages are out of sync: ${dirs.map((d, i) => `${d}=${versions[i]}`).join(", ")}`,
+            );
+            process.exit(1);
+          }
+
+          console.log(`Publishing v${versions[0]}`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `VERSION=${versions[0]}\n`);
+          NODE
+
       - name: Build
         run: pnpm -r build
 
@@ -63,10 +86,8 @@ jobs:
 
       - name: Tag the release
         run: |
-          version=$(node -p "require('./packages/core/package.json').version")
-          git tag "v$version"
-          git push origin "v$version"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
 
       - name: Create the GitHub Release
         env:

@@ -196,7 +196,10 @@ export function StreamPanel({
 export function ReplyPanel({ reply, width }: { reply: LeaderMessage; width: number }) {
   const asking = reply.mode === "ask"
   return (
-    <Box flexDirection="column" paddingLeft={2} paddingTop={1} width={width}>
+    // `flexShrink={0}`: the body must clip this, not compress it. A shrunken
+    // column box folds its own text rows into each other before the body ever
+    // gets a chance to hide the overflow.
+    <Box flexDirection="column" flexShrink={0} paddingLeft={2} paddingTop={1} width={width}>
       <Text color={asking ? COLOR.warn : COLOR.accent} bold>
         {asking ? GLYPH.ask : GLYPH.leader} {asking ? "the team needs a decision" : "answered"}
       </Text>
@@ -232,7 +235,9 @@ export function WelcomePanel({ turn, width }: { turn: TurnView; width: number })
   const nameWidth = Math.min(24, Math.max(8, ...agents.map((a) => a.name.length)) + 2)
 
   return (
-    <Box flexDirection="column" paddingLeft={2} paddingTop={1} width={width}>
+    // `flexShrink={0}` — see ReplyPanel. Compressing the roster folds one agent's
+    // description onto the next row's, which reads as a corrupted screen.
+    <Box flexDirection="column" flexShrink={0} paddingLeft={2} paddingTop={1} width={width}>
       <Text color={COLOR.accent} bold>
         {GLYPH.brand} multiclaw
       </Text>

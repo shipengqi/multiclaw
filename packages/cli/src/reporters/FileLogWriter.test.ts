@@ -109,4 +109,36 @@ describe("FileLogWriter", () => {
     await delay(50)
     expect(fs.existsSync(path.join(logDir, "alpha.log"))).toBe(false)
   })
+
+  // Regression: `stream.end()` only *starts* the flush. The old `run` command
+  // called `process.exit()` on the next statement, so the tail of the last
+  // agent's log could be lost.
+  it("drain() waits until the streams have flushed", async () => {
+    const bus = fakeBus()
+    const writer = new FileLogWriter(logDir)
+    writer.attach(bus as unknown as EventBus)
+
+    bus.emit(outputEvent("alpha", "tail-of-the-log"))
+    bus.emit(completeEvent({ success: true }))
+
+    await writer.drain()
+    expect(fs.readFileSync(path.join(logDir, "alpha.log"), "utf8")).toBe("tail-of-the-log")
+  })
+
+  it("reports a stream failure instead of letting it kill the process", async () => {
+    const messages: string[] = []
+    const doomed = path.join(logDir, "doomed")
+    const writer = new FileLogWriter(doomed, (m) => messages.push(m))
+    const bus = fakeBus()
+    writer.attach(bus as unknown as EventBus)
+
+    // Take the directory away behind the writer's back: opening the log now
+    // fails asynchronously, which — without an 'error' handler — is an
+    // unhandled error event that terminates the process.
+    fs.rmSync(doomed, { recursive: true, force: true })
+    bus.emit(outputEvent("alpha", "x"))
+
+    await waitFor(() => messages.length > 0)
+    expect(messages[0]).toContain("alpha.log")
+  })
 })

@@ -45,13 +45,61 @@ export const HELP_GROUPS: readonly HelpGroup[] = [
 
 const KEY_COLUMN = 16
 
-/** The `?` overlay. Replaces the body rather than floating, which keeps it legible. */
-export function HelpOverlay({ width }: { width: number }) {
+/**
+ * One turn in the history list: the outcome row, the requirement row, and the
+ * gap between turns.
+ */
+const TURN_ROWS = 3
+
+/** Header, its gap, the list's gap and the footer. */
+const HISTORY_CHROME_ROWS = 4
+
+/** How many turns fit in a body of `maxRows`. Never fewer than one. */
+export function historyCapacity(maxRows: number): number {
+  return Math.max(1, Math.floor((maxRows - HISTORY_CHROME_ROWS) / TURN_ROWS))
+}
+
+/**
+ * The first turn to draw, given the one the cursor is on.
+ *
+ * The list can be longer than the body, so without this the cursor walks off the
+ * bottom and `enter` opens a turn the user cannot see — which is exactly when
+ * the list is worth opening.
+ */
+export function historyWindowStart(selected: number, total: number, capacity: number): number {
+  const maxStart = Math.max(0, total - capacity)
+  // Keep the selection on the last row when it moves past the bottom, and on the
+  // first when it moves back above it.
+  return Math.min(Math.max(0, Math.min(selected, selected - capacity + 1)), maxStart)
+}
+
+/** Rows the help screen occupies, with or without the gaps between groups. */
+export function helpRows(compact = false): number {
+  const gap = compact ? 0 : 1
+  const groups = HELP_GROUPS.reduce((total, group) => total + gap + 1 + group.rows.length, 0)
+  return 1 + gap + groups + gap + 1
+}
+
+/**
+ * The `?` overlay. Replaces the body rather than floating, which keeps it legible.
+ *
+ * `flexShrink={0}` so a body smaller than the content clips it rather than
+ * folding the rows into each other — the body does the clipping, and overlap is
+ * strictly worse than a missing row.
+ *
+ * When even the compact form does not fit, what gets clipped is the bottom, so
+ * the spacing between groups is the first thing to go: on a 24-row terminal the
+ * difference is whether "esc or ? to close" survives.
+ */
+export function HelpOverlay({ width, maxRows }: { width: number; maxRows: number }) {
+  const compact = helpRows(false) > maxRows
+  const gap = compact ? 0 : 1
+
   return (
-    <Box flexDirection="column" paddingLeft={2} paddingTop={1} width={width}>
+    <Box flexDirection="column" flexShrink={0} paddingLeft={2} paddingTop={1} width={width}>
       <Text dimColor>? keys</Text>
       {HELP_GROUPS.map((group) => (
-        <Box key={group.title} flexDirection="column" marginTop={1}>
+        <Box key={group.title} flexDirection="column" marginTop={gap}>
           <Text dimColor>{group.title}</Text>
           {group.rows.map(([keys, description]) => (
             <Box key={keys}>
@@ -63,7 +111,7 @@ export function HelpOverlay({ width }: { width: number }) {
           ))}
         </Box>
       ))}
-      <Box marginTop={1}>
+      <Box marginTop={gap}>
         <Text dimColor>esc or ? to close</Text>
       </Box>
     </Box>
@@ -103,13 +151,24 @@ export function HistoryOverlay({
   turns,
   selected,
   width,
+  maxRows,
 }: {
   turns: TurnView[]
   selected: number
   width: number
+  /** Rows available in the body. The list is windowed against this. */
+  maxRows: number
 }) {
+  const capacity = historyCapacity(maxRows)
+  const start = historyWindowStart(selected, turns.length, capacity)
+  const visible = turns.slice(start, start + capacity)
+  const range =
+    turns.length > capacity
+      ? ` · showing ${start + 1}–${start + visible.length} of ${turns.length}`
+      : ""
+
   return (
-    <Box flexDirection="column" paddingLeft={2} paddingTop={1} width={width}>
+    <Box flexDirection="column" flexShrink={0} paddingLeft={2} paddingTop={1} width={width}>
       <Box justifyContent="space-between">
         <Text dimColor>HISTORY</Text>
         <Text dimColor>{turns.length} earlier</Text>
@@ -121,7 +180,8 @@ export function HistoryOverlay({
         </Box>
       ) : (
         <Box flexDirection="column" marginTop={1}>
-          {turns.map((turn, index) => {
+          {visible.map((turn, offset) => {
+            const index = start + offset
             const focused = index === selected
             const state = outcome(turn)
             const { done, total } = progress(turn)
@@ -152,7 +212,7 @@ export function HistoryOverlay({
       )}
 
       <Box marginTop={1}>
-        <Text dimColor>↑↓ select · enter open · esc close</Text>
+        <Text dimColor>{`↑↓ select · enter open · esc close${range}`}</Text>
       </Box>
     </Box>
   )

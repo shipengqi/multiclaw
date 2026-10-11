@@ -52,6 +52,14 @@ const warningsOf = (events: MultiClawEvent[]) =>
       e.type === "orchestration:warning"
   )
 
+const regroupedStages = (events: MultiClawEvent[]) =>
+  events
+    .filter(
+      (e): e is Extract<MultiClawEvent, { type: "orchestration:stages" }> =>
+        e.type === "orchestration:stages"
+    )
+    .map((e) => e.payload.stages.map((s) => s.agents.map((a) => a.id)))
+
 describe("Orchestrator.run", () => {
   it("runs independent agents and reports overall success", async () => {
     const { result, events } = await runOrch([agent("a"), agent("b")])
@@ -171,7 +179,9 @@ describe("Orchestrator.run", () => {
     }
     const orch = new Orchestrator(config)
     const starts: Array<Record<string, unknown>> = []
+    const events: MultiClawEvent[] = []
     orch.eventBus.subscribe((e) => {
+      events.push(e)
       if (e.type === "agent:start") starts.push(e.payload as unknown as Record<string, unknown>)
     })
 
@@ -180,6 +190,10 @@ describe("Orchestrator.run", () => {
     const dev = starts.find((p) => p.agentId === "dev")
     expect(dev?.taskTitle).toBe("Implement")
     expect(result.agentResults.find((r) => r.agentId === "dev")?.status).toBe("success")
+    // The plan is applied after the architect stage, so the grouping published
+    // by `orchestration:start` is the pre-plan one. The regroup has to be
+    // announced separately or the console draws a pipeline that never ran.
+    expect(regroupedStages(events)).toEqual([[["architect"], ["dev"]]])
   })
 
   it("warns instead of failing silently when task-plan.json is malformed", async () => {
@@ -444,5 +458,100 @@ describe("Orchestrator.run · a turn that ends in words", () => {
     expect(complete?.payload).toMatchObject({
       reply: { mode: "reply", message: "just a greeting" },
     })
+  })
+})
+
+describe("Orchestrator.run · cancellation", () => {
+  // Regression: the abort check used to `break` before the loop that clears
+  // `allSuccess`, so a run the user stopped mid-stage resolved `success: true`
+  // with a result list full of failures — and the CLI exited 0 on Ctrl-C.
+  it("reports a cancelled run as cancelled, not as a success", async () => {
+    const controller = new AbortController()
+    handler = async (task) => {
+      controller.abort()
+      return { output: `out:${task.agentId}`, exitCode: 0 }
+    }
+    const orch = new Orchestrator({ name: "test", workDir, agents: [agent("a"), agent("b")] })
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => events.push(e))
+
+    const result = await orch.run({ signal: controller.signal })
+
+    expect(result.cancelled).toBe(true)
+    expect(result.success).toBe(false)
+    // Cancelling mid-stage falls through rather than emitting a stage:complete
+    // for a stage that did not finish.
+    expect(events.map((e) => e.type)).not.toContain("stage:complete")
+    const complete = events.find((e) => e.type === "orchestration:complete")
+    expect(complete?.payload).toMatchObject({ cancelled: true, success: false })
+  })
+
+  it("omits the cancelled flag entirely on a run that finished", async () => {
+    const { result } = await runOrch([agent("a")])
+    expect(result.cancelled).toBeUndefined()
+  })
+})
+
+describe("Orchestrator.run · a broken agent graph", () => {
+  it("warns and runs in declaration order instead of rejecting", async () => {
+    // A typo in a config's `dependsOn` used to throw straight out of `run()`,
+    // so the caller saw an unhandled rejection and no completion event.
+    const { result, events } = await runOrch([agent("a", { dependsOn: ["nope"] }), agent("b")])
+
+    expect(result.success).toBe(true)
+    expect(startedIds(events)).toEqual(["a", "b"])
+    expect(warningsOf(events).some((w) => w.payload.message.includes("declaration order"))).toBe(
+      true
+    )
+  })
+
+  it("drops a task-plan dependency that is not part of this run", async () => {
+    handler = async (task) => {
+      if (task.agentId === "leader") {
+        return { output: '{"mode":"run","run":["architect","dev"]}', exitCode: 0 }
+      }
+      if (task.agentId === "architect") {
+        fs.writeFileSync(
+          path.join(workDir, "task-plan.json"),
+          JSON.stringify({
+            tasks: [{ id: "dev", title: "Build it", dependsOn: ["unused"], scope: "s" }],
+          })
+        )
+      }
+      return { output: `out:${task.agentId}`, exitCode: 0 }
+    }
+    // Without the filter, `buildStages` would throw on dev's dangling dependency
+    // even though the leader legitimately left `unused` out of the run.
+    const { result, events } = await runOrch([agent("architect"), agent("dev"), agent("unused")], {
+      leader: agent("leader"),
+    })
+
+    expect(result.success).toBe(true)
+    expect(startedIds(events)).toEqual(["leader", "architect", "dev"])
+    expect(warningsOf(events).some((w) => w.payload.message.includes("not in this run"))).toBe(true)
+  })
+})
+
+describe("Orchestrator.run · config isolation", () => {
+  // Regression: the no-leader path returned the config's own agent objects, so
+  // `applyTaskPlan` wrote turn 1's titles and dependency graph onto the shared
+  // config. The console reuses one config across turns, so turn 2 inherited them.
+  it("does not write task-plan fields back onto the caller's config", async () => {
+    handler = async (task) => {
+      if (task.agentId === "dev") {
+        fs.writeFileSync(
+          path.join(workDir, "task-plan.json"),
+          JSON.stringify({ tasks: [{ id: "dev", title: "Turn 1 title", scope: "Turn 1 scope" }] })
+        )
+      }
+      return { output: "ok", exitCode: 0 }
+    }
+    const config: MultiClawConfig = { name: "test", workDir, agents: [agent("dev")] }
+    const orch = new Orchestrator(config)
+
+    await orch.run()
+
+    expect(config.agents[0].taskTitle).toBeUndefined()
+    expect(config.agents[0].agentScope).toBeUndefined()
   })
 })

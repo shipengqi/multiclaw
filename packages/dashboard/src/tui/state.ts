@@ -225,39 +225,65 @@ export function createInitialState(config: MultiClawConfig): TuiState {
   }
 }
 
+/**
+ * Fold the agents named in a stage list into the roster.
+ *
+ * A merge rather than a replace: the leader runs *before* `orchestration:start`,
+ * so by the time the stages arrive its agent may already have status and logs
+ * worth keeping. A re-published stage list (see `orchestration:stages`) hits the
+ * same path for the same reason.
+ */
+function mergeStageAgents(
+  agents: Record<string, AgentView>,
+  stages: StageInfo[]
+): Record<string, AgentView> {
+  const next = { ...agents }
+  for (const stage of stages) {
+    for (const a of stage.agents) {
+      const existing = next[a.id]
+      next[a.id] = existing
+        ? {
+            ...existing,
+            name: a.name,
+            icon: a.icon,
+            model: a.model,
+            // The event's `description` is absent for a hand-rolled agent
+            // definition, so fall back rather than blanking a known role.
+            description: a.description ?? existing.description,
+            taskTitle: a.taskTitle,
+          }
+        : blankAgent(a.id, a.name, {
+            icon: a.icon,
+            model: a.model,
+            description: a.description,
+            taskTitle: a.taskTitle,
+          })
+    }
+  }
+  return next
+}
+
 export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
   switch (event.type) {
     case "orchestration:start": {
-      const agents = { ...state.agents }
-      for (const stage of event.payload.stages) {
-        for (const a of stage.agents) {
-          const existing = agents[a.id]
-          agents[a.id] = existing
-            ? {
-                ...existing,
-                name: a.name,
-                icon: a.icon,
-                model: a.model,
-                // The event's `description` is absent for a hand-rolled agent
-                // definition, so fall back rather than blanking a known role.
-                description: a.description ?? existing.description,
-                taskTitle: a.taskTitle,
-              }
-            : blankAgent(a.id, a.name, {
-                icon: a.icon,
-                model: a.model,
-                description: a.description,
-                taskTitle: a.taskTitle,
-              })
-        }
-      }
       return {
         ...state,
         phase: "running",
         name: event.payload.name,
         requirement: event.payload.requirement ?? state.requirement,
         stages: event.payload.stages,
-        agents,
+        agents: mergeStageAgents(state.agents, event.payload.stages),
+      }
+    }
+
+    // The architect's task plan is applied *after* the first stage, which can
+    // regroup the team. The console drew the pre-plan grouping from
+    // `orchestration:start`; this is how it learns the grouping that ran.
+    case "orchestration:stages": {
+      return {
+        ...state,
+        stages: event.payload.stages,
+        agents: mergeStageAgents(state.agents, event.payload.stages),
       }
     }
 
@@ -383,6 +409,12 @@ function focusedLineCount(turn: TurnView): number {
  * Written out field by field rather than spread from `state`, because a spread
  * would copy `history` into itself — every turn would then carry a copy of all
  * the turns before it.
+ *
+ * `stages`, `agents` and `leaderIds` are shared with the live turn *by
+ * reference*, on purpose: every reducer path replaces them wholesale rather than
+ * mutating in place, so the snapshot can never be edited through them. That is
+ * an invariant, not an accident — an in-place edit anywhere would silently
+ * rewrite history, so keep the copies immutable.
  */
 function snapshot(state: TuiState): TurnView {
   return {
@@ -466,16 +498,23 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         if (ids.length === 0) return turn
         const current = turn.focusId ? ids.indexOf(turn.focusId) : -1
         const nextIndex = (current + action.delta + ids.length) % ids.length
+        // Nowhere to move to — a single agent, or a delta that lands back on the
+        // current one. Returning the same object keeps the no-op identity
+        // contract, which is what stops React re-rendering the whole tree for a
+        // keypress that changed nothing.
+        if (nextIndex === current) return turn
         // Switching agent switches the thing being read, so the window resets.
         return { ...turn, focusId: ids[nextIndex], autoFollow: false, scroll: 0 }
       })
 
     case "focus:set":
-      return mapShown(state, (turn) =>
-        turn.agents[action.agentId]
-          ? { ...turn, focusId: action.agentId, autoFollow: false, scroll: 0 }
-          : turn
-      )
+      return mapShown(state, (turn) => {
+        if (!turn.agents[action.agentId]) return turn
+        // Already focused *and* already pinned at the tail: the action would
+        // write back exactly what is there, so it is a no-op.
+        if (turn.focusId === action.agentId && !turn.autoFollow && turn.scroll === 0) return turn
+        return { ...turn, focusId: action.agentId, autoFollow: false, scroll: 0 }
+      })
 
     case "stream:scroll":
       return mapShown(state, (turn) => {

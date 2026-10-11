@@ -105,4 +105,35 @@ describe("withTimeout", () => {
     expect(error?.name).toBe("AbortError")
     expect(inner?.aborted).toBe(true)
   })
+
+  // Regression: the `cancelled` listener was registered with `{ once: true }`,
+  // which only detaches it when it fires. On the normal path it never does, so
+  // every agent leaked one listener onto the shared run signal.
+  it("leaves no abort listener behind on the caller's signal", async () => {
+    const { getEventListeners } = await import("node:events")
+    const controller = new AbortController()
+
+    await withTimeout(async () => "done", 1000, "Leak", controller.signal)
+
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0)
+  })
+
+  it("leaves no abort listener behind after the caller cancels", async () => {
+    const { getEventListeners } = await import("node:events")
+    const controller = new AbortController()
+
+    const promise = withTimeout(
+      () =>
+        new Promise<never>(() => {
+          /* never resolves */
+        }),
+      10_000,
+      "Leak",
+      controller.signal
+    )
+    controller.abort()
+    await promise.catch(() => undefined)
+
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0)
+  })
 })

@@ -40,6 +40,9 @@ program
   .action(() => upgradeCommand())
 
 program.parseAsync(process.argv).catch((err: unknown) => {
-  console.error(`\x1b[31mError: ${(err as Error).message ?? err}\x1b[0m`)
+  // `(err as Error).message` is a cast, not a check: a rejection with `null` or
+  // `undefined` would throw a TypeError while trying to report the error.
+  const message = err instanceof Error ? err.message : String(err)
+  console.error(`\x1b[31mError: ${message}\x1b[0m`)
   process.exit(1)
 })

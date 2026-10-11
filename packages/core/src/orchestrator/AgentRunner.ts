@@ -17,15 +17,6 @@ export class AgentRunner {
 
   async run(agent: AgentDefinition, signal?: AbortSignal): Promise<AgentResult> {
     const startTime = new Date()
-    const workDir = agent.workDir
-      ? path.resolve(this.globalWorkDir, agent.workDir)
-      : this.globalWorkDir
-    fs.mkdirSync(workDir, { recursive: true })
-
-    const runtime = runtimeRegistry.get(agent.runtime ?? "claude")
-    const retries = agent.retries ?? 0
-    const timeout = agent.timeout ?? 600_000
-    const tools = agent.tools ?? ["Read", "Write", "Bash"]
     const model = agent.model ?? agent.models?.[agent.runtime ?? "claude"]
 
     this.eventBus.emit({
@@ -44,6 +35,20 @@ export class AgentRunner {
     let output = ""
 
     try {
+      // Everything that can throw lives inside the try. `run` promises to always
+      // resolve to an AgentResult, and callers rely on it: `runStage` batches
+      // agents with Promise.all, so one rejection would discard the results of
+      // every sibling that did finish.
+      const workDir = agent.workDir
+        ? path.resolve(this.globalWorkDir, agent.workDir)
+        : this.globalWorkDir
+      fs.mkdirSync(workDir, { recursive: true })
+
+      const runtime = runtimeRegistry.get(agent.runtime ?? "claude")
+      const retries = agent.retries ?? 0
+      const timeout = agent.timeout ?? 600_000
+      const tools = agent.tools ?? ["Read", "Write", "Bash"]
+
       output = await withTimeout(
         (innerSignal) =>
           withRetry(
@@ -51,8 +56,14 @@ export class AgentRunner {
               attempts = attempt
               const agentContext: Record<string, string> = {
                 ...this.contextManager.snapshot(),
-                ...(agent.agentScope ? { agentScope: agent.agentScope } : {}),
-                ...(agent.agentPlan ? { agentPlan: agent.agentPlan } : {}),
+                // Every built-in task template references both. The leader only
+                // fills them in when the architect wrote a plan entry for this
+                // agent, and the no-leader path has no plan at all — so without a
+                // default the model is handed the literal text `{{agentScope}}`
+                // and has to guess what it was supposed to say.
+                agentScope: agent.agentScope ?? "Not narrowed down — cover the whole task.",
+                agentPlan:
+                  agent.agentPlan ?? "No step-by-step plan was provided — use your judgement.",
               }
               const prompt = await renderPrompt(agent.taskPrompt, agentContext, this.globalWorkDir)
               return (

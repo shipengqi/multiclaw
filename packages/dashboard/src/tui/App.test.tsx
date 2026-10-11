@@ -102,4 +102,33 @@ describe("App", () => {
     expect(frame).toContain("describe what the team should do…")
     expect(frame).toContain("tab switch")
   })
+
+  // Regression: the help screen is taller than the body on a 24-row terminal, and
+  // the body used to be shrinkable — so Yoga compressed the overlay and folded
+  // its rows into each other: "Scroll the stream a pagene", "This helpnished
+  // turns". The old assertions passed at every size because the header, prompt
+  // and hint bar are drawn *after* the body and painted over the damage.
+  it("shows help without folding its rows together on a 24-row terminal", async () => {
+    const frame = await driveFrame(<App config={DEMO} />, {
+      keys: ["?"],
+      columns: 80,
+      rows: 24,
+    }).then(stripAnsi)
+
+    expect(frame).toContain("Scroll the stream a page")
+    expect(frame).not.toContain("a pagene")
+    expect(frame).toContain("This help")
+    expect(frame).not.toContain("This helpnished")
+    // And the way back out survives the squeeze.
+    expect(frame).toContain("esc or ? to close")
+  })
+
+  it("clips the welcome roster rather than folding it on a tiny terminal", async () => {
+    const frame = await welcome(40, 10)
+
+    // Two agents' descriptions spliced onto one row is the signature of a
+    // compressed column box, not of a clipped one.
+    expect(frame).not.toContain("writes the codeution")
+    expect(frame).toContain("A team of agents, one prompt away.")
+  })
 })

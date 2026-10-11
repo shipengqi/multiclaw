@@ -51,23 +51,24 @@ export class Orchestrator {
 
     this.contextManager.set("pipelineAgents", agents.map((a) => `${a.id}: ${a.name}`).join("\n"))
 
-    let stages = buildStages(agents)
+    let stages = this.buildStagesOrFallback(agents, "Could not order the configured agents")
 
     const getModel = (agent: AgentDefinition): string | undefined => {
       return agent.model ?? agent.models?.[agent.runtime ?? "claude"]
     }
 
-    const stageInfos: StageInfo[] = stages.map((stage, i) => ({
-      stageIndex: i,
-      agents: stage.map((a) => ({
-        id: a.id,
-        name: a.name,
-        icon: a.icon,
-        model: getModel(a),
-        description: a.description,
-        taskTitle: a.taskTitle,
-      })),
-    }))
+    const toStageInfos = (list: AgentDefinition[][]): StageInfo[] =>
+      list.map((stage, i) => ({
+        stageIndex: i,
+        agents: stage.map((a) => ({
+          id: a.id,
+          name: a.name,
+          icon: a.icon,
+          model: getModel(a),
+          description: a.description,
+          taskTitle: a.taskTitle,
+        })),
+      }))
 
     this.eventBus.emit({
       type: "orchestration:start",
@@ -76,12 +77,13 @@ export class Orchestrator {
         name: this.config.name,
         requirement: this.config.context?.requirement,
         totalAgents: agents.length,
-        stages: stageInfos,
+        stages: toStageInfos(stages),
       },
     })
 
     const results: AgentResult[] = []
     let allSuccess = true
+    let cancelled = false
 
     for (let i = 0; i < stages.length; i++) {
       const stage = stages[i]
@@ -97,7 +99,14 @@ export class Orchestrator {
 
       // Cancelled mid-stage: stop scheduling further stages and fall through to
       // the completion result rather than emitting a misleading stage:complete.
-      if (options.signal?.aborted) break
+      // Both flags are needed — `AgentRunner` turns an abort into an ordinary
+      // `failed` result, so leaving `allSuccess` alone here would report a
+      // cancelled run as a success and make the CLI exit 0 on Ctrl-C.
+      if (options.signal?.aborted) {
+        cancelled = true
+        allSuccess = false
+        break
+      }
 
       // After architect stage completes, apply task plan and rebuild stages
       if (
@@ -106,7 +115,18 @@ export class Orchestrator {
         stageResults.some((r) => r.status === "success")
       ) {
         await this.applyTaskPlan(agents)
-        stages = buildStages(agents)
+        stages = this.buildStagesOrFallback(
+          agents,
+          "The task plan's dependencies could not be satisfied"
+        )
+        // The plan regrouped the team, and the console drew the pre-plan
+        // grouping from the `orchestration:start` above. Publishing the new
+        // stages is what keeps what is on screen matching what actually runs.
+        this.eventBus.emit({
+          type: "orchestration:stages",
+          timestamp: new Date().toISOString(),
+          payload: { totalAgents: agents.length, stages: toStageInfos(stages) },
+        })
       }
 
       for (const r of stageResults) {
@@ -144,6 +164,7 @@ export class Orchestrator {
       agentResults: results,
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
+      ...(cancelled ? { cancelled: true } : {}),
     }
 
     this.eventBus.emit({
@@ -152,6 +173,24 @@ export class Orchestrator {
       payload: result,
     })
     return result
+  }
+
+  /**
+   * Order the agents into stages, degrading to declaration order if the graph is
+   * broken.
+   *
+   * `buildStages` throws on a missing dependency and on a cycle. Letting that
+   * escape would reject `run()` before `orchestration:complete` is emitted, so
+   * the caller sees an unhandled rejection instead of a structured failure. A
+   * bad ordering is not a reason to run nothing.
+   */
+  private buildStagesOrFallback(agents: AgentDefinition[], context: string): AgentDefinition[][] {
+    try {
+      return buildStages(agents)
+    } catch (err) {
+      this.warn(`${context} (${errorMessage(err)}) — running the agents in declaration order.`)
+      return [agents]
+    }
   }
 
   /**
@@ -178,7 +217,7 @@ export class Orchestrator {
    */
   private async resolveTurn(signal?: AbortSignal): Promise<Resolution> {
     if (!this.config.leader || this.config.useLeader === false) {
-      return { kind: "run", agents: this.config.agents }
+      return { kind: "run", agents: this.configuredAgents() }
     }
 
     this.contextManager.set(
@@ -191,7 +230,7 @@ export class Orchestrator {
       // The leader is infrastructure, not the task. Losing it is worth saying out
       // loud, but the requirement itself may still be perfectly runnable.
       this.warn("The leader could not be reached — running the full configured team.")
-      return { kind: "run", agents: this.config.agents }
+      return { kind: "run", agents: this.configuredAgents() }
     }
 
     const decision = parseLeaderDecision(result.output)
@@ -208,9 +247,22 @@ export class Orchestrator {
     const message = result.output.trim()
     if (!message) {
       this.warn("The leader returned no output — running the full configured team.")
-      return { kind: "run", agents: this.config.agents }
+      return { kind: "run", agents: this.configuredAgents() }
     }
     return { kind: "message", mode: "reply", message }
+  }
+
+  /**
+   * The configured team, as copies.
+   *
+   * `applyTaskPlan` writes `taskTitle` / `dependsOn` / `agentScope` onto whatever
+   * objects it is handed. The console reuses a single config across turns, so
+   * returning the config's own objects would leak turn 1's dependency graph into
+   * turn 2 — the exact cross-turn contamination `clearStaleTaskPlan` exists to
+   * prevent, but for the in-memory fields rather than the file.
+   */
+  private configuredAgents(): AgentDefinition[] {
+    return this.config.agents.map((a) => ({ ...a }))
   }
 
   /**
@@ -287,11 +339,23 @@ export class Orchestrator {
     }
 
     const taskMap = new Map(taskPlan.tasks.map((t) => [t.id, t]))
+    const selected = new Set(agents.map((a) => a.id))
     for (const agent of agents) {
       const task = taskMap.get(agent.id)
       if (task) {
         agent.taskTitle = task.title
-        agent.dependsOn = task.dependsOn
+        // The plan is written by a model and can name a dependency the leader did
+        // not select. Keeping it would make `buildStages` throw on a dependency
+        // that is not in the set, so drop it here and say so.
+        const dependsOn = task.dependsOn?.filter((dep) => selected.has(dep))
+        for (const dep of task.dependsOn ?? []) {
+          if (!selected.has(dep)) {
+            this.warn(
+              `The task plan makes "${agent.id}" depend on "${dep}", which is not in this run — ignoring that dependency.`
+            )
+          }
+        }
+        agent.dependsOn = dependsOn
         agent.agentScope = task.scope
         if (task.plan?.length) {
           agent.agentPlan = task.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")

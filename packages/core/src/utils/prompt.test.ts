@@ -53,4 +53,24 @@ describe("renderPrompt", () => {
     const out = await renderPrompt("{{file:ctx.txt}} + {{extra}}", { extra: "CTX" }, workDir)
     expect(out).toBe("FILE + CTX")
   })
+
+  // Regression: `String.replace` with a *string* replacement interprets `$&`,
+  // `$'`, `` $` `` and `$$` in the substituted text. `$$` is the shell PID, so
+  // inlining a shell script silently collapsed it to a single `$`.
+  it("does not interpret $ replacement patterns in injected file contents", async () => {
+    const script = "echo $$ > /tmp/pid\ncp $1 $2\nawk '{print $&}'\n"
+    await fs.writeFile(path.join(workDir, "deploy.sh"), script)
+    const out = await renderPrompt("{{file:deploy.sh}}", {}, workDir)
+    expect(out).toBe(script)
+  })
+
+  it("does not interpret $ replacement patterns in context values", async () => {
+    const out = await renderPrompt("{{cmd}}", { cmd: "echo $$ and $& and $1" }, workDir)
+    expect(out).toBe("echo $$ and $& and $1")
+  })
+
+  it("refuses to inline a file outside the work directory", async () => {
+    const out = await renderPrompt("{{file:../escape.txt}}", {}, workDir)
+    expect(out).toBe("[file outside workspace: ../escape.txt]")
+  })
 })

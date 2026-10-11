@@ -56,13 +56,17 @@ const RUNTIME_INSTALL: Record<string, string> = {
 // ─── Config Generator ─────────────────────────────────────────────────────────
 
 function generateConfig(opts: { preset: string; workDir: string; projectName: string }): string {
+  // Interpolate through JSON.stringify: a project name like `My "App"` would
+  // otherwise close the string literal and produce a syntactically broken config.
+  const name = JSON.stringify(opts.projectName)
+  const workDir = JSON.stringify(opts.workDir)
   return `import { defineConfig, agents } from "multiclaw"
 
 export default defineConfig({
-  name: "${opts.projectName}",
-  workDir: "${opts.workDir}",
+  name: ${name},
+  workDir: ${workDir},
   context: {
-    projectName: "${opts.projectName}",
+    projectName: ${name},
   },
   agents: [
 ${AGENT_BLOCKS[opts.preset]}
@@ -118,6 +122,13 @@ export async function initCommand(): Promise<void> {
   console.log("")
   console.log(`> Run: multiclaw            (interactive console)`)
   console.log(`       multiclaw run "..."  (headless)`)
+  console.log("")
+  console.log(
+    `\x1b[2mTip: the CLI resolves the "multiclaw" import itself, so the config runs either way.\x1b[0m`
+  )
+  console.log(
+    `\x1b[2m     \`npm i -D multiclaw\` adds editor autocomplete for defineConfig/agents.\x1b[0m`
+  )
 
   checkRuntime()
 }

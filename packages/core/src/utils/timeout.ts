@@ -27,13 +27,20 @@ export function withTimeout<T>(
 
   // Rejects as soon as the caller aborts, so an in-flight runtime cannot keep
   // the orchestrator hanging after cancellation.
+  let onCancel: (() => void) | undefined
   const cancelled = new Promise<never>((_, reject) => {
     if (!signal) return
-    signal.addEventListener("abort", () => reject(abortError()), { once: true })
+    onCancel = () => reject(abortError())
+    signal.addEventListener("abort", onCancel, { once: true })
   })
 
   return Promise.race([factory(controller.signal), timeout, cancelled]).finally(() => {
     clearTimeout(timer)
     signal?.removeEventListener("abort", forward)
+    // `{ once: true }` only detaches the listener when it fires, and on the
+    // normal path it never does. The orchestrator hands the *same* signal to
+    // every agent, so without this each run would leak a listener until Node
+    // warns at 11+ agents.
+    if (onCancel) signal?.removeEventListener("abort", onCancel)
   })
 }

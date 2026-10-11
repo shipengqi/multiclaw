@@ -23,11 +23,6 @@
       "arrowParentheses": "always"
     }
   },
-  "css": {
-    "parser": {
-      "tailwindDirectives": true
-    }
-  },
   "linter": {
     "enabled": true,
     "rules": {
@@ -43,16 +38,6 @@
     }
   },
   "overrides": [
-    {
-      "includes": ["**/*.css"],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "noUnknownAtRules": "off"
-          }
-        }
-      }
-    },
     {
       "includes": ["**/*.test.ts", "**/testing/**"],
       "linter": {

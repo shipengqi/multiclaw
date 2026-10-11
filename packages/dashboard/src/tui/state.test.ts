@@ -390,6 +390,16 @@ describe("tuiReducer", () => {
     expect(state.focusId).toBe("a")
     expect(state.autoFollow).toBe(false)
   })
+
+  it("is a no-op cycling focus when there is a single agent", () => {
+    const state = withAgents("a")
+    expect(tuiReducer(state, { type: "focus:cycle", delta: 1 })).toBe(state)
+  })
+
+  it("is a no-op focusing the agent that is already focused and pinned", () => {
+    const pinned = tuiReducer(withAgents("a", "b"), { type: "focus:set", agentId: "b" })
+    expect(tuiReducer(pinned, { type: "focus:set", agentId: "b" })).toBe(pinned)
+  })
 })
 
 describe("turn history", () => {
@@ -622,6 +632,23 @@ describe("agent descriptions", () => {
   })
 })
 
+describe("orchestration:stages", () => {
+  it("replaces the grouping without disturbing the live agents", () => {
+    const state = reduceEvent(withAgents("a"), output("a", "hello"))
+    const next = reduceEvent(state, {
+      type: "orchestration:stages",
+      timestamp: TS,
+      payload: { totalAgents: 2, stages: [stage(0, ["a"]), stage(1, ["b"])] },
+    })
+
+    expect(next.stages.map((s) => s.agents.map((x) => x.id))).toEqual([["a"], ["b"]])
+    // The regroup must not reset what already ran: agent `a` keeps its log, and
+    // `b` — newly named by the plan — is folded in as pending.
+    expect(next.agents.a.logs).toBe("hello")
+    expect(next.agents.b.status).toBe("pending")
+  })
+})
+
 describe("leaderAgentIds", () => {
   it("names the configured leader", () => {
     expect(leaderAgentIds(config())).toEqual(["leader"])
@@ -843,7 +870,28 @@ describe("focus and window resets", () => {
     })
     expect(scrolled.scroll).toBe(2)
     expect(tuiReducer(scrolled, { type: "focus:set", agentId: "a" }).scroll).toBe(0)
+  })
+
+  it("returns the window to the tail when the focus cycles to another agent", () => {
+    // Both agents have output, so whichever one is focused has a window to reset.
+    const base = reduceEvent(
+      reduceEvent(withAgents("a", "b"), output("a", "1\n2\n3\n4\n5")),
+      output("b", "1\n2\n3\n4\n5")
+    )
+    const scrolled = tuiReducer(base, { type: "stream:scroll", delta: 2, viewport: 2 })
+    expect(scrolled.scroll).toBe(2)
+    // Auto-follow left the focus on "b"; cycling moves to "a" and resets the window.
     expect(tuiReducer(scrolled, { type: "focus:cycle", delta: 1 }).scroll).toBe(0)
+  })
+
+  it("leaves the window alone when a cycle has nowhere to go", () => {
+    // One agent: the focus cannot move, so the reader's position is not yanked.
+    const scrolled = tuiReducer(reduceEvent(withAgents("a"), output("a", "1\n2\n3\n4\n5")), {
+      type: "stream:scroll",
+      delta: 2,
+      viewport: 2,
+    })
+    expect(tuiReducer(scrolled, { type: "focus:cycle", delta: 1 })).toBe(scrolled)
   })
 
   it("returns the window to the tail when a new turn starts", () => {

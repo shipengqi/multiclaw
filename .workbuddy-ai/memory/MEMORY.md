@@ -43,7 +43,10 @@
   - cli 50/45/40/50(实测 60.75/63.21/59.09/60.11;commands/init.ts、run.ts、tui.ts 尚未覆盖),exclude `src/index.ts`、`src/lib.ts`
   - dashboard 90/85/90/90(实测 100/95.6/100/100)。**`coverage.include` 只列四个「带决策」的模块**:`src/tui/state.ts`、`format.ts`、`commands.ts`、`layout.ts`。App.tsx / index.ts / components/**.tsx 是终端 I/O 胶水,无单测价值,不纳入分母(它们由 `App.test.tsx` / `App.run.test.tsx` / `components.test.tsx` 做渲染层断言,但不计覆盖率)。改这个 include 会立刻改变覆盖率口径。
   - 注意:vitest 4 的 v8 provider **把从未被加载的文件的 branches/functions 也计入分母**,所以升级到 vitest 4 时这两项会大跌(已按新口径重新标定,不是覆盖率真的退了)。
-- 事件类型:core 的 `MultiClawEvent` 新增了 `orchestration:warning`;消费方 switch 需有 default 兜底。
+- 事件类型:core 的 `MultiClawEvent` 有 `orchestration:warning` 与 `orchestration:stages`
+  (后者是 architect 的 task plan 在第一阶段后重新分组时补发的,因为 `orchestration:start`
+  只能带分组前的 stages);消费方 switch 需有 default 兜底。TUI reducer 与 CLI ConsoleReporter
+  已各有一条分支。
 - **新结果字段优先挂在 `OrchestratorResult` 上,而不是新增事件类型**。仓库既有约定是「`orchestration:complete` 的 payload 类型就是 `OrchestratorResult`」,所以「这一轮如何结束」这类信息加到 result 里就自动随完成事件送达(`reply` 就是这么加的)。只有「发生在完成之前、需要单独送达」的东西才值得新事件。
 - **断言「结果」往往证明不了「机制」,要断言不变量**。实例:验证「运行中输入会排队」时,只断言「两轮都跑完了」是**无效**的 —— 把输入改成并发起第二轮同样满足它。真正区分「排队」与「并发」的是不变量:`execute` 里记 `inFlight` 峰值,断言 `peak === 1`。
 - 配套习惯:**写完回归测试先临时回退修复,确认它真的红**。本轮两处都做了(core 报 `expected true to be false`,TUI 报 `expected 1 to be 2`),否则无从知道测试是不是空转。
@@ -106,8 +109,18 @@
 - **临时夹具里的 agent 必须带 `taskPrompt`(哪怕空串)**。`renderPrompt` 第一句就是 `template.matchAll(...)`,漏了它不会报「缺字段」,而是抛 `Cannot read properties of undefined (reading 'matchAll')`,被 `AgentRunner` 包成 `agent:failed`——看起来像产品 bug,其实是夹具少写一行。`AgentDefinition.taskPrompt` 是必填,所以 `pnpm typecheck` 能挡住,但 **vitest 不做类型检查**,临时 `.test.tsx` 里手搓的对象字面量会静默跑起来。
 - 想让 fake leader **走 reply 分支**,光返回散文还不够:prompt 是从 `taskPrompt` 渲染的,而 `requirement` 靠 `{{requirement}}` 占位符注入。leader 的 `taskPrompt` 留空 → 渲染出空串 → 连「hello」都看不到,判断条件永远为假。夹具里给 leader 设 `taskPrompt: "{{requirement}}"`。
 
+## 已评审但未修的缺陷(`CODE_REVIEW.md`,针对 `61c6a02`)
+三个 blocker,都指向「没人走的分支」:
+- **取消被当成成功**:`Orchestrator.ts:100` 的 `if (signal.aborted) break` 跳过 112-117 行的 `allSuccess = false` → `success:true`。连带 `App.tsx:217` 的 `isAbortError` 分支是死代码,CLI 退出码 0。
+- **配置加载绑定调用方的 module type**:`loadConfig.ts:30-37`(tsx register + `import(absPath)`)在 package.json 无 `"type":"module"` 时报 `Cannot require() ES Module ... in a cycle`;`init` 不建 package.json。**仓内测不出来是因为 `examples/dev-team` 恰好是 `"type":"module"`**。
+- **TUI body 不计预算**:`layout.ts` 的 `reserved` 只管 chrome,body 内浮层高度不比较 → 80×24 按 `?` 丢行 + 文字重叠。Rail 的 `flexWrap="wrap"`(chrome.tsx:103)按 1 行记账,是同一个洞的第二处。
+其他已核实:`renderPrompt` 吃 `$&`/`` $` ``/`$'`/`$$`(prompt.ts:15,21,改成 `() => value`);`timeout.ts:30-33` 的 `cancelled` listener 正常路径不移除 → 11+ agent 报 `MaxListenersExceededWarning`;`core/package.json` 缺 `files` → pack 出 59 个文件;`release.yml` 缺版本一致性校验(`bump-version.yml:59-65` 有);无 leader 时 `applyTaskPlan` 原地改 `config.agents`;`buildStages` 两处调用未包 try;`FileLogWriter` 无 `on("error")` 且 `run.ts:46` 截断异步 flush;`.pnpmrc` 不被 pnpm 读取;`biome.json` 留着 Tailwind/CSS 死配置。
+
+**评审方法论(可复用)**:这个仓库的缺陷集中在**取消 / 小终端 / 非 ESM / 发布**四类边缘场景。现有测试断言的是「东西在不在」(header、prompt、hint 存在),不是「东西对不对」——而 header/prompt/hint 渲染在 body **之后**,正好盖住溢出,所以截断类 bug 结构性地测不出来。评审时优先跑真实但边缘的场景,不要读 happy path。另:`taskPrompt` 是必填但 **vitest 不做类型检查**,临时夹具手搓的对象漏字段会静默跑起来并伪装成产品 bug。
+
 ## 环境坑(pnpm)
-- 当前 `nodeLinker` 是 **isolated**(不是 hoisted)。新增依赖后 `.bin` 软链可能缺失或指向不存在目录,报 `vitest: command not found`。**再跑一次 `pnpm install` 通常自愈**,不要手工补软链。
+- 仓库根目录**没有** `.npmrc` / `.pnpmrc`:曾经那个 `.pnpmrc`(`node-linker=hoisted`)pnpm
+  从来不读,已删除。所以 nodeLinker 就是默认的 **isolated**,不要以为配了 hoisted。新增依赖后 `.bin` 软链可能缺失或指向不存在目录,报 `vitest: command not found`。**再跑一次 `pnpm install` 通常自愈**,不要手工补软链。
 - **增量 `pnpm install` 可能把新加的平台二进制错写进 `node_modules/.modules.yaml` 的 `skipped` 数组**(实测:`@rolldown/binding-darwin-arm64@1.2.13` 被跳过 → `vite build` 报 `Cannot find native binding`)。`pnpm install --force` 一次性修好;干净目录安装不复现,所以 CI(干净安装)不受影响。排查手法:`grep -n skipped node_modules/.modules.yaml`。
 - **`pnpm -r <script>` 会先校验并自动补齐依赖**(pnpm 12 的 verifyDepsBeforeRun)。若 `node_modules` 与 lockfile 不一致——例如手工放进 `node_modules/@biomejs/cli-darwin-arm64` 的那个二进制——它会隐式跑一次 install、`+24 -19` 重新链接 `.bin`。此时若 vitest 正在启动,就会出现「no tests / 1 error」的**假失败**(已实测复现)。单独重跑对应包即绿,不是代码问题。
 - 本机 pnpm store 偶发写入失败(尤以 `@biomejs/cli-darwin-arm64` 为甚),重装通常能成功。

@@ -4,7 +4,14 @@ import { isAbortError, Orchestrator } from "@multiclawcli/core"
 import { Box, type Key, Text, useApp, useInput, useWindowSize } from "ink"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { matchCommands, menuQuery, parseCommand } from "./commands"
-import { Header, HintBar, PipelineRail, QueueStrip, Rule } from "./components/chrome"
+import {
+  Header,
+  HintBar,
+  PipelineRail,
+  QueueStrip,
+  Rule,
+  railCellWidths,
+} from "./components/chrome"
 import { HelpOverlay, HistoryOverlay } from "./components/overlays"
 import { Divider, ReplyPanel, StreamPanel, TeamPanel, WelcomePanel } from "./components/panels"
 import { CommandMenu, Prompt } from "./components/prompt"
@@ -74,7 +81,11 @@ function StatusLine({
         {error}
       </Text>
     )
-  if (state.warning)
+  // A warning is live information while the turn is in flight, but it must not
+  // outlive the turn. `warning` is only cleared by the next `turn:start`, so
+  // letting it win once the turn is complete would hide the outcome forever —
+  // the user would never learn whether the run succeeded.
+  if (state.warning && state.phase !== "complete")
     return (
       <Text color={COLOR.warn} wrap="truncate-end">
         {state.warning}
@@ -106,13 +117,15 @@ function StatusLine({
 
   if (state.phase === "complete") {
     const time = state.totalDuration === undefined ? "" : ` ${formatDuration(state.totalDuration)}`
-    return state.success ? (
-      <Text color={COLOR.ok} wrap="truncate-end">
-        {STATUS.success.glyph} done{time}
-      </Text>
-    ) : (
-      <Text color={COLOR.error} wrap="truncate-end">
-        {STATUS.failed.glyph} finished with failures{time}
+    // The outcome leads once the turn is over; a warning raised mid-turn rides
+    // along beside it rather than replacing it.
+    const outcome = state.success
+      ? `${STATUS.success.glyph} done${time}`
+      : `${STATUS.failed.glyph} finished with failures${time}`
+    return (
+      <Text color={state.success ? COLOR.ok : COLOR.error} wrap="truncate-end">
+        {outcome}
+        {state.warning ? ` · ${GLYPH.warn} ${state.warning}` : ""}
       </Text>
     )
   }
@@ -166,13 +179,18 @@ export function App({ config, onTurnStart }: AppProps) {
     return () => clearInterval(timer)
   }, [running])
 
-  // The caret blinks whenever the prompt accepts input — which is always, now
-  // that a running turn no longer disables it.
+  // The caret blinks only when there is something to indicate: a turn in flight,
+  // or text in the prompt. On an idle empty console a blink repaints the whole
+  // tree twice a second for a cursor with nothing to point at, so the caret
+  // simply stays lit.
   useEffect(() => {
-    setCaretOn(true)
+    if (!running && line.text === "") {
+      setCaretOn(true)
+      return
+    }
     const timer = setInterval(() => setCaretOn((on) => !on), BLINK_INTERVAL_MS)
     return () => clearInterval(timer)
-  }, [])
+  }, [running, line.text])
 
   const startTurn = useCallback(
     async (requirement: string) => {
@@ -241,6 +259,10 @@ export function App({ config, onTurnStart }: AppProps) {
   const runCommand = useCallback(
     (name: string, args: string[]) => {
       setLine(EMPTY_LINE)
+      // Commands act on the turn the panes are showing, not the live one. While a
+      // past turn is open, `/clear` clears *its* buffer, so validating and
+      // reporting against the live turn would name an agent that did not change.
+      const shown = state.view ?? state
       switch (name) {
         case "agents":
           setNotice(
@@ -255,7 +277,7 @@ export function App({ config, onTurnStart }: AppProps) {
             setNotice("usage: /focus <agent id>")
             return
           }
-          if (!state.agents[id]) {
+          if (!shown.agents[id]) {
             setNotice(`unknown agent: ${id}`)
             return
           }
@@ -264,12 +286,12 @@ export function App({ config, onTurnStart }: AppProps) {
           return
         }
         case "clear":
-          if (!state.focusId) {
+          if (!shown.focusId) {
             setNotice("nothing focused")
             return
           }
           dispatch({ type: "stream:clear" })
-          setNotice(`cleared ${state.focusId}`)
+          setNotice(`cleared ${shown.focusId}`)
           return
         case "history":
           if (state.history.length === 0) {
@@ -306,7 +328,7 @@ export function App({ config, onTurnStart }: AppProps) {
           setNotice(`unknown command: /${name}`)
       }
     },
-    [config, exit, queue.length, state.agents, state.focusId, state.history.length]
+    [config, exit, queue.length, state]
   )
 
   const submit = useCallback(() => {
@@ -397,7 +419,15 @@ export function App({ config, onTurnStart }: AppProps) {
     notice: notice !== undefined,
     viewing: state.view !== undefined,
     hasRail: shown.leaderIds.length > 0 || shown.stages.length > 0,
+    railCells: railCellWidths(shown),
   })
+
+  // The palette renders at most `layout.menuRows` entries, so the highlight has
+  // to be clamped to the same window. `selected` is bounded by the full match
+  // list, which today is exactly as long as the window — but a longer list would
+  // otherwise highlight a row that was never drawn.
+  const menuWindow = matches.slice(0, layout.menuRows)
+  const menuSelected = Math.min(selected, Math.max(0, menuWindow.length - 1))
 
   const now = Date.now()
   const spinner = SPINNER[tick % SPINNER.length]
@@ -424,24 +454,9 @@ export function App({ config, onTurnStart }: AppProps) {
       }
       return
     }
-    if (key.ctrl && char === "d") {
-      if (!line.text) exit()
-      return
-    }
-    if (key.ctrl && char === "l") {
-      dispatch({ type: "stream:clear" })
-      setNotice(state.focusId ? `cleared ${state.focusId}` : "nothing focused")
-      return
-    }
-    if (key.ctrl && char === "a") {
-      moveTo(0)
-      return
-    }
-    if (key.ctrl && char === "e") {
-      setLine((l) => ({ ...l, cursor: l.text.length }))
-      return
-    }
-
+    // The overlays are modal, so they get the keys first: a `ctrl+l` that
+    // cleared the log behind an open help screen, or a `ctrl+d` that quit from
+    // inside it, would be a key the overlay claims to swallow but does not.
     if (helpOpen) {
       if (key.escape || char === "?") setHelpOpen(false)
       return
@@ -468,6 +483,24 @@ export function App({ config, onTurnStart }: AppProps) {
         setHistoryOpen(false)
         return
       }
+      return
+    }
+
+    if (key.ctrl && char === "d") {
+      if (!line.text) exit()
+      return
+    }
+    if (key.ctrl && char === "l") {
+      dispatch({ type: "stream:clear" })
+      setNotice(shown.focusId ? `cleared ${shown.focusId}` : "nothing focused")
+      return
+    }
+    if (key.ctrl && char === "a") {
+      moveTo(0)
+      return
+    }
+    if (key.ctrl && char === "e") {
+      setLine((l) => ({ ...l, cursor: l.text.length }))
       return
     }
 
@@ -592,30 +625,62 @@ export function App({ config, onTurnStart }: AppProps) {
     <Box flexDirection="column" height={layout.rows}>
       <Header
         name={state.name || config.name}
-        right={`turn ${state.turn} · ${running ? formatDuration(turnElapsed(state, now) ?? 0) : state.phase === "complete" ? "complete" : "ready"}`}
+        // The turn number tracks what the panes are showing, not the live turn:
+        // while a past turn is open the body renders it, and a header naming a
+        // different turn is a lie about which one is on screen.
+        right={
+          state.view
+            ? `turn ${shown.turn} · viewing`
+            : `turn ${shown.turn} · ${
+                running
+                  ? formatDuration(turnElapsed(state, now) ?? 0)
+                  : state.phase === "complete"
+                    ? "complete"
+                    : "ready"
+              }`
+        }
       />
       <Rule width={layout.columns} />
 
       {layout.showRail ? (
-        <Box marginTop={1}>
+        // The rail wraps, so it can be taller than one row. Cap it at the height
+        // the budget reserved and clip, rather than letting the extra rows push
+        // the chrome below it off the screen.
+        <Box marginTop={1} height={layout.railRows} overflow="hidden" flexShrink={0}>
           <PipelineRail turn={shown} spinner={spinner} />
         </Box>
       ) : null}
 
       {/* A column box so the body row stretches to the pane width. Ink's Box
           defaults to `row`, and a row parent sizes its child by content — which
-          silently collapses every `space-between` inside the body. */}
-      <Box marginTop={1} height={layout.bodyHeight} flexShrink={1} flexDirection="column">
+          silently collapses every `space-between` inside the body.
+
+          `overflow="hidden"` is what makes the body a real budget: content that
+          does not fit is clipped. Without it Yoga compresses the child instead,
+          and text rows fold into each other — a help screen that reads
+          "Scroll the stream a pagene" is worse than one that simply stops. */}
+      <Box
+        marginTop={1}
+        height={layout.bodyHeight}
+        flexShrink={0}
+        flexDirection="column"
+        overflow="hidden"
+      >
         {helpOpen ? (
-          <HelpOverlay width={layout.columns} />
+          <HelpOverlay width={layout.columns} maxRows={layout.bodyHeight} />
         ) : historyOpen ? (
-          <HistoryOverlay turns={historyTurns} selected={historyIndex} width={layout.columns} />
+          <HistoryOverlay
+            turns={historyTurns}
+            selected={historyIndex}
+            width={layout.columns}
+            maxRows={layout.bodyHeight}
+          />
         ) : layout.welcome ? (
           <WelcomePanel turn={state} width={layout.columns} />
         ) : shown.reply ? (
           <ReplyPanel reply={shown.reply} width={layout.columns} />
         ) : (
-          <Box height={layout.bodyHeight} flexDirection="row">
+          <Box height={layout.bodyHeight} flexShrink={0} flexDirection="row">
             {layout.showTeam ? (
               <>
                 <TeamPanel turn={shown} width={layout.teamWidth} now={now} spinner={spinner} />
@@ -642,9 +707,7 @@ export function App({ config, onTurnStart }: AppProps) {
 
       <QueueStrip items={queue} max={layout.queueRows} />
 
-      {menuOpen ? (
-        <CommandMenu commands={matches.slice(0, layout.menuRows)} selected={selected} />
-      ) : null}
+      {menuOpen ? <CommandMenu commands={menuWindow} selected={menuSelected} /> : null}
 
       <Prompt
         value={line.text}

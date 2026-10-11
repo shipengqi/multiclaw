@@ -18,6 +18,19 @@ export type MultiClawEvent =
       timestamp: string
       payload: { name: string; requirement?: string; totalAgents: number; stages: StageInfo[] }
     }
+  | {
+      /**
+       * The stage list changed after the turn had already started.
+       *
+       * The leader plans first, so `orchestration:start` necessarily carries the
+       * *pre-plan* grouping. Once the architect's task plan is applied the team is
+       * regrouped, and consumers that drew the first grouping need to be told —
+       * otherwise the console shows a pipeline that never ran.
+       */
+      type: "orchestration:stages"
+      timestamp: string
+      payload: { totalAgents: number; stages: StageInfo[] }
+    }
   | { type: "orchestration:complete"; timestamp: string; payload: OrchestratorResult }
   | {
       type: "orchestration:warning"

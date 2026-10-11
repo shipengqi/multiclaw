@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { computeLayout, MAX_MENU_ROWS, MAX_QUEUE_ROWS, MIN_COLUMNS, MIN_ROWS } from "./layout"
+import {
+  computeLayout,
+  MAX_MENU_ROWS,
+  MAX_QUEUE_ROWS,
+  MAX_RAIL_ROWS,
+  MIN_COLUMNS,
+  MIN_ROWS,
+  measureRailRows,
+} from "./layout"
 
 const base = {
   columns: 100,
@@ -128,5 +136,40 @@ describe("computeLayout", () => {
     expect(computeLayout({ ...base, columns: 200 }).teamWidth).toBe(30)
     expect(computeLayout({ ...base, columns: 120 }).teamWidth).toBe(28)
     expect(computeLayout({ ...base, columns: 72 }).teamWidth).toBe(18)
+  })
+})
+
+describe("measureRailRows", () => {
+  it("is one row while everything fits", () => {
+    expect(measureRailRows([10, 10, 10], 100)).toBe(1)
+  })
+
+  it("counts a second row once the cells overflow the width", () => {
+    // 60 + 60 does not fit in 100, so the second cell wraps.
+    expect(measureRailRows([60, 60], 100)).toBe(2)
+  })
+
+  it("never reports more than the cap, however long the pipeline is", () => {
+    expect(measureRailRows([40, 40, 40, 40, 40], 100)).toBe(MAX_RAIL_ROWS)
+  })
+
+  it("is nothing when there is nothing to draw", () => {
+    expect(measureRailRows([], 100)).toBe(0)
+    expect(measureRailRows(undefined, 100)).toBe(0)
+  })
+
+  // The rail wraps, so its height is content-dependent. A flat "one row" charge
+  // under-budgets it, and the chrome below pays for the difference.
+  it("charges the rail for the rows it actually wraps onto", () => {
+    const wide = computeLayout({ ...base, railCells: [10, 10] })
+    const narrow = computeLayout({ ...base, railCells: [80, 80] })
+
+    expect(wide.railRows).toBe(1)
+    expect(narrow.railRows).toBe(2)
+    expect(wide.bodyHeight - narrow.bodyHeight).toBe(1)
+  })
+
+  it("assumes one row when the caller does not measure the cells", () => {
+    expect(computeLayout(base).railRows).toBe(1)
   })
 })
