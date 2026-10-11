@@ -79,20 +79,30 @@ describe("assertRuntimesAvailable", () => {
     }
   })
 
-  it("probes a given (runtime, command) pair only once", async () => {
+  it("dedupes on the (runtime, command) pair, not the runtime name alone", async () => {
     const dir = mkdtempSync(join(tmpdir(), "gate-"))
     makeExecutable(dir, "good-agent")
+    makeExecutable(dir, "other-agent")
     process.env.PATH = dir
     const describeSpy = vi.spyOn(AcpRuntime.prototype, "describe")
     try {
+      // Same pair → probed once.
       await assertRuntimesAvailable(acpConfig(["good-agent", "good-agent"]))
       expect(describeSpy).toHaveBeenCalledTimes(1)
+
+      describeSpy.mockClear()
+      // Same runtime, DIFFERENT command, both present → probed twice. A
+      // name-based key would call describe() once here and miss `other-agent`.
+      await assertRuntimesAvailable(acpConfig(["good-agent", "other-agent"]))
+      expect(describeSpy).toHaveBeenCalledTimes(2)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
   it("rejects an unknown runtime by name", async () => {
+    // Characterisation: this branch is unchanged by the command-aware fix, so
+    // it guards the behaviour without being a regression test for that change.
     const exit = spyOnExit()
     vi.spyOn(console, "error").mockImplementation(() => {})
     const config = acpConfig([undefined])
