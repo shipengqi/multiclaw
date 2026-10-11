@@ -18,6 +18,7 @@ import { CommandMenu, Prompt } from "./components/prompt"
 import { formatDuration } from "./format"
 import { computeLayout } from "./layout"
 import {
+  conversationTurns,
   createInitialState,
   leaderAgentIds,
   plannedAgents,
@@ -143,6 +144,11 @@ export function App({ config, onTurnStart }: AppProps) {
   const { columns, rows } = useWindowSize()
 
   const [state, dispatch] = useReducer(tuiReducer, config, createInitialState)
+  // `startTurn` is not rebuilt when state changes, so it reads the turn on screen
+  // through a ref. The conversation it hands the leader has to be the one the
+  // panes are showing, not the one from whichever render created the callback.
+  const stateRef = useRef(state)
+  stateRef.current = state
   const [line, setLine] = useState<Line>(EMPTY_LINE)
   const [caretOn, setCaretOn] = useState(true)
   const [tick, setTick] = useState(0)
@@ -197,6 +203,9 @@ export function App({ config, onTurnStart }: AppProps) {
       setError(undefined)
       setCancelled(false)
       setNotice(undefined)
+      // Read before the dispatch below: `turn:start` moves the turn on screen
+      // into `history`, and this wants it as it is right now.
+      const earlierTurns = conversationTurns(stateRef.current)
       // Each turn starts from the configured roster, so the team list is
       // populated the instant the turn begins rather than after the leader runs.
       dispatch({
@@ -216,6 +225,9 @@ export function App({ config, onTurnStart }: AppProps) {
       const runConfig: MultiClawConfig = {
         ...config,
         context: { ...config.context, requirement },
+        // An answer only reads as a requirement next to the question it answers,
+        // so the leader is handed the turns behind this one as well.
+        history: earlierTurns,
         logDir,
       }
 
@@ -641,6 +653,12 @@ export function App({ config, onTurnStart }: AppProps) {
         }
       />
       <Rule width={layout.columns} />
+
+      {config.useLeader === false ? (
+        <Text color={COLOR.warn} dimColor wrap="truncate-end">
+          {"  ⚠ leader off — every message runs the full team"}
+        </Text>
+      ) : null}
 
       {layout.showRail ? (
         // The rail wraps, so it can be taller than one row. Cap it at the height

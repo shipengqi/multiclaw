@@ -1,6 +1,7 @@
 import type {
   AgentDefinition,
   AgentResult,
+  LeaderMessage,
   MultiClawConfig,
   MultiClawEvent,
   StageInfo,
@@ -10,6 +11,7 @@ import {
   type AgentView,
   agentElapsed,
   appendLog,
+  conversationTurns,
   createInitialState,
   initialState,
   leaderAgentIds,
@@ -568,7 +570,7 @@ describe("seedAgents", () => {
   it("shows the model the agent will actually run with", () => {
     const agents = seedAgents(
       config({
-        agents: [agent("dev", { models: { claude: "opus" } }), agent("qa", { model: "haiku" })],
+        agents: [agent("dev", { models: { acp: "opus" } }), agent("qa", { model: "haiku" })],
       })
     )
     expect(agents.dev.model).toBe("opus")
@@ -934,5 +936,78 @@ describe("focus and window resets", () => {
       startedAt: T0,
     })
     expect(next.reply).toBeUndefined()
+  })
+})
+
+describe("conversationTurns", () => {
+  /** Run one turn to completion, optionally ending it in words. */
+  function ran(state: TuiState, requirement: string, reply?: LeaderMessage): TuiState {
+    const started = tuiReducer(state, {
+      type: "turn:start",
+      requirement,
+      agents: seedAgents(config()),
+      leaderIds: ["leader"],
+      startedAt: T0,
+    })
+    return reduceEvent(started, {
+      type: "orchestration:complete",
+      timestamp: TS,
+      payload: {
+        name: "demo",
+        success: true,
+        totalDuration: 10,
+        agentResults: [],
+        startTime: TS,
+        endTime: TS,
+        ...(reply ? { reply } : {}),
+      },
+    })
+  }
+
+  it("carries nothing before the first turn has run", () => {
+    expect(conversationTurns(createInitialState(config()))).toEqual([])
+  })
+
+  it("carries the question a later answer belongs to", () => {
+    const state = ran(createInitialState(config()), "build a web app", {
+      mode: "ask",
+      message: "which database?",
+    })
+
+    expect(conversationTurns(state)).toEqual([
+      { requirement: "build a web app", reply: { mode: "ask", message: "which database?" } },
+    ])
+  })
+
+  it("leaves out the leader line for a turn that ran the team", () => {
+    const state = ran(createInitialState(config()), "add a --json flag")
+
+    expect(conversationTurns(state)).toEqual([{ requirement: "add a --json flag" }])
+  })
+
+  it("keeps every finished turn, oldest first", () => {
+    let state = createInitialState(config())
+    state = ran(state, "build a web app", { mode: "ask", message: "which database?" })
+    state = ran(state, "Postgres")
+
+    expect(conversationTurns(state).map((turn) => turn.requirement)).toEqual([
+      "build a web app",
+      "Postgres",
+    ])
+  })
+
+  // Half a turn is not context: a cancelled turn never emits
+  // `orchestration:complete`, so it would otherwise be carried as a requirement
+  // the team was asked for and never finished.
+  it("leaves out a turn that is still running", () => {
+    const state = tuiReducer(createInitialState(config()), {
+      type: "turn:start",
+      requirement: "build a web app",
+      agents: seedAgents(config()),
+      leaderIds: ["leader"],
+      startedAt: T0,
+    })
+
+    expect(conversationTurns(state)).toEqual([])
   })
 })

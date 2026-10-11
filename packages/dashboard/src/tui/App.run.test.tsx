@@ -1,5 +1,5 @@
 import type { MultiClawConfig } from "@multiclawcli/core"
-import { runtimeRegistry } from "@multiclawcli/core"
+import { agents, runtimeRegistry } from "@multiclawcli/core"
 import { beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { App } from "./App"
 import { stripAnsi } from "./state"
@@ -516,5 +516,76 @@ describe("App · the workspace across turns", () => {
 
     expect(workDirs.length).toBeGreaterThanOrEqual(4) // leader + architect, twice
     expect(new Set(workDirs)).toEqual(new Set(["/tmp/multiclaw-tui-workspace"]))
+  })
+})
+
+const ASK_RUNTIME = "tui-integration-ask"
+
+const ASK_CONFIG: MultiClawConfig = {
+  name: "dev-team",
+  workDir: "/tmp/multiclaw-tui-ask",
+  // The real preset, on purpose: the conversation reaches the leader through its
+  // task template, so a stub `taskPrompt` would have nothing to assert against.
+  leader: agents.leader({ runtime: ASK_RUNTIME }),
+  agents: [agents.architect({ runtime: ASK_RUNTIME })],
+}
+
+describe("App · answering a question the leader asked", () => {
+  /** How many times the leader has run so far. */
+  let leaderRuns = 0
+  /** The prompt the leader was handed on the turn that follows its question. */
+  let secondPrompt = ""
+
+  beforeEach(() => {
+    leaderRuns = 0
+    secondPrompt = ""
+  })
+
+  beforeAll(() => {
+    runtimeRegistry.register({
+      name: ASK_RUNTIME,
+      describe: alwaysAvailable(ASK_RUNTIME),
+      async execute(task) {
+        if (task.agentId !== "leader") return { output: "done", exitCode: 0 }
+        leaderRuns += 1
+        if (leaderRuns === 1) {
+          return { output: '{"mode":"ask","message":"which database?"}', exitCode: 0 }
+        }
+        secondPrompt = task.prompt
+        return { output: '{"mode":"run","run":["architect"]}', exitCode: 0 }
+      },
+    })
+  })
+
+  // Regression: a bare answer arrived with nothing behind it. The leader was
+  // handed "Postgres" as a requirement, with no way to know which question it
+  // answered — so it asked again, and the console never got past the question.
+  it("hands the leader the question its answer belongs to", async () => {
+    let completes = 0
+    let resolveSecond: () => void = () => {}
+    const second = new Promise<void>((resolve) => {
+      resolveSecond = resolve
+    })
+
+    await driveFrame(
+      <App
+        config={ASK_CONFIG}
+        onTurnStart={(bus) => {
+          bus.subscribe((event) => {
+            if (event.type !== "orchestration:complete") return
+            completes += 1
+            if (completes === 2) resolveSecond()
+          })
+        }}
+      />,
+      { keys: ["build a web app", "\r", "Postgres", "\r"], ready: second, timeoutMs: 5000 }
+    )
+
+    expect(completes).toBe(2)
+    expect(secondPrompt).toContain("Postgres")
+    expect(secondPrompt).toContain("build a web app")
+    expect(secondPrompt).toContain("you asked: which database?")
+    // Resolved, not left for the model to read as literal template text.
+    expect(secondPrompt).not.toContain("{{conversation}}")
   })
 })

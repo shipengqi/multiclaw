@@ -5,6 +5,7 @@ import type {
   MultiClawConfig,
   MultiClawEvent,
   StageInfo,
+  TurnRecord,
 } from "@multiclawcli/core"
 
 /**
@@ -162,7 +163,7 @@ function epoch(iso: string): number | undefined {
 
 /** The model an agent will actually run with, mirroring the orchestrator's lookup. */
 function agentModel(agent: AgentDefinition): string | undefined {
-  return agent.model ?? agent.models?.[agent.runtime ?? "claude"]
+  return agent.model ?? agent.models?.[agent.runtime ?? "acp"]
 }
 
 /**
@@ -454,6 +455,38 @@ function mapShown(state: TuiState, fn: (turn: TurnView) => TurnView): TuiState {
   }
   const next = fn(state)
   return next === state ? state : { ...state, ...next }
+}
+
+/**
+ * The turns behind this one, as dialogue the leader can read back.
+ *
+ * Core has no notion of a session — an orchestrator is built per turn — so the
+ * console is what carries earlier turns into the next run. Without them a bare
+ * answer arrives at the leader as a requirement with nothing to answer: turn one
+ * asks "which database?", turn two's requirement is the word "Postgres".
+ *
+ * Derived rather than tracked separately: `history` plus the turn on screen
+ * *are* the finished turns, and a second copy is one more thing that could
+ * disagree with what the panes show.
+ *
+ * Only turns that ended are carried, which makes the call site's timing
+ * irrelevant: whether this is read before or after `turn:start` moves the turn
+ * on screen into `history`, the set is the same.
+ */
+export function conversationTurns(state: TuiState): TurnRecord[] {
+  const turns: TurnRecord[] = []
+  for (const turn of [...state.history, snapshot(state)]) {
+    // A cancelled turn never emits `orchestration:complete`, so it stays
+    // "running" — and half a turn is not context. Turn 0 is the seeded roster:
+    // a requirement nobody asked for is not part of the conversation either.
+    if (turn.phase !== "complete" || !turn.requirement) continue
+    turns.push(
+      turn.reply
+        ? { requirement: turn.requirement, reply: turn.reply }
+        : { requirement: turn.requirement }
+    )
+  }
+  return turns
 }
 
 export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
