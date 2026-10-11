@@ -114,7 +114,9 @@ export const PROVIDERS: readonly ProviderSpec[] = [
       { id: "haiku", label: "Haiku", tier: "fast", defaultForTier: true },
     ],
     defaultModel: "sonnet",
-    install: { hint: "npm install -g @agentclientprotocol/claude-agent-acp" },
+    install: {
+      hint: "multiclaw bundles the ACP bridge — install the Claude Code CLI (`claude`) and run `claude` to log in",
+    },
     auth: { kind: "ambient", hint: "run `claude` to log in" },
   },
   {
@@ -135,7 +137,9 @@ export const PROVIDERS: readonly ProviderSpec[] = [
       { id: "gpt-5-mini", label: "GPT-5 Mini", tier: "fast", defaultForTier: true },
     ],
     defaultModel: "gpt-5",
-    install: { hint: "npm install -g @agentclientprotocol/codex-acp" },
+    install: {
+      hint: "multiclaw bundles the ACP bridge — install the Codex CLI (`codex`) and run `codex login`",
+    },
     auth: { kind: "api-key", hint: "set OPENAI_API_KEY or run `codex login`" },
   },
   {

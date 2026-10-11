@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process"
-import * as fs from "node:fs"
-import * as path from "node:path"
+import { resolveExecutable } from "./bridge"
 import { PROVIDERS } from "./catalog"
 
 export type ProviderStatus = "present" | "missing"
@@ -12,24 +11,6 @@ export interface DetectedProvider {
   status: ProviderStatus
   version?: string
   note?: string
-}
-
-/** True when `command` names an executable file on PATH. */
-function resolvesOnPath(command: string): boolean {
-  const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)
-  const exts = (process.env.PATHEXT ?? "").split(";").filter(Boolean)
-  const suffixes = exts.length > 0 ? exts : [""]
-  for (const dir of dirs) {
-    for (const ext of suffixes) {
-      try {
-        fs.accessSync(path.join(dir, command + ext), fs.constants.X_OK)
-        return true
-      } catch {
-        // not executable or not found
-      }
-    }
-  }
-  return false
 }
 
 /** Run `command --version` and return trimmed stdout, or undefined on failure. */
@@ -76,12 +57,15 @@ export async function detectProviders(opts?: {
     let version: string | undefined
 
     for (const cmd of candidates) {
-      if (!resolvesOnPath(cmd)) continue
+      // Prefer a binary on PATH; fall back to a bridge multiclaw bundles. A
+      // provider is "present" when either resolves.
+      const exe = resolveExecutable(cmd)
+      if (!exe) continue
 
       // Ambiguous names must pass a version-string confirmation.
       if (spec.confirm) {
         if (opts?.withVersion) {
-          const v = await versionFor(cmd)
+          const v = await versionFor(exe)
           if (v && spec.confirm(v)) {
             matched = cmd
             version = v
@@ -94,7 +78,7 @@ export async function detectProviders(opts?: {
 
       matched = cmd
       if (opts?.withVersion) {
-        version = await versionFor(cmd)
+        version = await versionFor(exe)
       }
       break
     }

@@ -13,8 +13,8 @@ multiclaw 可从任意已安装的 **Provider（提供方）** 编排 Agent。�
 | Provider | CLI | 安装命令 |
 |----------|-----|---------|
 | OpenCode | `opencode` | `npm install -g opencode` |
-| Claude | `claude-agent-acp` | `npm install -g @agentclientprotocol/claude-agent-acp` |
-| Codex | `codex-acp` | `npm install -g @agentclientprotocol/codex-acp` |
+| Claude | `claude-agent-acp`（已内置） | 安装 Claude Code CLI（`claude`）并运行 `claude` 登录 |
+| Codex | `codex-acp`（已内置） | 安装 Codex CLI（`codex`）并运行 `codex login` |
 | Cursor | `cursor-agent` | `curl https://cursor.com/install \| bash` |
 
 `multiclaw init` 会自动检测已安装的 Provider 并只提供这些选项；`multiclaw doctor` 则展示完整情况

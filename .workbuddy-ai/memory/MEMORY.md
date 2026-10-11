@@ -53,6 +53,11 @@
 
 ## ACP 接入
 - SDK:`@agentclientprotocol/sdk@1.8.0`(peer `zod@4.6.5`,zod ≈8MB)。**必须懒加载**,否则拖垮 CLI 启动。
+- **两个 ACP 桥(`claude-agent-acp` / `codex-acp`)是 multiclaw 自己的依赖,不是用户全局安装**:
+  见 `packages/{core,cli}/package.json`(core + cli 都列)。`providers/bridge.ts` 的 `resolveExecutable()`
+  优先用 PATH 上的二进制,否则从 multiclaw 自己的 `node_modules`(`require.resolve` 定位 bin)解析桥的绝对路径再 spawn。
+  这样用户只需装自己的 agent(`claude`/`codex`/`opencode`),桥由 multiclaw 自带。`detect()`/`doctor` 也把 bundled
+  桥算作"已安装"。`opencode` 不是桥(原生 ACP,用户自装)。版本:`claude-agent-acp@^0.89.1`、`codex-acp@^2.2.2`。
 - 真实 agent:opencode 原生(`opencode acp`);codex 须经适配器 `@agentclientprotocol/codex-acp`;
   claude 没有原生 ACP,官方桥是 `@agentclientprotocol/claude-agent-acp`(bin `claude-agent-acp`)。
 - **`BRIDGES` 表按 `basename` 分派 `_meta` 命名空间**(取代旧的 `META_CAPABLE_COMMANDS` Set + 二值

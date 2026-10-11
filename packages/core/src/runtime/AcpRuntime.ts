@@ -4,6 +4,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { StringDecoder } from "node:string_decoder"
+import { resolveExecutable } from "../providers/bridge"
 import { specForCommand } from "../providers/catalog"
 import type {
   AgentOutput,
@@ -73,30 +74,6 @@ const BASE_CAPABILITIES: RuntimeCapabilities = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-/** True when `command` names an executable file on PATH. */
-function resolvesOnPath(command: string): boolean {
-  const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)
-  // PATHEXT is Windows-only; the bare name covers POSIX and extensionless
-  // binaries. Trying both is harmless and avoids a platform branch.
-  const exts = (process.env.PATHEXT ?? "").split(";").filter(Boolean)
-  const suffixes = exts.length > 0 ? exts : [""]
-  for (const dir of dirs) {
-    for (const ext of suffixes) {
-      if (isExecutableFile(path.join(dir, command + ext))) return true
-    }
-  }
-  return false
-}
-
-function isExecutableFile(file: string): boolean {
-  try {
-    fs.accessSync(file, fs.constants.X_OK)
-    return true
-  } catch {
-    return false
-  }
 }
 
 /** Text of an ACP content block, or undefined when it is not a text block. */
@@ -247,7 +224,7 @@ export class AcpRuntime extends RuntimeBase {
     const command = options?.command ?? DEFAULT_COMMAND
     return {
       name: this.name,
-      available: resolvesOnPath(command),
+      available: resolveExecutable(command) !== null,
       // `tools` is the one capability that depends on the bridge: only some of
       // them read an allowlist out of `_meta`, and none negotiates it. Claiming
       // it for a bridge that ignores `task.tools` would let a caller believe a
@@ -268,6 +245,9 @@ export class AcpRuntime extends RuntimeBase {
 
     const command = task.command ?? DEFAULT_COMMAND
     const args = task.args ?? DEFAULT_ARGS
+    // Prefer a binary on the user's PATH; fall back to a bridge multiclaw
+    // bundles. `spawn` accepts either the bare name or an absolute path.
+    const exe = resolveExecutable(command) ?? command
 
     // The role prompt has no ACP field, so it is delivered one of two ways (see
     // `specForCommand`). Both are pure functions of the task, so compute them once.
@@ -282,7 +262,7 @@ export class AcpRuntime extends RuntimeBase {
         : task.prompt
 
     return new Promise<AgentOutput>((resolve, reject) => {
-      const child = spawn(command, args, {
+      const child = spawn(exe, args, {
         cwd: task.workDir,
         env: process.env,
         // Own process group, so a kill reaches whatever the agent spawned too.

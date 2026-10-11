@@ -14,8 +14,8 @@ choose. Install one or more:
 | Provider | CLI | Install |
 |----------|-----|---------|
 | OpenCode | `opencode` | `npm install -g opencode` |
-| Claude | `claude-agent-acp` | `npm install -g @agentclientprotocol/claude-agent-acp` |
-| Codex | `codex-acp` | `npm install -g @agentclientprotocol/codex-acp` |
+| Claude | `claude-agent-acp` (bundled) | install the Claude Code CLI (`claude`) and run `claude` to log in |
+| Codex | `codex-acp` (bundled) | install the Codex CLI (`codex`) and run `codex login` |
 | Cursor | `cursor-agent` | `curl https://cursor.com/install \| bash` |
 
 `multiclaw init` auto-detects which providers are installed and only offers those;

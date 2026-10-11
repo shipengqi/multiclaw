@@ -1,4 +1,10 @@
 export {
+  BRIDGE_PACKAGES,
+  resolveBridgeBinary,
+  resolveExecutable,
+  resolvesOnPath,
+} from "./bridge"
+export {
   type ModelSelectionMode,
   type ModelTier,
   PROVIDERS,
