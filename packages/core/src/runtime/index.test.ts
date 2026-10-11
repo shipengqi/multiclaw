@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { ClaudeRuntime, runtimeRegistry } from "./index"
+import { AcpRuntime, runtimeRegistry } from "./index"
 
 describe("runtimeRegistry", () => {
-  it("registers the built-in claude runtime", () => {
-    expect(runtimeRegistry.has("claude")).toBe(true)
-    expect(runtimeRegistry.list()).toContain("claude")
-    expect(runtimeRegistry.get("claude")).toBeInstanceOf(ClaudeRuntime)
+  it("registers the built-in acp runtime", () => {
+    expect(runtimeRegistry.has("acp")).toBe(true)
+    expect(runtimeRegistry.list()).toContain("acp")
+    expect(runtimeRegistry.get("acp")).toBeInstanceOf(AcpRuntime)
   })
 
   it("throws with the available names for an unknown runtime", () => {

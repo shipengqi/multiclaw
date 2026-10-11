@@ -5,6 +5,7 @@ import type { AgentDefinition, AgentResult, TaskPlan } from "../types/agent"
 import type { MultiClawConfig, OrchestratorResult } from "../types/config"
 import type { StageInfo } from "../types/event"
 import type { LeaderMessage } from "../types/leader"
+import { renderConversation } from "../utils/conversation"
 import { parseLeaderDecision } from "../utils/leaderDecision"
 import { AgentRunner } from "./AgentRunner"
 import { ContextManager } from "./ContextManager"
@@ -30,7 +31,11 @@ export class Orchestrator {
     this.workDir = path.resolve(config.workDir)
     fs.mkdirSync(this.workDir, { recursive: true })
     this.contextManager = new ContextManager(config.context)
-    this.runner = new AgentRunner(this.eventBus, this.contextManager, this.workDir)
+    // Set unconditionally, including to "": the leader's template carries the
+    // placeholder, and a context key that was never set leaves the literal
+    // `{{conversation}}` in the prompt for the model to read.
+    this.contextManager.set("conversation", renderConversation(config.history))
+    this.runner = new AgentRunner(this.eventBus, this.contextManager, this.workDir, config)
   }
 
   async run(options: { signal?: AbortSignal } = {}): Promise<OrchestratorResult> {
@@ -54,7 +59,7 @@ export class Orchestrator {
     let stages = this.buildStagesOrFallback(agents, "Could not order the configured agents")
 
     const getModel = (agent: AgentDefinition): string | undefined => {
-      return agent.model ?? agent.models?.[agent.runtime ?? "claude"]
+      return agent.model ?? agent.models?.[agent.runtime ?? "acp"]
     }
 
     const toStageInfos = (list: AgentDefinition[][]): StageInfo[] =>

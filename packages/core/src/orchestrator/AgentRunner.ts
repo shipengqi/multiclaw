@@ -1,8 +1,10 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import type { EventBus } from "../event/EventBus"
+import { resolveModel } from "../providers/resolve"
 import { runtimeRegistry } from "../runtime"
 import type { AgentDefinition, AgentResult } from "../types/agent"
+import type { MultiClawConfig } from "../types/config"
 import { renderPrompt } from "../utils/prompt"
 import { withRetry } from "../utils/retry"
 import { withTimeout } from "../utils/timeout"
@@ -12,12 +14,13 @@ export class AgentRunner {
   constructor(
     private eventBus: EventBus,
     private contextManager: ContextManager,
-    private globalWorkDir: string
+    private globalWorkDir: string,
+    private config: MultiClawConfig
   ) {}
 
   async run(agent: AgentDefinition, signal?: AbortSignal): Promise<AgentResult> {
     const startTime = new Date()
-    const model = agent.model ?? agent.models?.[agent.runtime ?? "claude"]
+    const model = resolveModel(agent, this.config)
 
     this.eventBus.emit({
       type: "agent:start",
@@ -44,7 +47,7 @@ export class AgentRunner {
         : this.globalWorkDir
       fs.mkdirSync(workDir, { recursive: true })
 
-      const runtime = runtimeRegistry.get(agent.runtime ?? "claude")
+      const runtime = runtimeRegistry.get(agent.runtime ?? "acp")
       const retries = agent.retries ?? 0
       const timeout = agent.timeout ?? 600_000
       const tools = agent.tools ?? ["Read", "Write", "Bash"]

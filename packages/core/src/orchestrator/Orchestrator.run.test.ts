@@ -5,7 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { runtimeRegistry } from "../runtime"
 import { fakeRuntime, makeAgent } from "../testing/helpers"
 import type { AgentDefinition } from "../types/agent"
-import type { MultiClawConfig } from "../types/config"
+import type { MultiClawConfig, TurnRecord } from "../types/config"
 import type { MultiClawEvent } from "../types/event"
 import type { AgentOutput, AgentTask } from "../types/runtime"
 import { Orchestrator } from "./Orchestrator"
@@ -408,6 +408,51 @@ describe("Orchestrator.run · intent routing", () => {
 
     expect(startedIds(events)).toEqual(["leader", "a", "b"])
     expect(result.success).toBe(true)
+  })
+})
+
+describe("Orchestrator.run · earlier turns", () => {
+  /**
+   * Run one turn with a leader that plans, and return the prompt it was handed.
+   *
+   * The template names the placeholder explicitly: a context key that is never
+   * set leaves the literal text in the prompt, which is exactly the failure this
+   * guards.
+   */
+  async function leaderPromptWith(history: TurnRecord[] | undefined): Promise<string> {
+    let prompt = ""
+    handler = async (task) => {
+      if (task.agentId === "leader") {
+        prompt = task.prompt
+        return { output: '{"mode":"run","run":["a"]}', exitCode: 0 }
+      }
+      return { output: `out:${task.agentId}`, exitCode: 0 }
+    }
+    await runOrch([agent("a")], {
+      leader: agent("leader", { taskPrompt: "req: {{requirement}}\n{{conversation}}" }),
+      context: { requirement: "Postgres" },
+      ...(history ? { history } : {}),
+    })
+    return prompt
+  }
+
+  // Regression: an answer arrived with nothing behind it, so the leader was
+  // handed "Postgres" as a requirement with no question for it to answer.
+  it("hands the leader the turns behind a short answer", async () => {
+    const prompt = await leaderPromptWith([
+      { requirement: "build a web app", reply: { mode: "ask", message: "which database?" } },
+    ])
+
+    expect(prompt).toContain("req: Postgres")
+    expect(prompt).toContain("build a web app")
+    expect(prompt).toContain("you asked: which database?")
+  })
+
+  it("leaves no conversation behind on a single-turn run", async () => {
+    const prompt = await leaderPromptWith(undefined)
+
+    expect(prompt).toBe("req: Postgres\n")
+    expect(prompt).not.toContain("{{conversation}}")
   })
 })
 

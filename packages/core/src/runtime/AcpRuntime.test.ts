@@ -33,6 +33,7 @@ interface AgentHandlers {
   initialize?: () => unknown
   newSession?: (params: unknown) => unknown
   loadSession?: (params: unknown) => unknown
+  setConfigOption?: (params: unknown) => unknown
   prompt?: (ctx: AgentPromptContext) => unknown
   cancel?: (params: unknown) => void
 }
@@ -76,6 +77,10 @@ function attachAgent(child: FakeChild, handlers: AgentHandlers): void {
   app.onRequest(
     "session/load",
     ((ctx: { params: unknown }) => handlers.loadSession?.(ctx.params) ?? {}) as never
+  )
+  app.onRequest(
+    "session/set_config_option",
+    ((ctx: { params: unknown }) => handlers.setConfigOption?.(ctx.params) ?? {}) as never
   )
   app.onRequest(
     "session/prompt",
@@ -137,7 +142,10 @@ afterEach(() => {
 
 describe("AcpRuntime.describe", () => {
   it("reports exactly the capabilities this adapter implements", async () => {
-    const info = await new AcpRuntime().describe()
+    // Asked about the one bridge that enforces an allowlist, so this is the
+    // adapter's full capability set. `tools` and `models` are provider-dependent
+    // and have their own tests below.
+    const info = await new AcpRuntime().describe({ command: "claude-agent-acp" })
     expect(info).toMatchObject({
       name: "acp",
       capabilities: {
@@ -146,13 +154,28 @@ describe("AcpRuntime.describe", () => {
         resume: true,
         permissions: true,
         tools: true,
-        models: false,
+        models: true,
         images: false,
-        usage: false,
-        cost: false,
+        usage: true,
+        cost: true,
         sandbox: false,
       },
     })
+  })
+
+  it("reports tools only for a bridge that can enforce an allowlist", async () => {
+    // Only some bridges read an allowlist out of `_meta`, and none negotiates
+    // it. Claiming it for one that ignores `task.tools` would tell the caller a
+    // restriction landed while the agent runs with its binary's defaults.
+    const tools = async (command?: string) =>
+      (await new AcpRuntime().describe(command === undefined ? undefined : { command }))
+        .capabilities.tools
+
+    expect(await tools("claude-agent-acp")).toBe(true)
+    expect(await tools("codex-acp")).toBe(false)
+    expect(await tools("opencode")).toBe(false)
+    // The default command is `opencode`, which has no known `_meta` contract.
+    expect(await tools()).toBe(false)
   })
 
   it("is available when the default command resolves on PATH", async () => {
@@ -668,6 +691,75 @@ describe("AcpRuntime.execute", () => {
 
     await expect(p).rejects.toThrow("Failed to start opencode: ENOENT")
   })
+
+  it("sends session/set_config_option when task.model is configured", async () => {
+    const child = new FakeChild()
+    let configReq: unknown
+    attachAgent(child, {
+      newSession: () => ({
+        sessionId: "sess-1",
+        configOptions: [
+          {
+            id: "model",
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: "default",
+            options: [{ value: "default" }, { value: "sonnet" }],
+          },
+        ],
+      }),
+      setConfigOption: (params) => {
+        configReq = params
+        return {}
+      },
+    })
+
+    await runWith(child, { command: "claude-agent-acp", model: "sonnet" })
+    expect(configReq).toMatchObject({ sessionId: "sess-1", configId: "model", value: "sonnet" })
+  })
+
+  it("does not send session/set_config_option when task.model is absent", async () => {
+    const child = new FakeChild()
+    let configReq: unknown = "not-called"
+    attachAgent(child, {
+      newSession: () => ({
+        sessionId: "sess-1",
+        configOptions: [
+          { id: "model", category: "model", type: "select", currentValue: "default", options: [] },
+        ],
+      }),
+      setConfigOption: (params) => {
+        configReq = params
+        return {}
+      },
+    })
+
+    await runWith(child, { command: "claude-agent-acp" })
+    expect(configReq).toBe("not-called")
+  })
+
+  it("does not fail the run when the configured model is not in the provider's list", async () => {
+    const child = new FakeChild()
+    attachAgent(child, {
+      newSession: () => ({
+        sessionId: "sess-1",
+        configOptions: [
+          {
+            id: "model",
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: "default",
+            options: [{ value: "default" }],
+          },
+        ],
+      }),
+    })
+
+    const output = await runWith(child, { command: "claude-agent-acp", model: "unknown-model" })
+    expect(output.exitCode).toBe(0)
+  })
 })
 
 /** Params of a session-defining request, as captured from the fake agent. */
@@ -699,7 +791,30 @@ describe("AcpRuntime · agent context delivery", () => {
     expect(promptParams?.prompt?.[0].text).toBe("do it")
   })
 
-  it("prefixes the prompt on a non-meta bridge, and sends no _meta", async () => {
+  it("prefixes the prompt on a bridge with no known _meta contract", async () => {
+    // `opencode` is the default command and speaks ACP natively, but we have no
+    // evidence it reads any `_meta` key — so the role prompt goes in the text.
+    const child = new FakeChild()
+    let newParams: SessionParams | undefined
+    let promptParams: SessionParams | undefined
+    attachAgent(child, {
+      newSession: (params) => {
+        newParams = params as SessionParams
+        return { sessionId: "sess-1" }
+      },
+      prompt: (ctx) => {
+        promptParams = ctx.params as SessionParams
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { command: "opencode", systemPrompt: "You are a pirate." })
+
+    expect(newParams?._meta).toBeUndefined()
+    expect(promptParams?.prompt?.[0].text).toBe("You are a pirate.\n\n---\n\ndo it")
+  })
+
+  it("sends the role prompt to codex-acp through the AIR namespace", async () => {
     const child = new FakeChild()
     let newParams: SessionParams | undefined
     let promptParams: SessionParams | undefined
@@ -716,12 +831,36 @@ describe("AcpRuntime · agent context delivery", () => {
 
     await runWith(child, { command: "codex-acp", systemPrompt: "You are a pirate." })
 
-    expect(newParams?._meta).toBeUndefined()
-    expect(promptParams?.prompt?.[0].text).toBe("You are a pirate.\n\n---\n\ndo it")
+    // The adapter reads `_meta.jetbrains.air.customInstructions` and forwards it
+    // to Codex as `developerInstructions` — a real system-level instruction.
+    expect(newParams?._meta).toEqual({
+      jetbrains: { air: { customInstructions: "You are a pirate." } },
+    })
+    // Not prefixed as well: that would send the role twice.
+    expect(promptParams?.prompt?.[0].text).toBe("do it")
   })
 
-  it("leaves the prompt untouched when the system prompt is empty, in both modes", async () => {
-    for (const command of ["claude-agent-acp", "codex-acp"]) {
+  it("sends no tool allowlist to a bridge that cannot enforce one", async () => {
+    const child = new FakeChild()
+    let newParams: SessionParams | undefined
+    attachAgent(child, {
+      newSession: (params) => {
+        newParams = params as SessionParams
+        return { sessionId: "sess-1" }
+      },
+    })
+
+    await runWith(child, { command: "codex-acp", systemPrompt: "sys", tools: ["Read"] })
+
+    // codex-acp has no tool-restriction key at any granularity, so an allowlist
+    // is dropped rather than sent to a namespace that would ignore it.
+    expect(newParams?._meta).toEqual({
+      jetbrains: { air: { customInstructions: "sys" } },
+    })
+  })
+
+  it("leaves the prompt untouched when the system prompt is empty, on every bridge", async () => {
+    for (const command of ["claude-agent-acp", "codex-acp", "opencode"]) {
       const child = new FakeChild()
       let newParams: SessionParams | undefined
       let promptParams: SessionParams | undefined
@@ -777,7 +916,7 @@ describe("AcpRuntime · agent context delivery", () => {
     expect(loadParams?._meta).toMatchObject({ systemPrompt: "sys" })
   })
 
-  it("maps task.tools to _meta.claudeCode.options.tools in meta mode only", async () => {
+  it("maps task.tools into the claude-agent-acp namespace only", async () => {
     const metaChild = new FakeChild()
     let metaParams: SessionParams | undefined
     attachAgent(metaChild, {

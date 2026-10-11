@@ -40,7 +40,8 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-const makeRunner = () => new AgentRunner(bus, context, workDir)
+const makeRunner = () =>
+  new AgentRunner(bus, context, workDir, { name: "test", workDir, agents: [] })
 
 describe("AgentRunner.run", () => {
   it("reports a successful run with the runtime output", async () => {

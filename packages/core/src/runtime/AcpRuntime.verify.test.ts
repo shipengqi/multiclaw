@@ -188,22 +188,36 @@ describe("AcpRuntime · schema fidelity (verification)", () => {
     })
   })
 
-  it("surfaces a schema-VALID but unmapped variant as raw", async () => {
+  it("maps usage_update to usage and cost events", async () => {
     const child = new FakeChild()
     const { events, onEvent } = collect()
     attachAgent(child, {
       prompt: async (ctx) => {
-        // usage_update is in the SDK's SessionUpdate union but not mapped here.
-        await notifyUpdate(ctx, { sessionUpdate: "usage_update", used: 10, size: 100 })
+        await notifyUpdate(ctx, {
+          sessionUpdate: "usage_update",
+          used: 10,
+          size: 100,
+          cost: { amount: 0.005, currency: "USD" },
+        })
         return { stopReason: "end_turn" }
       },
     })
 
     await runWith(child, { onEvent })
-    expect(events.find((e) => e.type === "raw")).toMatchObject({
-      vendor: "acp",
-      payload: expect.objectContaining({ sessionUpdate: "usage_update" }),
-    })
+    expect(events.filter((e) => e.type === "usage")).toEqual([
+      expect.objectContaining({ contextTokens: 10, contextSize: 100 }),
+    ])
+    expect(events.filter((e) => e.type === "cost")).toEqual([
+      expect.objectContaining({ amount: 0.005, currency: "USD", costUsd: 0.005 }),
+    ])
+    // usage_update must NOT surface as raw now that it is mapped.
+    expect(
+      events.find(
+        (e) =>
+          e.type === "raw" &&
+          (e.payload as Record<string, unknown>)?.sessionUpdate === "usage_update"
+      )
+    ).toBeUndefined()
   })
 
   it("DROPS a schema-INVALID variant before the adapter: no raw, run still succeeds", async () => {

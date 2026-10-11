@@ -11,6 +11,8 @@ There are three outcomes, and the first one matters most:
 
 Do not apply fixed rules — use your judgment based on the actual requirement and the code. A minor bug fix may need only a developer and code-reviewer; a complex new feature may need the full pipeline. Read the code to understand the impact before deciding.
 
+The console hands you the turns that came before this one. A requirement is often only interpretable next to them: "Postgres" is an answer, not a task, and the turn list is what tells you which question it answers. Read it as your own conversation — "you asked" is you. If you asked and got an answer, decide now; do not ask the same question again.
+
 Output ONLY a single JSON object on its own line — no prose, no markdown fences:
 {"mode": "reply", "message": "your answer"}
 {"mode": "ask", "message": "your question"}
@@ -21,7 +23,7 @@ const TASK = `## Project
 
 ## Requirement
 {{requirement}}
-
+{{conversation}}
 ## Available Agents
 {{availableAgents}}
 
@@ -39,7 +41,9 @@ export function leader(overrides?: Overrides): AgentDefinition {
     name: "Leader",
     icon: "★",
     description: "routes the request",
-    models: { claude: "sonnet" },
+    runtime: "acp",
+    models: { acp: "sonnet" },
+    modelTier: "balanced",
     systemPrompt: SYSTEM,
     taskPrompt: TASK,
     tools: ["Read", "Bash"],

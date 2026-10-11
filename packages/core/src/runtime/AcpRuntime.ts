@@ -4,6 +4,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { StringDecoder } from "node:string_decoder"
+import { specForCommand } from "../providers/catalog"
 import type {
   AgentOutput,
   AgentTask,
@@ -15,6 +16,9 @@ import type {
 } from "../types/runtime"
 import { abortError } from "../utils/abort"
 import { RuntimeBase } from "./RuntimeBase"
+
+/** Cache of model ids discovered per command, to avoid re-asking every session. */
+const discoveredModels = new Map<string, string[]>()
 
 /** Grace period between SIGTERM and SIGKILL when an agent will not stop. */
 const KILL_ESCALATION_MS = 3000
@@ -29,15 +33,6 @@ const CANCEL_GRACE_MS = 2000
 /** Default ACP agent: opencode speaks ACP natively under `opencode acp`. */
 const DEFAULT_COMMAND = "opencode"
 const DEFAULT_ARGS = ["acp"]
-
-/**
- * ACP bridges that honour `_meta.systemPrompt` / `_meta.claudeCode.options`.
- *
- * ACP carries no capability flag for these, so the only signal available is
- * which binary we were told to launch. Keyed on basename so a path or a
- * Windows `.cmd`/`.exe` suffix does not defeat the lookup.
- */
-const META_CAPABLE_COMMANDS = new Set(["claude-agent-acp"])
 
 /** A `RuntimeEvent` before the emitter supplies its per-run envelope. */
 type RuntimeEventPayload = RuntimeEvent extends infer E
@@ -58,11 +53,12 @@ type AcpPermissionResponse = import("@agentclientprotocol/sdk").RequestPermissio
  * `permissions` is true: a `session/request_permission` is answered against
  * `task.tools` — a tool named there is approved and everything else is rejected
  * (see `decidePermission`). `models` is false because ACP negotiates no model
- * here; `images`, `usage` and `cost` are false because those updates are
- * surfaced as `raw` rather than mapped. `resume` is true because a set
- * `sessionId` drives `session/load`.
+ * here; `images` is false because image blocks are not mapped. `resume` is true
+ * because a set `sessionId` drives `session/load`.
+ *
+ * `tools` is set per provider at describe time — see `specForCommand`.
  */
-const CAPABILITIES: RuntimeCapabilities = {
+const BASE_CAPABILITIES: RuntimeCapabilities = {
   streaming: true,
   sessions: true,
   resume: true,
@@ -70,8 +66,8 @@ const CAPABILITIES: RuntimeCapabilities = {
   tools: true,
   models: false,
   images: false,
-  usage: false,
-  cost: false,
+  usage: true,
+  cost: true,
   sandbox: false,
 }
 
@@ -163,7 +159,7 @@ interface RejectedPermission {
 /**
  * Answer a `session/request_permission` against `task.tools`.
  *
- * Mirrors `ClaudeRuntime`'s `--allowedTools`: a tool is approved only when it
+ * A tool is approved only when it
  * is named in `tools`, and everything else is rejected — fail-closed, so an
  * unidentifiable request never widens the agent's reach.
  *
@@ -219,58 +215,6 @@ function decidePermission(
   }
 }
 
-/** Normalise a launch command to a bare, lowercased binary name. */
-function commandKey(command: string): string {
-  return path
-    .basename(command)
-    .toLowerCase()
-    .replace(/\.(cmd|exe|bat)$/, "")
-}
-
-/**
- * How this agent's role prompt reaches the bridge.
- *
- * `"meta"` — the bridge honours `_meta.systemPrompt`, so send a real
- * system-level prompt. `"prompt"` — the safe default: prefix the prompt text,
- * which every ACP agent understands, at the cost of weaker instruction
- * adherence. The two modes are mutually exclusive: sending both would double
- * the instructions on a bridge that honours both.
- *
- * Known limitation of `"prompt"` mode: there is no tool-restriction mechanism
- * at all — only a `_meta`-capable bridge reads `claudeCode.options.tools`, so a
- * prompt-mode agent (e.g. `codex-acp`) runs with whatever its binary defaults
- * to. That is a gap in the bridge, not an oversight in this adapter.
- */
-function deliveryFor(command: string): "meta" | "prompt" {
-  return META_CAPABLE_COMMANDS.has(commandKey(command)) ? "meta" : "prompt"
-}
-
-/**
- * `_meta` for a session-defining request, or undefined when it would be empty.
- *
- * ACP has no system-prompt field (`systemPrompt` appears in no `$defs`), so a
- * role prompt can only travel in `_meta`. `claude-agent-acp` merges an object
- * with its Claude Code preset, but a *string* replaces the preset — and that is
- * what we want: multiclaw's system prompt is the agent's whole identity.
- *
- * `systemPrompt` is omitted when empty (matching `ClaudeRuntime`, which also
- * skips `--system-prompt` for an empty value). Tools are always sent, including
- * an empty array — see the inline note.
- */
-function buildMeta(task: AgentTask): Record<string, unknown> | undefined {
-  const meta: Record<string, unknown> = {}
-  if (task.systemPrompt) meta.systemPrompt = task.systemPrompt
-  // Always sent, including an empty array. AgentRunner
-  // (orchestrator/AgentRunner.ts:50) defaults `task.tools` to
-  // ["Read", "Write", "Bash"], so an empty array can only be an explicit
-  // `tools: []` — and an explicit "no tools" must not silently fall back to the
-  // bridge's full claude_code preset. Note this is a different axis from
-  // ClaudeRuntime's `--allowedTools` (a permission allowlist layered on the
-  // preset, not the set of tools that exist), so the two are not interchangeable.
-  meta.claudeCode = { options: { tools: task.tools } }
-  return Object.keys(meta).length > 0 ? meta : undefined
-}
-
 /**
  * Add a login hint to a JSON-RPC "authentication required" error.
  *
@@ -300,10 +244,19 @@ export class AcpRuntime extends RuntimeBase {
     // The command is caller-supplied: an ACP agent is whatever binary the config
     // pinned (`opencode`, `codex-acp`, …), so probing the default would report a
     // perfectly installed non-default agent as missing.
+    const command = options?.command ?? DEFAULT_COMMAND
     return {
       name: this.name,
-      available: resolvesOnPath(options?.command ?? DEFAULT_COMMAND),
-      capabilities: { ...CAPABILITIES },
+      available: resolvesOnPath(command),
+      // `tools` is the one capability that depends on the bridge: only some of
+      // them read an allowlist out of `_meta`, and none negotiates it. Claiming
+      // it for a bridge that ignores `task.tools` would let a caller believe a
+      // restriction landed when the agent is running unrestricted.
+      capabilities: {
+        ...BASE_CAPABILITIES,
+        tools: specForCommand(command)?.tools ?? false,
+        models: (specForCommand(command)?.modelSelection ?? "none") !== "none",
+      },
     }
   }
 
@@ -317,11 +270,14 @@ export class AcpRuntime extends RuntimeBase {
     const args = task.args ?? DEFAULT_ARGS
 
     // The role prompt has no ACP field, so it is delivered one of two ways (see
-    // `deliveryFor`). Both are pure functions of the task, so compute them once.
-    const delivery = deliveryFor(command)
-    const meta = delivery === "meta" ? buildMeta(task) : undefined
+    // `specForCommand`). Both are pure functions of the task, so compute them once.
+    const spec = specForCommand(command)
+    const meta = spec?.meta?.(task)
+    // Prefix only when the role prompt had nowhere else to go. `meta ===
+    // undefined` covers an unknown bridge *and* one whose builder produced
+    // nothing (an empty `systemPrompt`), and an empty prompt is never prefixed.
     const promptText =
-      delivery === "prompt" && task.systemPrompt
+      meta === undefined && task.systemPrompt
         ? `${task.systemPrompt}\n\n---\n\n${task.prompt}`
         : task.prompt
 
@@ -398,6 +354,8 @@ export class AcpRuntime extends RuntimeBase {
       let errorOutput = ""
       let connectionError: Error | undefined
       let settled = false
+      let lastUsage: { contextTokens: number; contextSize: number } | undefined
+      let lastCost: { amount: number; currency: string } | undefined
 
       const settleResolve = (output: AgentOutput) => {
         if (settled) return
@@ -474,9 +432,31 @@ export class AcpRuntime extends RuntimeBase {
             emit({ type: "plan", entries: update.entries.map((entry) => entry.content) })
             break
           }
+          case "usage_update": {
+            const contextTokens = typeof update.used === "number" ? update.used : undefined
+            const contextSize = typeof update.size === "number" ? update.size : undefined
+            if (contextTokens !== undefined && contextSize !== undefined) {
+              lastUsage = { contextTokens, contextSize }
+              emit({ type: "usage", contextTokens, contextSize })
+            }
+            const cost = isRecord(update.cost) ? update.cost : undefined
+            const amount = typeof cost?.amount === "number" ? cost.amount : undefined
+            const currency = typeof cost?.currency === "string" ? cost.currency : undefined
+            if (amount !== undefined && currency !== undefined) {
+              lastCost = { amount, currency }
+              const costUsd = currency.toLowerCase() === "usd" ? amount : undefined
+              emit({
+                type: "cost",
+                amount,
+                currency,
+                ...(costUsd !== undefined ? { costUsd } : {}),
+              })
+            }
+            break
+          }
           default:
-            // Unknown / extension updates (usage_update, notice, `_`-prefixed
-            // extensions, …) must never break the run — surface and move on.
+            // Unknown / extension updates (notice, `_`-prefixed extensions, …)
+            // must never break the run — surface and move on.
             emit({ type: "raw", vendor: "acp", payload: update })
         }
       }
@@ -604,6 +584,46 @@ export class AcpRuntime extends RuntimeBase {
             ...(meta ? { _meta: meta } : {}),
           })
           sessionId = created.sessionId
+
+          // Cache model options from the session response for validation.
+          const modelOpt = created.configOptions?.find(
+            (o) =>
+              (o as { category?: string | null; id?: string }).category === "model" ||
+              (o as { id?: string }).id === "model"
+          )
+          if (
+            modelOpt &&
+            "options" in modelOpt &&
+            Array.isArray((modelOpt as { options?: unknown }).options)
+          ) {
+            const ids = ((modelOpt as { options?: Array<{ value?: string }> }).options ?? []).map(
+              (o) => o.value ?? String(o)
+            )
+            discoveredModels.set(command, ids)
+          }
+        }
+
+        // Drive model selection when the provider supports it and a model was configured.
+        if (task.model && spec?.modelSelection === "config-option" && sessionId) {
+          const known = discoveredModels.get(command)
+          if (known && !known.includes(task.model)) {
+            // Model id is not in the provider's advertised list — warn but do not fail.
+            // The runtime has no orchestration:warning channel; surface via stderr
+            // so it at least appears in logs.
+            process.stderr.write(
+              `[multiclaw] Warning: model "${task.model}" is not offered by ${command}; running with provider default.\n`
+            )
+          } else {
+            try {
+              await ctx.request(acp.methods.agent.session.setConfigOption, {
+                sessionId,
+                configId: "model",
+                value: task.model,
+              })
+            } catch {
+              // Fail-closed on model selection: a mismatch must not kill the run.
+            }
+          }
         }
 
         const response = await ctx.request(acp.methods.agent.session.prompt, {
@@ -619,7 +639,14 @@ export class AcpRuntime extends RuntimeBase {
 
         const stopReason = mapStopReason(response.stopReason)
         emit({ type: "run_finished", stopReason })
-        settleResolve({ output: agentText, exitCode: 0, sessionId, stopReason })
+        settleResolve({
+          output: agentText,
+          exitCode: 0,
+          sessionId,
+          stopReason,
+          ...(lastUsage ? { usage: lastUsage } : {}),
+          ...(lastCost?.currency.toLowerCase() === "usd" ? { costUsd: lastCost.amount } : {}),
+        })
         // ACP agents are long-lived: the turn is done, so end the process.
         teardown()
       }

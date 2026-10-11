@@ -33,4 +33,12 @@ describe("built-in agents", () => {
   it.each(ALL)("%s still lets a caller override the description", (_name, factory) => {
     expect(factory({ description: "custom" }).description).toBe("custom")
   })
+
+  // `AgentRunner` looks a preset's model up by runtime name. A `models` key that
+  // does not match the runtime resolves to undefined, and the agent then runs
+  // with no model at all — silently, since nothing in the path rejects it.
+  it.each(ALL)("%s resolves a model for its own runtime", (_name, factory) => {
+    const agent = factory()
+    expect(agent.models?.[agent.runtime ?? "acp"]).toBeTruthy()
+  })
 })
