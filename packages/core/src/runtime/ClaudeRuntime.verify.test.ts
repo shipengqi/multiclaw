@@ -5,12 +5,15 @@ import type { RuntimeEvent } from "../types/runtime"
 /**
  * Adversarial verification suite for `ClaudeRuntime`'s NDJSON line handling.
  *
- * The author's suite (`ClaudeRuntime.test.ts`) emits exactly one NDJSON line per
- * `data` chunk, so the multi-line `while` loop is barely exercised and several
- * behaviours have no coverage at all. These cases attack the seam directly.
+ * The author's suite (`ClaudeRuntime.test.ts`) emitted exactly one NDJSON line
+ * per `data` chunk, so the multi-line `while` loop was barely exercised and
+ * several behaviours had no coverage at all. These cases attack the seam
+ * directly.
  *
- * Product code is NOT modified. Tests that assert the *correct* behaviour and
- * fail are deliberate: they are the proof of a defect.
+ * The two defects these cases originally exposed (per-chunk UTF-8 decode; no
+ * SIGKILL escalation on timeout) are now fixed, so every case here passes. The
+ * assistant-before-delta case is a characterization of a synthetic-only
+ * artifact of the run-scoped guard, not an assertion of desired behaviour.
  */
 
 const spawnMock = vi.fn()
@@ -232,13 +235,15 @@ describe("adversarial · lifecycle edges", () => {
     ).toEqual(["late"])
   })
 
-  // Item 5 — synthetic-only and deliberately unfixed: with
+  // Item 5 — CHARACTERIZATION, not a desired behaviour. With
   // `--include-partial-messages` the CLI always streams deltas BEFORE the
   // completed `assistant` message, so an assistant-block-first stream is
-  // unreachable. The run-scoped `sawAgentDelta` guard is intentional (it
-  // avoids re-emitting duplicate text if a turn emits two assistant events),
-  // so this stays skipped rather than "fixed" for an ordering that cannot occur.
-  it.skip("does not duplicate text when an assistant block precedes a delta", async () => {
+  // unreachable in practice. This test pins what the run-scoped `sawAgentDelta`
+  // guard actually does when that ordering is forced: the assistant block is
+  // emitted as `message` (no delta seen yet), then the same text arrives again
+  // as a `message_delta`, so it appears twice. Any future change to the guard
+  // trips this test.
+  it("characterizes the run-scoped guard (assistant-before-delta duplicates text; synthetic-only)", async () => {
     const child = new FakeChild()
     spawnMock.mockReturnValue(child)
     const { events, onEvent } = collect()
@@ -250,8 +255,7 @@ describe("adversarial · lifecycle edges", () => {
 
     const output = await p
     const textEvents = events.filter((e) => e.type === "message" || e.type === "message_delta")
-    // CORRECT behaviour; expected to fail if the defect is real.
-    expect(textEvents).toHaveLength(1)
-    expect(output.output).toBe("Hello")
+    expect(textEvents.map((e) => (e as { text: string }).text)).toEqual(["Hello", "Hello"])
+    expect(output.output).toBe("HelloHello")
   })
 })

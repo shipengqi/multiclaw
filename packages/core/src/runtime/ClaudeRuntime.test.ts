@@ -417,6 +417,25 @@ describe("ClaudeRuntime.execute", () => {
     expect(output.output).toBe("中")
   })
 
+  it("preserves a multi-byte codepoint split across a stderr chunk boundary", async () => {
+    const child = new FakeChild()
+    spawnMock.mockReturnValue(child)
+
+    const p = new ClaudeRuntime().execute(makeTask())
+    const full = Buffer.from("boom 中", "utf8")
+    const charIndex = full.indexOf(Buffer.from("中", "utf8"))
+    expect(charIndex).toBeGreaterThan(0)
+
+    // Same stateless-decode trap as stdout, but the corruption would surface in
+    // the non-zero-exit error message the user sees.
+    const splitAt = charIndex + 1
+    child.stderr.emit("data", full.subarray(0, splitAt))
+    child.stderr.emit("data", full.subarray(splitAt))
+    child.emit("close", 1)
+
+    await expect(p).rejects.toThrow("claude exited with code 1: boom 中")
+  })
+
   it("flushes a trailing newline-less line on close", async () => {
     const child = new FakeChild()
     spawnMock.mockReturnValue(child)

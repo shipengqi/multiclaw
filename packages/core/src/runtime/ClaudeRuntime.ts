@@ -168,6 +168,12 @@ export class ClaudeRuntime extends RuntimeBase {
       // block is a duplicate and is dropped — only its `tool_use` blocks still
       // matter. If no delta ever arrives (an older CLI, or the flag being
       // ignored) the assistant message is the sole source of text and is used.
+      //
+      // The flag is deliberately run-scoped, not per-message:
+      // `--include-partial-messages` is process-global, so a single run cannot
+      // mix delta-bearing and delta-less turns, whereas resetting after each
+      // assistant message would risk re-emitting duplicate text — the very
+      // failure this guard exists to prevent.
       let sawAgentDelta = false
       let agentText = ""
       let resultText = ""
@@ -337,15 +343,17 @@ export class ClaudeRuntime extends RuntimeBase {
           nl = buffer.indexOf("\n")
         }
       })
+      const stderrDecoder = new StringDecoder("utf8")
       child.stderr.on("data", (d: Buffer) => {
-        errorOutput += d.toString()
+        errorOutput += stderrDecoder.write(d)
       })
       child.on("close", (code) => {
         clearTimers()
-        // Flush the decoder first: it may hold the tail of a codepoint whose
-        // remaining bytes never arrived, and any decoded bytes must land in
-        // `buffer` before the trailing line is handled.
+        // Flush both decoders first: each may hold the tail of a codepoint whose
+        // remaining bytes never arrived, and any decoded bytes must land before
+        // the trailing line / error string is handled.
         buffer += decoder.end()
+        errorOutput += stderrDecoder.end()
         // No more chunks will arrive, so flush whatever the last, newline-less
         // line held. A truncated line simply fails to parse and becomes `raw`.
         if (buffer.length > 0) {
