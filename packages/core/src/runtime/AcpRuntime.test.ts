@@ -800,6 +800,24 @@ describe("AcpRuntime · agent context delivery", () => {
     expect(promptParams?._meta).toBeUndefined()
   })
 
+  it("sends an explicit empty tool list, not the bridge preset (fail-closed)", async () => {
+    const child = new FakeChild()
+    let newParams: SessionParams | undefined
+    attachAgent(child, {
+      newSession: (params) => {
+        newParams = params as SessionParams
+        return { sessionId: "sess-1" }
+      },
+    })
+
+    // AgentRunner defaults an unset `tools` to ["Read","Write","Bash"], so an
+    // empty array can only be an explicit `tools: []`. It must mean "no tools",
+    // not "fall back to every built-in tool".
+    await runWith(child, { command: "claude-agent-acp", tools: [] })
+
+    expect(newParams?._meta).toMatchObject({ claudeCode: { options: { tools: [] } } })
+  })
+
   it("appends a login hint to an authentication-required error", async () => {
     const child = new FakeChild()
     attachAgent(child, {

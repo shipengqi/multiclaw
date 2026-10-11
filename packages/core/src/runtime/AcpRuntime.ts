@@ -148,6 +148,11 @@ function commandKey(command: string): string {
  * which every ACP agent understands, at the cost of weaker instruction
  * adherence. The two modes are mutually exclusive: sending both would double
  * the instructions on a bridge that honours both.
+ *
+ * Known limitation of `"prompt"` mode: there is no tool-restriction mechanism
+ * at all — only a `_meta`-capable bridge reads `claudeCode.options.tools`, so a
+ * prompt-mode agent (e.g. `codex-acp`) runs with whatever its binary defaults
+ * to. That is a gap in the bridge, not an oversight in this adapter.
  */
 function deliveryFor(command: string): "meta" | "prompt" {
   return META_CAPABLE_COMMANDS.has(commandKey(command)) ? "meta" : "prompt"
@@ -161,18 +166,21 @@ function deliveryFor(command: string): "meta" | "prompt" {
  * with its Claude Code preset, but a *string* replaces the preset — and that is
  * what we want: multiclaw's system prompt is the agent's whole identity.
  *
- * Tools are deliberately NOT treated as equivalent to ClaudeRuntime's
- * `--allowedTools`. That flag is a permission allowlist (the tools still exist,
- * they are just not pre-approved), whereas the bridge's `tools` option governs
- * which tools exist at all — so `tools: []` would *remove* every built-in tool
- * rather than merely un-approve them. We therefore send `tools` only when the
- * config actually named some; an empty `task.tools` is left to the bridge's
- * preset instead of silently disabling everything.
+ * `systemPrompt` is omitted when empty (matching `ClaudeRuntime`, which also
+ * skips `--system-prompt` for an empty value). Tools are always sent, including
+ * an empty array — see the inline note.
  */
 function buildMeta(task: AgentTask): Record<string, unknown> | undefined {
   const meta: Record<string, unknown> = {}
   if (task.systemPrompt) meta.systemPrompt = task.systemPrompt
-  if (task.tools.length > 0) meta.claudeCode = { options: { tools: task.tools } }
+  // Always sent, including an empty array. AgentRunner
+  // (orchestrator/AgentRunner.ts:50) defaults `task.tools` to
+  // ["Read", "Write", "Bash"], so an empty array can only be an explicit
+  // `tools: []` — and an explicit "no tools" must not silently fall back to the
+  // bridge's full claude_code preset. Note this is a different axis from
+  // ClaudeRuntime's `--allowedTools` (a permission allowlist layered on the
+  // preset, not the set of tools that exist), so the two are not interchangeable.
+  meta.claudeCode = { options: { tools: task.tools } }
   return Object.keys(meta).length > 0 ? meta : undefined
 }
 
