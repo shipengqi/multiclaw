@@ -386,6 +386,37 @@ describe("ClaudeRuntime.execute", () => {
     expect(output.output).toBe("partial")
   })
 
+  it("preserves a multi-byte codepoint split across a chunk boundary", async () => {
+    const child = new FakeChild()
+    spawnMock.mockReturnValue(child)
+    const { events, onEvent } = collect()
+
+    const p = new ClaudeRuntime().execute(makeTask({ onEvent }))
+    const full = Buffer.from(
+      `${JSON.stringify({
+        type: "stream_event",
+        event: { type: "content_block_delta", delta: { type: "text_delta", text: "中" } },
+      })}\n`,
+      "utf8"
+    )
+    const charIndex = full.indexOf(Buffer.from("中", "utf8"))
+    expect(charIndex).toBeGreaterThan(0)
+
+    // Split one byte inside the 3-byte codepoint (E4 B8 AD). A stateless
+    // per-chunk decode turns both halves into U+FFFD; a StringDecoder carries
+    // the incomplete sequence over to the next chunk.
+    const splitAt = charIndex + 1
+    child.stdout.emit("data", full.subarray(0, splitAt))
+    child.stdout.emit("data", full.subarray(splitAt))
+    child.emit("close", 0)
+
+    const output = await p
+    const delta = events.find((e) => e.type === "message_delta") as { text: string } | undefined
+    expect(delta?.text).toBe("中")
+    expect(delta?.text).not.toContain("\ufffd")
+    expect(output.output).toBe("中")
+  })
+
   it("flushes a trailing newline-less line on close", async () => {
     const child = new FakeChild()
     spawnMock.mockReturnValue(child)

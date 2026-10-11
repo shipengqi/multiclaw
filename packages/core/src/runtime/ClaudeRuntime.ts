@@ -1,5 +1,6 @@
 import { execSync, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { StringDecoder } from "node:string_decoder"
 import type {
   AgentOutput,
   AgentTask,
@@ -117,19 +118,19 @@ export class ClaudeRuntime extends RuntimeBase {
 
       let stopped = false
       let escalation: NodeJS.Timeout | undefined
-      const stop = (reason: "abort" | "timeout", signal: NodeJS.Signals) => {
+      const stop = (signal: NodeJS.Signals) => {
         if (stopped) return
         stopped = true
         killTree(signal)
-        if (reason === "abort") {
-          // A process that ignores SIGTERM would otherwise sit there until the
-          // console is closed.
-          escalation = setTimeout(() => killTree("SIGKILL"), KILL_ESCALATION_MS)
-          escalation.unref()
-        }
+        // A process that ignores SIGTERM would otherwise sit there until the
+        // console is closed. That applies to a timeout as much as to an abort:
+        // both leave the promise unsettled until `close`, so a stuck agent has
+        // to be force-killed either way.
+        escalation = setTimeout(() => killTree("SIGKILL"), KILL_ESCALATION_MS)
+        escalation.unref()
       }
 
-      task.signal?.addEventListener("abort", () => stop("abort", "SIGTERM"), { once: true })
+      task.signal?.addEventListener("abort", () => stop("SIGTERM"), { once: true })
 
       // `task.timeout` is the agent's own budget. The orchestrator also enforces
       // it with `withTimeout`, but a runtime that outlives that promise would
@@ -140,7 +141,7 @@ export class ClaudeRuntime extends RuntimeBase {
           ? undefined
           : setTimeout(() => {
               timedOut = true
-              stop("timeout", "SIGTERM")
+              stop("SIGTERM")
             }, task.timeout)
 
       const clearTimers = () => {
@@ -318,9 +319,16 @@ export class ClaudeRuntime extends RuntimeBase {
       // NDJSON over a byte stream is chunked arbitrarily, so a chunk can end
       // mid-line. Only complete (newline-terminated) lines are parsed; the
       // trailing partial line stays buffered until the next chunk completes it.
+      //
+      // Decoding goes through a stateful `StringDecoder` rather than
+      // `Buffer.toString()`: the latter decodes each chunk independently, so a
+      // multi-byte UTF-8 codepoint split across a chunk boundary (routine for
+      // CJK or emoji output) would decode to U+FFFD on both sides and silently
+      // corrupt the agent's text.
       let buffer = ""
+      const decoder = new StringDecoder("utf8")
       child.stdout.on("data", (d: Buffer) => {
-        buffer += d.toString()
+        buffer += decoder.write(d)
         let nl = buffer.indexOf("\n")
         while (nl !== -1) {
           const line = buffer.slice(0, nl)
@@ -334,6 +342,10 @@ export class ClaudeRuntime extends RuntimeBase {
       })
       child.on("close", (code) => {
         clearTimers()
+        // Flush the decoder first: it may hold the tail of a codepoint whose
+        // remaining bytes never arrived, and any decoded bytes must land in
+        // `buffer` before the trailing line is handled.
+        buffer += decoder.end()
         // No more chunks will arrive, so flush whatever the last, newline-less
         // line held. A truncated line simply fails to parse and becomes `raw`.
         if (buffer.length > 0) {
