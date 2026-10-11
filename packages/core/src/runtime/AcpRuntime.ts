@@ -1,0 +1,405 @@
+import { spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { Readable, Writable } from "node:stream"
+import type {
+  AgentOutput,
+  AgentTask,
+  RuntimeCapabilities,
+  RuntimeEvent,
+  RuntimeEventBase,
+  RuntimeInfo,
+} from "../types/runtime"
+import { abortError } from "../utils/abort"
+import { RuntimeBase } from "./RuntimeBase"
+
+/** Grace period between SIGTERM and SIGKILL when an agent will not stop. */
+const KILL_ESCALATION_MS = 3000
+
+/**
+ * Grace period between asking the agent to cancel (`session/cancel`) and killing
+ * its process group. A well-behaved agent stops the turn on its own; this is the
+ * fallback for one that does not.
+ */
+const CANCEL_GRACE_MS = 2000
+
+/** Default ACP agent: opencode speaks ACP natively under `opencode acp`. */
+const DEFAULT_COMMAND = "opencode"
+const DEFAULT_ARGS = ["acp"]
+
+/** A `RuntimeEvent` before the emitter supplies its per-run envelope. */
+type RuntimeEventPayload = RuntimeEvent extends infer E
+  ? E extends RuntimeEventBase
+    ? Omit<E, keyof RuntimeEventBase>
+    : never
+  : never
+
+/** The SDK module, imported lazily (see `execute`). */
+type AcpModule = typeof import("@agentclientprotocol/sdk")
+type AcpSessionNotification = import("@agentclientprotocol/sdk").SessionNotification
+
+/**
+ * What *this adapter* implements — not what an ACP agent could do.
+ *
+ * `permissions` is false because no `session/request_permission` handler is
+ * wired: an agent that asks would get a protocol error, so claiming the
+ * capability would let callers hand us a permission flow we silently drop.
+ * `models` is false because ACP negotiates no model here; `images`, `usage`
+ * and `cost` are false because those updates are surfaced as `raw` rather than
+ * mapped. `resume` is true because a set `sessionId` drives `session/load`.
+ */
+const CAPABILITIES: RuntimeCapabilities = {
+  streaming: true,
+  sessions: true,
+  resume: true,
+  permissions: false,
+  tools: true,
+  models: false,
+  images: false,
+  usage: false,
+  cost: false,
+  sandbox: false,
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/** True when `command` names an executable file on PATH. */
+function resolvesOnPath(command: string): boolean {
+  const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)
+  // PATHEXT is Windows-only; the bare name covers POSIX and extensionless
+  // binaries. Trying both is harmless and avoids a platform branch.
+  const exts = (process.env.PATHEXT ?? "").split(";").filter(Boolean)
+  const suffixes = exts.length > 0 ? exts : [""]
+  for (const dir of dirs) {
+    for (const ext of suffixes) {
+      if (isExecutableFile(path.join(dir, command + ext))) return true
+    }
+  }
+  return false
+}
+
+function isExecutableFile(file: string): boolean {
+  try {
+    fs.accessSync(file, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Text of an ACP content block, or undefined when it is not a text block. */
+function textOf(content: unknown): string | undefined {
+  if (isRecord(content) && content.type === "text" && typeof content.text === "string") {
+    return content.text
+  }
+  return undefined
+}
+
+/** Render arbitrary tool output as the string the `tool_result` event carries. */
+function stringifyOutput(value: unknown): string {
+  if (typeof value === "string") return value
+  if (value === undefined || value === null) return ""
+  return JSON.stringify(value)
+}
+
+/** Map an ACP `stopReason` onto the runtime union. */
+function mapStopReason(reason: string): "success" | "max_turns" | "cancelled" | "error" {
+  switch (reason) {
+    case "end_turn":
+      return "success"
+    case "cancelled":
+      return "cancelled"
+    case "max_tokens":
+    case "max_turn_requests":
+      return "max_turns"
+    default:
+      // "refusal" and anything unknown: the agent did not complete the task.
+      return "error"
+  }
+}
+
+export class AcpRuntime extends RuntimeBase {
+  readonly name = "acp"
+
+  async describe(): Promise<RuntimeInfo> {
+    // Deliberately does NOT import the SDK. `describe()` runs at CLI startup
+    // (`assertRuntimesAvailable`), and importing the SDK pulls in zod — measured
+    // at ~5s here — so doing it here would add seconds to every `multiclaw`
+    // launch for an ACP config. Availability is about the agent binary, not the
+    // client library, so a PATH lookup is both cheaper and more accurate.
+    return {
+      name: this.name,
+      available: resolvesOnPath(DEFAULT_COMMAND),
+      capabilities: { ...CAPABILITIES },
+    }
+  }
+
+  async execute(task: AgentTask): Promise<AgentOutput> {
+    // Lazy, never a top-level import: the SDK drags in zod (~5s, ~6MB), so a
+    // static import would tax every CLI startup even for runs that never touch
+    // ACP.
+    const acp: AcpModule = await import("@agentclientprotocol/sdk")
+
+    const command = task.command ?? DEFAULT_COMMAND
+    const args = task.args ?? DEFAULT_ARGS
+
+    return new Promise<AgentOutput>((resolve, reject) => {
+      const child = spawn(command, args, {
+        cwd: task.workDir,
+        env: process.env,
+        // Own process group, so a kill reaches whatever the agent spawned too.
+        detached: true,
+      })
+
+      /**
+       * Signal the whole group, falling back to the child alone.
+       *
+       * `process.kill(-pid)` throws once the group is gone, and a fake child in
+       * tests has no pid at all — neither is a reason to fail a cancellation.
+       */
+      const signalChild = (signal: NodeJS.Signals) => {
+        try {
+          child.kill(signal)
+        } catch {
+          // Already gone.
+        }
+      }
+      const killTree = (signal: NodeJS.Signals) => {
+        if (child.pid === undefined) {
+          signalChild(signal)
+          return
+        }
+        try {
+          process.kill(-child.pid, signal)
+        } catch {
+          signalChild(signal)
+        }
+      }
+
+      let stopped = false
+      let escalation: NodeJS.Timeout | undefined
+      const stop = (signal: NodeJS.Signals) => {
+        if (stopped) return
+        stopped = true
+        killTree(signal)
+        // Escalate for every stop reason — timeout, abort and normal teardown
+        // alike. A long-lived agent that ignores SIGTERM must not linger.
+        escalation = setTimeout(() => killTree("SIGKILL"), KILL_ESCALATION_MS)
+        escalation.unref()
+      }
+
+      let timedOut = false
+      const timer =
+        task.timeout === undefined
+          ? undefined
+          : setTimeout(() => {
+              timedOut = true
+              stop("SIGTERM")
+            }, task.timeout)
+
+      let cancelGrace: NodeJS.Timeout | undefined
+      const clearTimers = () => {
+        if (timer) clearTimeout(timer)
+        if (escalation) clearTimeout(escalation)
+        if (cancelGrace) clearTimeout(cancelGrace)
+      }
+
+      // A fresh id per run, and a counter that orders the events it carries.
+      const runId = randomUUID()
+      let seq = 0
+      const emit = (event: RuntimeEventPayload) => {
+        task.onEvent?.({ ...event, runId, agentId: task.agentId, seq: seq++ } as RuntimeEvent)
+      }
+
+      let sessionId: string | undefined
+      let agentText = ""
+      let errorOutput = ""
+      let connectionError: Error | undefined
+      let settled = false
+
+      const settleResolve = (output: AgentOutput) => {
+        if (settled) return
+        settled = true
+        clearTimers()
+        resolve(output)
+      }
+      const settleReject = (error: Error) => {
+        if (settled) return
+        settled = true
+        clearTimers()
+        reject(error)
+      }
+
+      // ── session/update → RuntimeEvent ────────────────────────────────────
+      const handleUpdate = (notification: AcpSessionNotification) => {
+        // A shared agent process could in principle host several sessions; only
+        // this run's session is ours.
+        if (sessionId && notification.sessionId !== sessionId) return
+
+        // The SDK validated `update` against the ACP schema before delivering
+        // it, so the typed union can be trusted — no defensive re-parsing.
+        const update = notification.update
+        switch (update.sessionUpdate) {
+          case "agent_message_chunk": {
+            const text = textOf(update.content)
+            if (text === undefined) {
+              emit({ type: "raw", vendor: "acp", payload: update })
+              break
+            }
+            agentText += text
+            emit({ type: "message_delta", role: "agent", text })
+            break
+          }
+          case "agent_thought_chunk": {
+            const text = textOf(update.content)
+            if (text === undefined) {
+              emit({ type: "raw", vendor: "acp", payload: update })
+              break
+            }
+            emit({ type: "message_delta", role: "thought", text })
+            break
+          }
+          case "tool_call": {
+            emit({
+              type: "tool_call",
+              id: update.toolCallId,
+              name: update.name ?? update.title,
+              input: update.rawInput,
+            })
+            break
+          }
+          case "tool_call_update": {
+            emit({
+              type: "tool_result",
+              id: update.toolCallId,
+              output: stringifyOutput(update.rawOutput ?? update.content),
+              isError: update.status === "failed",
+            })
+            break
+          }
+          case "plan": {
+            emit({ type: "plan", entries: update.entries.map((entry) => entry.content) })
+            break
+          }
+          default:
+            // Unknown / extension updates (usage_update, notice, `_`-prefixed
+            // extensions, …) must never break the run — surface and move on.
+            emit({ type: "raw", vendor: "acp", payload: update })
+        }
+      }
+
+      const app = acp.client({ name: "multiclaw" })
+      app.onNotification(acp.methods.client.session.update, (nctx) => {
+        handleUpdate(nctx.params)
+      })
+
+      // stderr is diagnostics only — the protocol lives on stdout. Never parse
+      // it as protocol; keep it for the error message if the agent dies.
+      child.stderr.on("data", (d: Buffer) => {
+        errorOutput += d.toString()
+      })
+
+      // `Readable.toWeb` is typed against Node's web-stream types, which do not
+      // line up with the DOM `ReadableStream<Uint8Array>` the SDK declares.
+      const stream = acp.ndJsonStream(
+        Writable.toWeb(child.stdin),
+        Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>
+      )
+      const connection = app.connect(stream)
+      const ctx = connection.agent
+
+      const teardown = () => {
+        try {
+          connection.close()
+        } catch {
+          // Already closed.
+        }
+        stop("SIGTERM")
+      }
+
+      // Abort: ask the agent to stop the turn (protocol-correct), but do not
+      // trust it — kill the process group if it does not exit promptly.
+      task.signal?.addEventListener(
+        "abort",
+        () => {
+          if (sessionId) {
+            void ctx.notify(acp.methods.agent.session.cancel, { sessionId }).catch(() => {})
+          }
+          cancelGrace = setTimeout(() => stop("SIGTERM"), CANCEL_GRACE_MS)
+          cancelGrace.unref()
+        },
+        { once: true }
+      )
+
+      child.on("close", (code) => {
+        if (settled) return
+        // Settle on cancellation too — a cancelled run must not leave the
+        // caller's promise pending forever.
+        if (task.signal?.aborted) {
+          settleReject(abortError())
+          return
+        }
+        if (timedOut) {
+          settleReject(new Error(`acp timed out (${task.timeout}ms)`))
+          return
+        }
+        if (connectionError) {
+          settleReject(connectionError)
+          return
+        }
+        settleReject(new Error(`${command} exited with code ${code}: ${errorOutput}`))
+      })
+      child.on("error", (err) => {
+        settleReject(new Error(`Failed to start ${command}: ${err.message}`))
+      })
+
+      const run = async () => {
+        await ctx.request(acp.methods.agent.initialize, {
+          protocolVersion: acp.PROTOCOL_VERSION,
+        })
+        emit({ type: "run_started", model: task.model })
+
+        if (task.sessionId) {
+          await ctx.request(acp.methods.agent.session.load, {
+            sessionId: task.sessionId,
+            cwd: task.workDir,
+            mcpServers: [],
+          })
+          sessionId = task.sessionId
+        } else {
+          const created = await ctx.request(acp.methods.agent.session.new, {
+            cwd: task.workDir,
+            mcpServers: [],
+          })
+          sessionId = created.sessionId
+        }
+
+        const response = await ctx.request(acp.methods.agent.session.prompt, {
+          sessionId,
+          prompt: [{ type: "text", text: task.prompt }],
+        })
+
+        if (task.signal?.aborted) {
+          settleReject(abortError())
+          teardown()
+          return
+        }
+
+        const stopReason = mapStopReason(response.stopReason)
+        emit({ type: "run_finished", stopReason })
+        settleResolve({ output: agentText, exitCode: 0, sessionId, stopReason })
+        // ACP agents are long-lived: the turn is done, so end the process.
+        teardown()
+      }
+
+      void run().catch((err: unknown) => {
+        connectionError = err instanceof Error ? err : new Error(String(err))
+        settleReject(connectionError)
+        teardown()
+      })
+    })
+  }
+}

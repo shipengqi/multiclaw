@@ -13,6 +13,14 @@ export interface AgentDefinition {
   name: string
   icon?: string
   runtime?: string
+  /**
+   * Command to launch for this agent's runtime, when the runtime talks to an
+   * external process (e.g. ACP). Generic — "which binary to start", not a
+   * protocol detail — so a built-in runtime simply ignores it.
+   */
+  command?: string
+  /** Arguments for {@link command}. */
+  args?: string[]
   model?: string
   models?: Partial<Record<string, string>>
   systemPrompt: string

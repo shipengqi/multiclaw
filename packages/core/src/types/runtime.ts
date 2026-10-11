@@ -78,6 +78,14 @@ export interface AgentTask {
   /** How to treat an existing session: continue it in place, or fork a copy. */
   resume?: "continue" | "fork"
   model?: string
+  /**
+   * Command to launch, for runtimes that drive an external process (e.g. ACP).
+   * Generic — it names a binary, not a protocol — so runtimes that do not spawn
+   * anything ignore it.
+   */
+  command?: string
+  /** Arguments for {@link command}. */
+  args?: string[]
 }
 
 export interface AgentOutput {

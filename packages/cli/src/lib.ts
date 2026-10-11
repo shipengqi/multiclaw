@@ -18,7 +18,8 @@ function configRuntimeNames(config: MultiClawConfig): Set<string> {
 export async function assertRuntimesAvailable(config: MultiClawConfig): Promise<void> {
   for (const name of configRuntimeNames(config)) {
     if (!runtimeRegistry.has(name)) {
-      console.error(`\x1b[31mError: Unknown runtime "${name}". Supported: claude\x1b[0m`)
+      const supported = runtimeRegistry.list().join(", ")
+      console.error(`\x1b[31mError: Unknown runtime "${name}". Supported: ${supported}\x1b[0m`)
       process.exit(1)
     }
     const info = await runtimeRegistry.get(name).describe()

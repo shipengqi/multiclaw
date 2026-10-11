@@ -1,10 +1,12 @@
 import type { AgentRuntime } from "../types/runtime"
+import { AcpRuntime } from "./AcpRuntime"
 import { ClaudeRuntime } from "./ClaudeRuntime"
 
 class RuntimeRegistry {
   private runtimes = new Map<string, AgentRuntime>()
   constructor() {
     this.register(new ClaudeRuntime())
+    this.register(new AcpRuntime())
   }
   register(r: AgentRuntime) {
     this.runtimes.set(r.name, r)
@@ -26,4 +28,4 @@ class RuntimeRegistry {
 }
 
 export const runtimeRegistry = new RuntimeRegistry()
-export { ClaudeRuntime }
+export { AcpRuntime, ClaudeRuntime }

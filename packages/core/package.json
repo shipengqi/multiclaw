@@ -31,5 +31,8 @@
     "@types/node": "^26.6.4",
     "typescript": "^5.4.0",
     "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.8.0"
   }
 }

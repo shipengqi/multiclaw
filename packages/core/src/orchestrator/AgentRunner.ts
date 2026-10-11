@@ -76,6 +76,8 @@ export class AgentRunner {
                   timeout,
                   signal: innerSignal,
                   model,
+                  command: agent.command,
+                  args: agent.args,
                   onEvent: (e) => {
                     // Only text reaches the TUI's stream pane. Tool calls, usage
                     // and cost are carried by the runtime event but the bus
