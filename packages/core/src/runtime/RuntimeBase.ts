@@ -1,7 +1,7 @@
-import type { AgentOutput, AgentRuntime, AgentTask } from "../types/runtime"
+import type { AgentOutput, AgentRuntime, AgentTask, RuntimeInfo } from "../types/runtime"
 
 export abstract class RuntimeBase implements AgentRuntime {
   abstract readonly name: string
-  abstract checkAvailable(): Promise<boolean>
+  abstract describe(): Promise<RuntimeInfo>
   abstract execute(task: AgentTask): Promise<AgentOutput>
 }

@@ -17,7 +17,22 @@ describe("runtimeRegistry", () => {
   it("registers and retrieves a custom runtime", () => {
     const fake = {
       name: "custom-runtime",
-      checkAvailable: async () => true,
+      describe: async () => ({
+        name: "custom-runtime",
+        available: true,
+        capabilities: {
+          streaming: false,
+          sessions: false,
+          resume: false,
+          permissions: false,
+          tools: false,
+          models: false,
+          images: false,
+          usage: false,
+          cost: false,
+          sandbox: false,
+        },
+      }),
       execute: async () => ({ output: "", exitCode: 0 }),
     }
     runtimeRegistry.register(fake)

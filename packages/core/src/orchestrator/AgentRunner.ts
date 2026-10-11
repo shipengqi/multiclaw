@@ -76,12 +76,21 @@ export class AgentRunner {
                   timeout,
                   signal: innerSignal,
                   model,
-                  onOutput: (chunk) => {
-                    this.eventBus.emit({
-                      type: "agent:output",
-                      timestamp: new Date().toISOString(),
-                      payload: { agentId: agent.id, chunk },
-                    })
+                  onEvent: (e) => {
+                    // Only text reaches the TUI's stream pane. Tool calls, usage
+                    // and cost are carried by the runtime event but the bus
+                    // surface is unchanged, so the console needs no changes.
+                    if (
+                      (e.type === "message_delta" || e.type === "message") &&
+                      e.role === "agent" &&
+                      e.text
+                    ) {
+                      this.eventBus.emit({
+                        type: "agent:output",
+                        timestamp: new Date().toISOString(),
+                        payload: { agentId: agent.id, chunk: e.text },
+                      })
+                    }
                   },
                 })
               ).output

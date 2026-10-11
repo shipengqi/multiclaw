@@ -1,5 +1,6 @@
 import * as path from "node:path"
-import { Orchestrator as OrchestratorImpl, runtimeRegistry } from "@multiclawcli/core"
+import { Orchestrator as OrchestratorImpl } from "@multiclawcli/core"
+import { assertRuntimesAvailable } from "../lib"
 import { loadConfig } from "../loader/loadConfig"
 import { ConsoleReporter } from "../reporters/ConsoleReporter"
 import { FileLogWriter } from "../reporters/FileLogWriter"
@@ -22,20 +23,7 @@ export async function runCommand(requirement: string, options: RunOptions): Prom
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
   config.workDir = path.join(config.workDir, ".multiclaw", "runs", `run-${ts}`)
 
-  const runtimeNames = new Set(config.agents.map((a) => a.runtime ?? "claude"))
-  for (const name of runtimeNames) {
-    if (!runtimeRegistry.has(name)) {
-      console.error(`\x1b[31mError: Unknown runtime "${name}". Supported: claude\x1b[0m`)
-      process.exit(1)
-    }
-    const rt = runtimeRegistry.get(name)
-    if (!(await rt.checkAvailable())) {
-      console.error(
-        `\x1b[31mError: Runtime "${name}" is not available. Make sure the CLI is installed.\x1b[0m`
-      )
-      process.exit(1)
-    }
-  }
+  await assertRuntimesAvailable(config)
 
   const orchestrator = new OrchestratorImpl(config)
 

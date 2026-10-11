@@ -123,10 +123,35 @@ describe("AgentRunner.run", () => {
     expect(seen?.prompt).toBe("Build MultiClaw [scope-x]")
   })
 
-  it("forwards runtime output chunks as agent:output events", async () => {
+  it("forwards agent text events as agent:output, and ignores non-text events", async () => {
     handler = async (task) => {
-      task.onOutput?.("chunk-1")
-      task.onOutput?.("chunk-2")
+      task.onEvent?.({
+        runId: "r1",
+        agentId: "a",
+        seq: 0,
+        type: "message_delta",
+        role: "agent",
+        text: "chunk-1",
+      })
+      // Tool calls and usage are not text: the TUI's stream pane must not see
+      // them as output chunks.
+      task.onEvent?.({
+        runId: "r1",
+        agentId: "a",
+        seq: 1,
+        type: "tool_call",
+        id: "t",
+        name: "Bash",
+        input: {},
+      })
+      task.onEvent?.({
+        runId: "r1",
+        agentId: "a",
+        seq: 2,
+        type: "message_delta",
+        role: "agent",
+        text: "chunk-2",
+      })
       return { output: "done", exitCode: 0 }
     }
 

@@ -1,7 +1,7 @@
-import { execSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { input, select } from "@inquirer/prompts"
+import { availableRuntimes } from "../lib"
 
 // ─── Agent Block Definitions ──────────────────────────────────────────────────
 
@@ -130,20 +130,13 @@ export async function initCommand(): Promise<void> {
     `\x1b[2m     \`npm i -D multiclaw\` adds editor autocomplete for defineConfig/agents.\x1b[0m`
   )
 
-  checkRuntime()
+  await checkRuntime()
 }
 
-function checkRuntime(): void {
-  // const runtimes = ["claude", "codex", "opencode", "cursor"]
-  const runtimes = ["claude"]
-  const available = runtimes.filter((r) => {
-    try {
-      execSync(`${r} --version`, { stdio: "ignore" })
-      return true
-    } catch {
-      return false
-    }
-  })
+async function checkRuntime(): Promise<void> {
+  // Availability is owned by the runtime registry (`describe()`), not by a
+  // second `execSync` here — "is this runtime installed?" has one source.
+  const available = await availableRuntimes()
   if (available.length === 0) {
     console.log("")
     console.log("\x1b[33mWarning: No AI runtime detected. Install at least one:\x1b[0m")

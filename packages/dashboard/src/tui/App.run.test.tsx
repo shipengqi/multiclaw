@@ -6,6 +6,29 @@ import { stripAnsi } from "./state"
 import { driveFrame } from "./test-helpers"
 
 /**
+ * `describe()` for a fake runtime: present, but claiming no capabilities. These
+ * tests drive the rendered frame, not capability negotiation.
+ */
+function alwaysAvailable(name: string) {
+  return async () => ({
+    name,
+    available: true,
+    capabilities: {
+      streaming: false,
+      sessions: false,
+      resume: false,
+      permissions: false,
+      tools: false,
+      models: false,
+      images: false,
+      usage: false,
+      cost: false,
+      sandbox: false,
+    },
+  })
+}
+
+/**
  * A runtime that answers instantly.
  *
  * These are integration tests for the *rendered frame*, so the only thing the
@@ -93,12 +116,19 @@ describe("App · a full turn", () => {
   beforeAll(() => {
     runtimeRegistry.register({
       name: RUNTIME,
-      checkAvailable: async () => true,
+      describe: alwaysAvailable(RUNTIME),
       async execute(task) {
         if (task.agentId === "leader") {
           return { output: '{"mode":"run","run":["architect","dev"]}', exitCode: 0 }
         }
-        task.onOutput?.(`${task.agentId}: working\n`)
+        task.onEvent?.({
+          runId: "run-1",
+          agentId: task.agentId,
+          seq: 0,
+          type: "message_delta",
+          role: "agent",
+          text: `${task.agentId}: working\n`,
+        })
         return { output: `${task.agentId} finished`, exitCode: 0 }
       },
     })
@@ -188,7 +218,7 @@ describe("App · a turn the leader answers", () => {
   beforeAll(() => {
     runtimeRegistry.register({
       name: REPLY_RUNTIME,
-      checkAvailable: async () => true,
+      describe: alwaysAvailable(REPLY_RUNTIME),
       async execute(task) {
         ran.push(task.agentId)
         if (task.agentId === "leader") {
@@ -279,7 +309,7 @@ describe("App · a follow-up typed mid-run", () => {
   beforeAll(() => {
     runtimeRegistry.register({
       name: SLOW_RUNTIME,
-      checkAvailable: async () => true,
+      describe: alwaysAvailable(SLOW_RUNTIME),
       async execute(task) {
         inFlight += 1
         peak = Math.max(peak, inFlight)
@@ -344,7 +374,7 @@ describe("App · browsing finished turns", () => {
   beforeAll(() => {
     runtimeRegistry.register({
       name: SLOW_RUNTIME,
-      checkAvailable: async () => true,
+      describe: alwaysAvailable(SLOW_RUNTIME),
       async execute(task) {
         if (task.agentId === "leader") {
           return { output: '{"mode":"run","run":["architect"]}', exitCode: 0 }
@@ -443,7 +473,7 @@ describe("App · the workspace across turns", () => {
   beforeAll(() => {
     runtimeRegistry.register({
       name: WORKSPACE_RUNTIME,
-      checkAvailable: async () => true,
+      describe: alwaysAvailable(WORKSPACE_RUNTIME),
       async execute(task) {
         workDirs.push(task.workDir)
         if (task.agentId === "leader") {
