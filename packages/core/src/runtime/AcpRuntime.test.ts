@@ -41,6 +41,7 @@ interface AgentPromptContext {
   params: { sessionId: string; prompt?: Array<{ type: string; text: string }> }
   client: {
     notify: (method: string, params: unknown) => Promise<void>
+    request: (method: string, params: unknown) => Promise<unknown>
   }
 }
 
@@ -143,7 +144,7 @@ describe("AcpRuntime.describe", () => {
         streaming: true,
         sessions: true,
         resume: true,
-        permissions: false,
+        permissions: true,
         tools: true,
         models: false,
         images: false,
@@ -827,5 +828,204 @@ describe("AcpRuntime · agent context delivery", () => {
     })
 
     await expect(runWith(child)).rejects.toThrow(/run `claude` to log in/)
+  })
+})
+
+/** A permission request as the agent sends it: `sessionId` filled in by the helper. */
+interface PermissionRequest {
+  sessionId?: string
+  toolCallId?: string
+  name?: string
+  kind?: string
+  title?: string
+  options: Array<{ optionId: string; name: string; kind: string }>
+}
+
+/**
+ * Ask the client for permission from the agent side, as the live bridge does
+ * mid-turn, and return the decision the adapter sent back.
+ */
+function askPermission(ctx: AgentPromptContext, request: PermissionRequest): Promise<unknown> {
+  return ctx.client.request(acp.methods.client.session.requestPermission, {
+    sessionId: request.sessionId ?? ctx.params.sessionId,
+    toolCall: {
+      toolCallId: request.toolCallId ?? "tc-1",
+      ...(request.name !== undefined ? { name: request.name } : {}),
+      ...(request.kind !== undefined ? { kind: request.kind } : {}),
+      ...(request.title !== undefined ? { title: request.title } : {}),
+    },
+    options: request.options,
+  })
+}
+
+const PERMISSION_OPTIONS = [
+  { optionId: "allow-once", name: "Yes", kind: "allow_once" },
+  { optionId: "allow-always", name: "Always", kind: "allow_always" },
+  { optionId: "reject-once", name: "No", kind: "reject_once" },
+]
+
+const REJECT_ONLY = [{ optionId: "reject-once", name: "No", kind: "reject_once" }]
+
+describe("AcpRuntime · session/request_permission", () => {
+  it("approves a tool named in task.tools, preferring the durable option", async () => {
+    const child = new FakeChild()
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, {
+          name: "Write",
+          kind: "edit",
+          options: PERMISSION_OPTIONS,
+        })
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { tools: ["Read", "Write"] })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-always" } })
+  })
+
+  it("rejects a tool that is not in task.tools and emits a visible raw event", async () => {
+    const child = new FakeChild()
+    const { events, onEvent } = collect()
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, {
+          toolCallId: "tc-write",
+          name: "Write",
+          kind: "edit",
+          title: "Write /tmp/work/hello.txt",
+          options: PERMISSION_OPTIONS,
+        })
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { tools: ["Read"], onEvent })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-once" } })
+    // A rejection is otherwise invisible: the tool simply never runs.
+    expect(events.find((e) => e.type === "raw")).toMatchObject({
+      vendor: "acp",
+      payload: {
+        type: "permission_rejected",
+        toolCallId: "tc-write",
+        name: "Write",
+        kind: "edit",
+        title: "Write /tmp/work/hello.txt",
+      },
+    })
+  })
+
+  it("matches the tool name case-insensitively", async () => {
+    const child = new FakeChild()
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, { name: "write", options: PERMISSION_OPTIONS })
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { tools: ["Write"] })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-always" } })
+  })
+
+  it.each([
+    ["read", "Read"],
+    ["edit", "Write"],
+    ["execute", "Bash"],
+    ["search", "Glob"],
+    ["fetch", "WebFetch"],
+  ])("falls back to the kind %s when the request carries no name", async (kind, tool) => {
+    const child = new FakeChild()
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, { kind, options: PERMISSION_OPTIONS })
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { tools: [tool] })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-always" } })
+  })
+
+  it("rejects when neither the name nor the kind maps to an allowed tool", async () => {
+    const child = new FakeChild()
+    const { events, onEvent } = collect()
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        // No `name`, and `kind: "other"` has no Claude tool to fall back to.
+        decision = await askPermission(ctx, { kind: "other", options: PERMISSION_OPTIONS })
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { tools: ["Read", "Bash"], onEvent })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-once" } })
+    expect(events.some((e) => e.type === "raw")).toBe(true)
+  })
+
+  it("prefers reject_always over reject_once when both are offered", async () => {
+    const child = new FakeChild()
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, {
+          name: "Write",
+          options: [
+            { optionId: "reject-once", name: "No", kind: "reject_once" },
+            { optionId: "reject-always", name: "Never", kind: "reject_always" },
+          ],
+        })
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { tools: ["Read"] })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-always" } })
+  })
+
+  it("cancels when the options offer no matching direction, and tolerates an empty list", async () => {
+    const child = new FakeChild()
+    const decisions: unknown[] = []
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        // Approved tool, but the agent offered only a reject option.
+        decisions.push(await askPermission(ctx, { name: "Read", options: REJECT_ONLY }))
+        // Rejected tool with no options at all — must not throw.
+        decisions.push(await askPermission(ctx, { name: "Write", options: [] }))
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { tools: ["Read"] })
+    expect(decisions).toEqual([
+      { outcome: { outcome: "cancelled" } },
+      { outcome: { outcome: "cancelled" } },
+    ])
+  })
+
+  it("cancels a permission request that belongs to another session", async () => {
+    const child = new FakeChild()
+    const { events, onEvent } = collect()
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, {
+          sessionId: "some-other-session",
+          name: "Read",
+          options: PERMISSION_OPTIONS,
+        })
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { tools: ["Read"], onEvent })
+    expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
+    // A foreign request is not a rejection of this run's tool use.
+    expect(events.some((e) => e.type === "raw")).toBe(false)
   })
 })

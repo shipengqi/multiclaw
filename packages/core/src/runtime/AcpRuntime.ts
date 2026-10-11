@@ -49,22 +49,24 @@ type RuntimeEventPayload = RuntimeEvent extends infer E
 /** The SDK module, imported lazily (see `execute`). */
 type AcpModule = typeof import("@agentclientprotocol/sdk")
 type AcpSessionNotification = import("@agentclientprotocol/sdk").SessionNotification
+type AcpPermissionRequest = import("@agentclientprotocol/sdk").RequestPermissionRequest
+type AcpPermissionResponse = import("@agentclientprotocol/sdk").RequestPermissionResponse
 
 /**
  * What *this adapter* implements — not what an ACP agent could do.
  *
- * `permissions` is false because no `session/request_permission` handler is
- * wired: an agent that asks would get a protocol error, so claiming the
- * capability would let callers hand us a permission flow we silently drop.
- * `models` is false because ACP negotiates no model here; `images`, `usage`
- * and `cost` are false because those updates are surfaced as `raw` rather than
- * mapped. `resume` is true because a set `sessionId` drives `session/load`.
+ * `permissions` is true: a `session/request_permission` is answered against
+ * `task.tools` — a tool named there is approved and everything else is rejected
+ * (see `decidePermission`). `models` is false because ACP negotiates no model
+ * here; `images`, `usage` and `cost` are false because those updates are
+ * surfaced as `raw` rather than mapped. `resume` is true because a set
+ * `sessionId` drives `session/load`.
  */
 const CAPABILITIES: RuntimeCapabilities = {
   streaming: true,
   sessions: true,
   resume: true,
-  permissions: false,
+  permissions: true,
   tools: true,
   models: false,
   images: false,
@@ -129,6 +131,91 @@ function mapStopReason(reason: string): "success" | "max_turns" | "cancelled" | 
     default:
       // "refusal" and anything unknown: the agent did not complete the task.
       return "error"
+  }
+}
+
+/**
+ * Claude tool names an ACP `ToolKind` stands for.
+ *
+ * A fallback only: `claude-agent-acp` always sends the real tool name, so
+ * `name` is the primary path (verified against the live bridge — its `Write`
+ * and `Bash` permission requests both carried `name`). A bridge that omits
+ * `name` still gets a chance here. `delete`, `move`, `think`, `switch_mode`
+ * and `other` map to nothing — no Claude tool corresponds to them, so they
+ * fail closed.
+ */
+const KIND_TO_TOOLS: Record<string, string[]> = {
+  read: ["Read"],
+  edit: ["Edit", "Write"],
+  execute: ["Bash"],
+  search: ["Grep", "Glob"],
+  fetch: ["WebFetch"],
+}
+
+/** The tool a permission request was rejected for — surfaced as a visible event. */
+interface RejectedPermission {
+  toolCallId: string
+  name?: string
+  kind?: string
+  title?: string
+}
+
+/**
+ * Answer a `session/request_permission` against `task.tools`.
+ *
+ * Mirrors `ClaudeRuntime`'s `--allowedTools`: a tool is approved only when it
+ * is named in `tools`, and everything else is rejected — fail-closed, so an
+ * unidentifiable request never widens the agent's reach.
+ *
+ * Identification is name-first. The live `claude-agent-acp` bridge always sends
+ * the real Claude tool name, so a name that is absent from `tools` is a
+ * rejection, not a prompt to consult `kind`; `kind` is only a fallback for a
+ * bridge that omits `name` entirely. A request carrying another session's id is
+ * not ours to answer and is cancelled rather than silently ignored.
+ *
+ * The decision is synchronous — the handler returns the outcome directly — so
+ * there is no pending-request state to track or clean up.
+ */
+function decidePermission(
+  params: AcpPermissionRequest,
+  tools: string[],
+  sessionId: string | undefined
+): { response: AcpPermissionResponse; rejected?: RejectedPermission } {
+  if (sessionId !== undefined && params.sessionId !== sessionId) {
+    return { response: { outcome: { outcome: "cancelled" } } }
+  }
+
+  const allowed = new Set(tools.map((tool) => tool.toLowerCase()))
+  const name = params.toolCall.name ?? undefined
+  const kind = params.toolCall.kind ?? undefined
+  const approved =
+    name !== undefined
+      ? allowed.has(name.toLowerCase())
+      : (KIND_TO_TOOLS[kind ?? ""] ?? []).some((candidate) => allowed.has(candidate.toLowerCase()))
+
+  // Prefer the durable option in the direction the decision went; an empty or
+  // one-directional `options` list must not throw.
+  const option = approved
+    ? (params.options.find((o) => o.kind === "allow_always") ??
+      params.options.find((o) => o.kind === "allow_once"))
+    : (params.options.find((o) => o.kind === "reject_always") ??
+      params.options.find((o) => o.kind === "reject_once"))
+
+  // No option in the needed direction: cancel rather than fall back to the
+  // opposite one, which would be the agent's decision to make, not ours.
+  const response: AcpPermissionResponse = option
+    ? { outcome: { outcome: "selected", optionId: option.optionId } }
+    : { outcome: { outcome: "cancelled" } }
+
+  if (approved) return { response }
+  return {
+    response,
+    rejected: {
+      toolCallId: params.toolCall.toolCallId,
+      name,
+      kind,
+      title: params.toolCall.title ?? undefined,
+    },
   }
 }
 
@@ -397,6 +484,23 @@ export class AcpRuntime extends RuntimeBase {
       const app = acp.client({ name: "multiclaw" })
       app.onNotification(acp.methods.client.session.update, (nctx) => {
         handleUpdate(nctx.params)
+      })
+      // Answered synchronously against `task.tools` (see `decidePermission`), so
+      // there is no pending-request bookkeeping: the outcome goes back in one
+      // shot, with nothing to track or clean up.
+      app.onRequest(acp.methods.client.session.requestPermission, (rctx) => {
+        const { response, rejected } = decidePermission(rctx.params, task.tools, sessionId)
+        if (rejected) {
+          // A rejection is invisible on the wire — the tool simply does not run
+          // — so surface it: the user must see which tool the agent asked for
+          // and was refused.
+          emit({
+            type: "raw",
+            vendor: "acp",
+            payload: { type: "permission_rejected", ...rejected },
+          })
+        }
+        return response
       })
 
       // stderr is diagnostics only — the protocol lives on stdout. Never parse
