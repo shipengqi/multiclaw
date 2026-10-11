@@ -64,6 +64,12 @@ export interface RuntimeInfo {
   capabilities: RuntimeCapabilities
 }
 
+/** Caller-supplied context for {@link AgentRuntime.describe}. */
+export interface RuntimeQuery {
+  /** Binary this runtime would launch, when the caller knows it. */
+  command?: string
+}
+
 export interface AgentTask {
   agentId: string
   systemPrompt: string
@@ -99,6 +105,6 @@ export interface AgentOutput {
 
 export interface AgentRuntime {
   readonly name: string
-  describe(): Promise<RuntimeInfo>
+  describe(options?: RuntimeQuery): Promise<RuntimeInfo>
   execute(task: AgentTask): Promise<AgentOutput>
 }

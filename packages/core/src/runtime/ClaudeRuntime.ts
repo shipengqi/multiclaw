@@ -8,6 +8,7 @@ import type {
   RuntimeEvent,
   RuntimeEventBase,
   RuntimeInfo,
+  RuntimeQuery,
 } from "../types/runtime"
 import { abortError } from "../utils/abort"
 import { RuntimeBase } from "./RuntimeBase"
@@ -29,7 +30,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class ClaudeRuntime extends RuntimeBase {
   readonly name = "claude"
 
-  async describe(): Promise<RuntimeInfo> {
+  // `_options` is intentionally unused: this runtime always probes the `claude`
+  // binary, so a caller-supplied command cannot change the answer.
+  async describe(_options?: RuntimeQuery): Promise<RuntimeInfo> {
     // Capabilities describe *this adapter*, not the upstream binary: `permissions`
     // is false because we never wire a permission handler, and claiming otherwise
     // would let callers hand us a callback we silently drop. Same reasoning for

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { Readable, Writable } from "node:stream"
+import { StringDecoder } from "node:string_decoder"
 import type {
   AgentOutput,
   AgentTask,
@@ -10,6 +11,7 @@ import type {
   RuntimeEvent,
   RuntimeEventBase,
   RuntimeInfo,
+  RuntimeQuery,
 } from "../types/runtime"
 import { abortError } from "../utils/abort"
 import { RuntimeBase } from "./RuntimeBase"
@@ -124,15 +126,19 @@ function mapStopReason(reason: string): "success" | "max_turns" | "cancelled" | 
 export class AcpRuntime extends RuntimeBase {
   readonly name = "acp"
 
-  async describe(): Promise<RuntimeInfo> {
+  async describe(options?: RuntimeQuery): Promise<RuntimeInfo> {
     // Deliberately does NOT import the SDK. `describe()` runs at CLI startup
     // (`assertRuntimesAvailable`), and importing the SDK pulls in zod — measured
     // at ~5s here — so doing it here would add seconds to every `multiclaw`
     // launch for an ACP config. Availability is about the agent binary, not the
     // client library, so a PATH lookup is both cheaper and more accurate.
+    //
+    // The command is caller-supplied: an ACP agent is whatever binary the config
+    // pinned (`opencode`, `codex-acp`, …), so probing the default would report a
+    // perfectly installed non-default agent as missing.
     return {
       name: this.name,
-      available: resolvesOnPath(DEFAULT_COMMAND),
+      available: resolvesOnPath(options?.command ?? DEFAULT_COMMAND),
       capabilities: { ...CAPABILITIES },
     }
   }
@@ -253,6 +259,17 @@ export class AcpRuntime extends RuntimeBase {
             emit({ type: "message_delta", role: "agent", text })
             break
           }
+          case "user_message_chunk": {
+            const text = textOf(update.content)
+            if (text === undefined) {
+              emit({ type: "raw", vendor: "acp", payload: update })
+              break
+            }
+            // Deliberately NOT appended to `agentText`: that accumulator is the
+            // agent's own output and feeds `AgentOutput.output`.
+            emit({ type: "message_delta", role: "user", text })
+            break
+          }
           case "agent_thought_chunk": {
             const text = textOf(update.content)
             if (text === undefined) {
@@ -298,8 +315,13 @@ export class AcpRuntime extends RuntimeBase {
 
       // stderr is diagnostics only — the protocol lives on stdout. Never parse
       // it as protocol; keep it for the error message if the agent dies.
+      //
+      // Decoded statefully: stderr is chunked arbitrarily, so a multi-byte
+      // codepoint can straddle a chunk boundary and a per-chunk
+      // `Buffer.toString()` would corrupt it into U+FFFD.
+      const stderrDecoder = new StringDecoder("utf8")
       child.stderr.on("data", (d: Buffer) => {
-        errorOutput += d.toString()
+        errorOutput += stderrDecoder.write(d)
       })
 
       // `Readable.toWeb` is typed against Node's web-stream types, which do not
@@ -335,6 +357,10 @@ export class AcpRuntime extends RuntimeBase {
       )
 
       child.on("close", (code) => {
+        // Flush the decoder first: it may hold the tail of a codepoint whose
+        // remaining bytes never arrived, and any decoded bytes must land before
+        // `errorOutput` is interpolated into the message below.
+        errorOutput += stderrDecoder.end()
         if (settled) return
         // Settle on cancellation too — a cancelled run must not leave the
         // caller's promise pending forever.
@@ -357,12 +383,20 @@ export class AcpRuntime extends RuntimeBase {
       })
 
       const run = async () => {
-        await ctx.request(acp.methods.agent.initialize, {
+        const init = await ctx.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
         })
         emit({ type: "run_started", model: task.model })
 
         if (task.sessionId) {
+          // `session/load` only exists when the agent advertises it; sending it
+          // blind earns a cryptic protocol error. Do NOT fall back to a fresh
+          // session — the caller asked to resume and would wrongly believe it did.
+          if (init.agentCapabilities?.loadSession !== true) {
+            throw new Error(
+              `Agent does not support session/load (loadSession=false); cannot resume session ${task.sessionId}`
+            )
+          }
           await ctx.request(acp.methods.agent.session.load, {
             sessionId: task.sessionId,
             cwd: task.workDir,

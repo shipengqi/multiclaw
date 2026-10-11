@@ -59,7 +59,13 @@ function attachAgent(child: FakeChild, handlers: AgentHandlers): void {
   const app = acp.agent({ name: "fake-agent" })
   app.onRequest(
     "initialize",
-    (() => handlers.initialize?.() ?? { protocolVersion: acp.PROTOCOL_VERSION }) as never
+    (() =>
+      handlers.initialize?.() ?? {
+        protocolVersion: acp.PROTOCOL_VERSION,
+        // A fully-capable fake by default, so resume works out of the box;
+        // the loadSession-gate test overrides this to advertise `false`.
+        agentCapabilities: { loadSession: true },
+      }) as never
   )
   app.onRequest("session/new", (() => handlers.newSession?.() ?? { sessionId: "sess-1" }) as never)
   app.onRequest(
@@ -186,6 +192,28 @@ describe("AcpRuntime.describe", () => {
       expect((await new AcpRuntime().describe()).available).toBe(false)
     } finally {
       process.env.PATH = original
+    }
+  })
+
+  it("probes the caller-supplied command, falling back to the default", async () => {
+    // An ACP agent is whatever binary the config pinned. Probing only the
+    // default would report an installed `codex-acp` as missing.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "acp-cmd-"))
+    const bin = path.join(dir, "codex-acp")
+    fs.writeFileSync(bin, "#!/bin/sh\n")
+    fs.chmodSync(bin, 0o755)
+    const original = process.env.PATH
+    // Only `codex-acp` exists here, so the default `opencode` is absent.
+    process.env.PATH = dir
+    try {
+      expect((await new AcpRuntime().describe({ command: "codex-acp" })).available).toBe(true)
+      expect((await new AcpRuntime().describe({ command: "not-installed-xyz" })).available).toBe(
+        false
+      )
+      expect((await new AcpRuntime().describe()).available).toBe(false)
+    } finally {
+      process.env.PATH = original
+      fs.rmSync(dir, { recursive: true, force: true })
     }
   })
 })
@@ -316,6 +344,51 @@ describe("AcpRuntime.execute", () => {
     })
   })
 
+  it("maps a user_message_chunk to a message_delta with role user, kept out of the output", async () => {
+    const child = new FakeChild()
+    const { events, onEvent } = collect()
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        await notifyUpdate(ctx, {
+          sessionUpdate: "user_message_chunk",
+          content: { type: "text", text: "the question" },
+        })
+        await notifyUpdate(ctx, {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "the answer" },
+        })
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    const output = await runWith(child, { onEvent })
+
+    expect(events.filter((e) => e.type === "message_delta")).toEqual([
+      expect.objectContaining({ role: "user", text: "the question" }),
+      expect.objectContaining({ role: "agent", text: "the answer" }),
+    ])
+    // The user's own words are not the agent's output.
+    expect(output.output).toBe("the answer")
+  })
+
+  it("surfaces a non-text user message chunk as raw", async () => {
+    const child = new FakeChild()
+    const { events, onEvent } = collect()
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        await notifyUpdate(ctx, {
+          sessionUpdate: "user_message_chunk",
+          content: { type: "image", data: "aGk=", mimeType: "image/png" },
+        })
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { onEvent })
+    expect(events.find((e) => e.type === "raw")).toMatchObject({ vendor: "acp" })
+    expect(events.some((e) => e.type === "message_delta")).toBe(false)
+  })
+
   it("loads an existing session when a sessionId is supplied", async () => {
     const child = new FakeChild()
     let loaded: unknown
@@ -332,6 +405,22 @@ describe("AcpRuntime.execute", () => {
       cwd: "/tmp/work",
     })
     expect(output.sessionId).toBe("11111111-2222-3333-4444-555555555555")
+  })
+
+  it("rejects instead of sending session/load when the agent cannot load sessions", async () => {
+    const child = new FakeChild()
+    attachAgent(child, {
+      initialize: () => ({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        agentCapabilities: { loadSession: false },
+      }),
+    })
+
+    // Must NOT silently create a fresh session: the caller asked to resume and
+    // would wrongly believe it did.
+    await expect(
+      runWith(child, { sessionId: "11111111-2222-3333-4444-555555555555" })
+    ).rejects.toThrow(/does not support session\/load/)
   })
 
   it.each([
@@ -546,6 +635,24 @@ describe("AcpRuntime.execute", () => {
     child.emit("close", 1)
 
     await expect(p).rejects.toThrow("opencode exited with code 1: boom")
+  })
+
+  it("preserves a multi-byte codepoint split across a stderr chunk boundary", async () => {
+    const child = new FakeChild()
+    const p = runWith(child)
+    await untilSpawned()
+
+    // Same stateless-decode trap as ClaudeRuntime's stderr: a per-chunk
+    // `Buffer.toString()` would turn each half of 中 (E4 B8 AD) into U+FFFD.
+    const full = Buffer.from("boom 中", "utf8")
+    const charIndex = full.indexOf(Buffer.from("中", "utf8"))
+    expect(charIndex).toBeGreaterThan(0)
+    const splitAt = charIndex + 1
+    child.stderr.emit("data", full.subarray(0, splitAt))
+    child.stderr.emit("data", full.subarray(splitAt))
+    child.emit("close", 1)
+
+    await expect(p).rejects.toThrow("opencode exited with code 1: boom 中")
   })
 
   it("rejects when the process fails to start", async () => {
