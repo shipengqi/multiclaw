@@ -6,6 +6,9 @@
   `packages/*/dist/*.d.ts` 解析跨包类型,clean checkout 不先 build 会 TS2307 —— 不要改顺序。
 - 根目录命令:`pnpm verify`(lint+build+typecheck+test,提交前跑)、`pnpm lint`(biome check .)、
   `pnpm lint:fix`、`pnpm format`、`pnpm typecheck`(=`-r typecheck`)、`pnpm test`、`pnpm test:coverage`(CI 用)。
+- **`pnpm verify` 跑普通 `test`,不查 coverage 门槛**:新增未测的 core 文件会把函数覆盖率压低,
+  让 CI 的 `test:coverage` 红(core 需 90/85/90/90)。**新文件要么配测试,要么本地单独跑 `test:coverage` 兜底**
+  (2026-10-12 踩坑:`providers/detect.ts` 上线时一度 0% funcs,已补 `detect.test.ts`)。
 - 发布:手动两步,无 changesets。① `bump-version.yml` → 推 `release/v<version>` → 开 release PR。
   ② `release.yml`(merged && head.ref 以 `release/v` 开头)→ build → publish → 推 tag → `gh release create`。
   - trusted publisher 匹配 **workflow 文件名 `release.yml`** → 发布步骤不能改名/拆分;job 需 `id-token: write`。
@@ -49,7 +52,9 @@
   12 个 preset 已改成 `models: { acp: ... }`(原为 `claude`,退役后静默解析成 undefined ——
   `agents/index.test.ts` 有 it.each 卡这个不变量)。改 runtime 名必须同步改 `models` 键。
 - **CLI 可用性门禁只有一处**:`cli/src/lib.ts` 的 `assertRuntimesAvailable`/`availableRuntimes`;
-  run/tui/init 都调它 —— **不要再各写一份**。
+  run/tui/init 都调它 —— **不要再各写一份**。它用 `resolveCommand(agent, config)` 把 `provider`/`defaults`
+  解析成真实命令再 `describe({ command })`;只读 `agent.command` 会让 `provider:"claude"`(无 `command`)退回
+  opencode 默认、误报不可用(dev-team 示例即此形态,2026-10-12 修 + 回归测试)。
 
 ## ACP 接入
 - SDK:`@agentclientprotocol/sdk@1.8.0`(peer `zod@4.6.5`,zod ≈8MB)。**必须懒加载**,否则拖垮 CLI 启动。
