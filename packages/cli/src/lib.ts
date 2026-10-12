@@ -2,6 +2,7 @@ import {
   detectProviders,
   type MultiClawConfig,
   presentProviders,
+  resolveCommand,
   runtimeRegistry,
 } from "@multiclawcli/core"
 
@@ -29,14 +30,21 @@ export async function assertRuntimesAvailable(config: MultiClawConfig): Promise<
       console.error(`\x1b[31mError: Unknown runtime "${name}". Supported: ${supported}\x1b[0m`)
       process.exit(1)
     }
-    const key = `${name}\u0000${agent.command ?? ""}`
+    // Resolve the command the runtime would actually launch: an agent may pin a
+    // `provider` or rely on `defaults` instead of a literal `command`, and the
+    // runtime is only as available as that resolved binary. Without this, a
+    // `provider: "claude"` config (no `command`) fell back to the `opencode`
+    // default and reported the runtime unavailable even though `claude-agent-acp`
+    // was installed.
+    const command = resolveCommand(agent, config)
+    const key = `${name}\u0000${command}`
     if (checked.has(key)) continue
     checked.add(key)
-    const info = await runtimeRegistry.get(name).describe({ command: agent.command })
+    const info = await runtimeRegistry.get(name).describe({ command })
     if (!info.available) {
-      // Name the command when the config pinned one — "runtime acp is not
-      // available" is useless when the real problem is a missing `codex-acp`.
-      const subject = agent.command ? `Command "${agent.command}"` : `Runtime "${name}"`
+      // Name the command — "runtime acp is not available" is useless when the
+      // real problem is a missing `claude-agent-acp` or `codex-acp`.
+      const subject = `Command "${command}"`
       console.error(
         `\x1b[31mError: ${subject} is not available. Make sure the CLI is installed.\x1b[0m`
       )

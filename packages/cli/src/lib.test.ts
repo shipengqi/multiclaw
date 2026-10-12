@@ -1,7 +1,7 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { AcpRuntime } from "@multiclawcli/core"
+import { AcpRuntime, type RuntimeInfo } from "@multiclawcli/core"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { assertRuntimesAvailable, type MultiClawConfig } from "./lib"
 
@@ -112,5 +112,49 @@ describe("assertRuntimesAvailable", () => {
 
     expect(exit).toHaveBeenCalledWith(1)
     expect(stderr()).toContain('Unknown runtime "nope"')
+  })
+
+  it("resolves the command from provider/defaults, not just a literal command", async () => {
+    // Regression: an agent that pins `provider: "claude"` (no `command`) must be
+    // probed as `claude-agent-acp`, the bridge multiclaw bundles — not fall back
+    // to the `opencode` default, which would wrongly report the runtime as
+    // unavailable. The dev-team example configures `provider: "claude"` exactly
+    // this way.
+    const available: RuntimeInfo = {
+      name: "acp",
+      available: true,
+      capabilities: {
+        streaming: true,
+        sessions: true,
+        resume: true,
+        permissions: true,
+        tools: true,
+        models: false,
+        images: false,
+        usage: true,
+        cost: true,
+        sandbox: false,
+      },
+    }
+    const describeSpy = vi.spyOn(AcpRuntime.prototype, "describe").mockResolvedValue(available)
+    try {
+      await assertRuntimesAvailable({
+        name: "t",
+        workDir: "/tmp/work",
+        agents: [
+          {
+            id: "a0",
+            name: "leader",
+            provider: "claude",
+            systemPrompt: "",
+            taskPrompt: "",
+          },
+        ],
+      })
+
+      expect(describeSpy).toHaveBeenCalledWith({ command: "claude-agent-acp" })
+    } finally {
+      describeSpy.mockRestore()
+    }
   })
 })
