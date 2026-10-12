@@ -25,6 +25,7 @@ export {
 } from "./detect"
 export {
   resolveAgentRuntime,
+  resolveArgs,
   resolveCommand,
   resolveModel,
   resolveProvider,

@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import type { EventBus } from "../event/EventBus"
-import { resolveModel } from "../providers/resolve"
+import { resolveArgs, resolveCommand, resolveModel } from "../providers/resolve"
 import { runtimeRegistry } from "../runtime"
 import type { AgentDefinition, AgentResult } from "../types/agent"
 import type { MultiClawConfig } from "../types/config"
@@ -79,8 +79,13 @@ export class AgentRunner {
                   timeout,
                   signal: innerSignal,
                   model,
-                  command: agent.command,
-                  args: agent.args,
+                  // Resolve through provider/defaults exactly as the CLI's
+                  // availability gate does — an agent that pins `provider` (or
+                  // leans on `defaults`) must launch that provider's bridge, not
+                  // the runtime's built-in default. Passing the raw `agent.command`
+                  // here sent a `provider: "claude"` config straight to `opencode`.
+                  command: resolveCommand(agent, this.config),
+                  args: resolveArgs(agent, this.config),
                   onEvent: (e) => {
                     // Only text reaches the TUI's stream pane. Tool calls, usage
                     // and cost are carried by the runtime event but the bus

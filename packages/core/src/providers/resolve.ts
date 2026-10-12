@@ -26,6 +26,19 @@ export function resolveCommand(agent: AgentDefinition, config: MultiClawConfig):
   )
 }
 
+/**
+ * Resolve the launch arguments for an agent.
+ *
+ * Paired with {@link resolveCommand}: the catalog carries per-provider args
+ * (`opencode acp` needs `["acp"]`, the bundled bridges need `[]`), so leaving
+ * `args` undefined would let the runtime fall back to its `["acp"]` default and
+ * launch e.g. `claude-agent-acp acp`. Returns undefined for a truly custom
+ * command so the runtime's default still applies.
+ */
+export function resolveArgs(agent: AgentDefinition, config: MultiClawConfig): string[] | undefined {
+  return agent.args ?? specForProvider(resolveProvider(agent, config))?.args
+}
+
 /** Resolve the model id an agent will actually run with. */
 export function resolveModel(agent: AgentDefinition, config: MultiClawConfig): string | undefined {
   if (agent.model) return agent.model

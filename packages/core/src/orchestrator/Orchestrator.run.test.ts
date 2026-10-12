@@ -82,6 +82,26 @@ describe("Orchestrator.run", () => {
     expect(complete?.payload).toEqual(result)
   })
 
+  it("launches each agent with the command/args its provider resolves to", async () => {
+    // Regression: an agent that pins `provider` with no literal `command` must be
+    // launched as that provider's bridge — `claude` → `claude-agent-acp` (args
+    // []), not the runtime's built-in `opencode acp` default. The dev-team example
+    // configures providers without a literal command and spawned `opencode`, which
+    // ENOENT'd wherever it was not on PATH. Keeps the runner in step with the
+    // CLI's availability gate, which already resolves the command.
+    const seen: Array<{ command?: string; args?: string[] }> = []
+    handler = async (task) => {
+      seen.push({ command: task.command, args: task.args })
+      return { output: `out:${task.agentId}`, exitCode: 0 }
+    }
+    await runOrch([agent("a", { provider: "claude" }), agent("b", { provider: "opencode" })])
+
+    expect(seen).toEqual([
+      { command: "claude-agent-acp", args: [] },
+      { command: "opencode", args: ["acp"] },
+    ])
+  })
+
   it("runs dependent agents in dependency order", async () => {
     const started: string[] = []
     const config: MultiClawConfig = {

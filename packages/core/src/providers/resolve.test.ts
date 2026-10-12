@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { AgentDefinition } from "../types/agent"
 import type { MultiClawConfig } from "../types/config"
-import { resolveCommand, resolveModel, resolveProvider } from "./resolve"
+import { resolveArgs, resolveCommand, resolveModel, resolveProvider } from "./resolve"
 
 const baseAgent = (overrides: Partial<AgentDefinition> = {}): AgentDefinition => ({
   id: "a",
@@ -47,6 +47,25 @@ describe("resolveCommand", () => {
 
   it("falls back to provider's command", () => {
     expect(resolveCommand(baseAgent({ provider: "claude" }), baseConfig())).toBe("claude-agent-acp")
+  })
+})
+
+describe("resolveArgs", () => {
+  it("uses agent.args when present", () => {
+    expect(resolveArgs(baseAgent({ provider: "claude", args: ["--x"] }), baseConfig())).toEqual([
+      "--x",
+    ])
+  })
+
+  it("pairs the provider's args with its command", () => {
+    // The bundled bridges take no args; opencode needs the `acp` subcommand.
+    // Getting this wrong launches e.g. `claude-agent-acp acp`.
+    expect(resolveArgs(baseAgent({ provider: "claude" }), baseConfig())).toEqual([])
+    expect(resolveArgs(baseAgent({ provider: "opencode" }), baseConfig())).toEqual(["acp"])
+  })
+
+  it("returns undefined for an unknown provider so the runtime default applies", () => {
+    expect(resolveArgs(baseAgent({ provider: "unknown" }), baseConfig())).toBeUndefined()
   })
 })
 
