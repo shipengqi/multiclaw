@@ -545,19 +545,39 @@ export function App({ config, onTurnStart }: AppProps) {
     // In a single-line input the vertical keys are free, and scrolling the
     // stream is the only thing worth spending them on.
     if (key.upArrow) {
-      dispatch({ type: "stream:scroll", delta: 1, viewport: layout.logViewport })
+      dispatch({
+        type: "stream:scroll",
+        delta: 1,
+        viewport: layout.logViewport,
+        width: layout.streamWidth,
+      })
       return
     }
     if (key.downArrow) {
-      dispatch({ type: "stream:scroll", delta: -1, viewport: layout.logViewport })
+      dispatch({
+        type: "stream:scroll",
+        delta: -1,
+        viewport: layout.logViewport,
+        width: layout.streamWidth,
+      })
       return
     }
     if (key.pageUp) {
-      dispatch({ type: "stream:scroll", delta: layout.logViewport, viewport: layout.logViewport })
+      dispatch({
+        type: "stream:scroll",
+        delta: layout.logViewport,
+        viewport: layout.logViewport,
+        width: layout.streamWidth,
+      })
       return
     }
     if (key.pageDown) {
-      dispatch({ type: "stream:scroll", delta: -layout.logViewport, viewport: layout.logViewport })
+      dispatch({
+        type: "stream:scroll",
+        delta: -layout.logViewport,
+        viewport: layout.logViewport,
+        width: layout.streamWidth,
+      })
       return
     }
 
@@ -705,7 +725,13 @@ export function App({ config, onTurnStart }: AppProps) {
                 <Divider />
               </>
             ) : null}
-            <StreamPanel turn={shown} height={layout.bodyHeight} now={now} spinner={spinner} />
+            <StreamPanel
+              turn={shown}
+              height={layout.bodyHeight}
+              width={layout.streamWidth}
+              now={now}
+              spinner={spinner}
+            />
           </Box>
         )}
       </Box>

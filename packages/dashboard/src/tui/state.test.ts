@@ -32,6 +32,13 @@ import {
 const TS = "2026-01-01T00:00:00.000Z"
 const T0 = Date.parse(TS)
 
+/**
+ * Pane width for the window tests. Wide enough that the one-character log lines
+ * they build stay one row each, so those cases read the same as they did when
+ * the window counted lines — the wrapping behaviour has its own cases below.
+ */
+const WIDTH = 80
+
 function agent(id: string, patch: Partial<AgentDefinition> = {}): AgentDefinition {
   return { id, name: id, systemPrompt: "", taskPrompt: "", ...patch }
 }
@@ -488,7 +495,12 @@ describe("turn history", () => {
     const agents = reduceEvent(withAgents("a"), output("a", "1\n2\n3\n4\n5")).agents
     const opened = tuiReducer(withHistory(record(1, agents, "a")), { type: "view:open", turn: 1 })
 
-    const scrolled = tuiReducer(opened, { type: "stream:scroll", delta: 2, viewport: 2 })
+    const scrolled = tuiReducer(opened, {
+      type: "stream:scroll",
+      delta: 2,
+      viewport: 2,
+      width: WIDTH,
+    })
 
     expect(scrolled.view?.scroll).toBe(2)
     expect(scrolled.scroll).toBe(0)
@@ -791,45 +803,50 @@ describe("visibleLog", () => {
   }
 
   it("shows the tail while following", () => {
-    const window = visibleLog(logged("1\n2\n3\n4\n5"), 2)
-    expect(window.lines).toEqual(["4", "5"])
+    const window = visibleLog(logged("1\n2\n3\n4\n5"), 2, WIDTH)
+    expect(window.rows).toEqual(["4", "5"])
     expect(window.following).toBe(true)
     expect(window.scrolledBack).toBe(0)
   })
 
-  it("scrolls back by whole lines", () => {
+  it("scrolls back by whole rows", () => {
     const state = tuiReducer(logged("1\n2\n3\n4\n5"), {
       type: "stream:scroll",
       delta: 2,
       viewport: 2,
+      width: WIDTH,
     })
-    const window = visibleLog(state, 2)
-    expect(window.lines).toEqual(["2", "3"])
+    const window = visibleLog(state, 2, WIDTH)
+    expect(window.rows).toEqual(["2", "3"])
     expect(window.scrolledBack).toBe(2)
     expect(window.following).toBe(false)
   })
 
   it("clamps at the tail, so scrolling past the end re-arms follow", () => {
     const state = logged("1\n2\n3\n4\n5")
-    const up = tuiReducer(state, { type: "stream:scroll", delta: 2, viewport: 2 })
-    const back = tuiReducer(up, { type: "stream:scroll", delta: -99, viewport: 2 })
+    const up = tuiReducer(state, { type: "stream:scroll", delta: 2, viewport: 2, width: WIDTH })
+    const back = tuiReducer(up, { type: "stream:scroll", delta: -99, viewport: 2, width: WIDTH })
     expect(back.scroll).toBe(0)
-    expect(visibleLog(back, 2).following).toBe(true)
+    expect(visibleLog(back, 2, WIDTH).following).toBe(true)
   })
 
   it("clamps at the head", () => {
     const state = logged("1\n2\n3\n4\n5")
-    expect(tuiReducer(state, { type: "stream:scroll", delta: 99, viewport: 2 }).scroll).toBe(3)
+    expect(
+      tuiReducer(state, { type: "stream:scroll", delta: 99, viewport: 2, width: WIDTH }).scroll
+    ).toBe(3)
   })
 
   it("is a no-op when there is nothing to scroll", () => {
     const state = logged("1\n2")
-    expect(tuiReducer(state, { type: "stream:scroll", delta: 5, viewport: 10 })).toBe(state)
+    expect(tuiReducer(state, { type: "stream:scroll", delta: 5, viewport: 10, width: WIDTH })).toBe(
+      state
+    )
   })
 
   it("is empty when nothing is focused, or nothing has been written", () => {
-    expect(visibleLog(initialState, 5).lines).toEqual([])
-    expect(visibleLog(withAgents("a"), 5).lines).toEqual([])
+    expect(visibleLog(initialState, 5, WIDTH).rows).toEqual([])
+    expect(visibleLog(withAgents("a"), 5, WIDTH).rows).toEqual([])
   })
 
   it("re-clamps a parked offset when the pane is resized under it", () => {
@@ -837,10 +854,53 @@ describe("visibleLog", () => {
       type: "stream:scroll",
       delta: 2,
       viewport: 2,
+      width: WIDTH,
     })
     expect(state.scroll).toBe(2)
     // The pane grew since the scroll, so the offset is re-clamped on read.
-    expect(visibleLog(state, 5).scrolledBack).toBe(0)
+    expect(visibleLog(state, 5, WIDTH).scrolledBack).toBe(0)
+  })
+
+  // The window is a number of *rows*, not a number of log lines. A line wider
+  // than the pane spends several rows, and a window that sliced by lines would
+  // hand the pane more rows than it has — pushing the newest output out of view.
+  it("counts a wrapped line as the rows it spends, not as one", () => {
+    const window = visibleLog(logged("short\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), 2, 10)
+    // Four rows in the buffer: the short line, then three of ten `x`. A two-row
+    // window can only show the last two, so the short line is gone.
+    expect(window.rows).toEqual(["xxxxxxxxxx", "xxxxxxxxxx"])
+  })
+
+  it("scrolls a wrapped line one row at a time", () => {
+    const state = tuiReducer(logged("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), {
+      type: "stream:scroll",
+      delta: 1,
+      viewport: 2,
+      width: 10,
+    })
+    // Three rows of ten, so the head is one row back from the two-row window.
+    expect(state.scroll).toBe(1)
+    expect(visibleLog(state, 2, 10).rows).toEqual(["xxxxxxxxxx", "xxxxxxxxxx"])
+    // And the clamp knows the buffer is three rows, not one line.
+    const head = tuiReducer(state, { type: "stream:scroll", delta: 99, viewport: 2, width: 10 })
+    expect(head.scroll).toBe(1)
+  })
+
+  // Resizing the pane changes how many rows each line spends, so a parked
+  // offset has to be re-clamped against the new width on read, not just on
+  // scroll — otherwise widening the terminal strands the reader mid-buffer.
+  it("re-clamps a parked offset when the pane widens", () => {
+    const state = tuiReducer(logged("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), {
+      type: "stream:scroll",
+      delta: 1,
+      viewport: 2,
+      width: 10,
+    })
+    // Three rows at ten columns, so there is a row to scroll back to.
+    expect(state.scroll).toBe(1)
+    // At thirty columns the whole buffer is one row, so the offset is dropped.
+    expect(visibleLog(state, 2, 30).scrolledBack).toBe(0)
+    expect(visibleLog(state, 2, 30).following).toBe(true)
   })
 })
 
@@ -869,6 +929,7 @@ describe("focus and window resets", () => {
       type: "stream:scroll",
       delta: 2,
       viewport: 2,
+      width: WIDTH,
     })
     expect(scrolled.scroll).toBe(2)
     expect(tuiReducer(scrolled, { type: "focus:set", agentId: "a" }).scroll).toBe(0)
@@ -880,7 +941,12 @@ describe("focus and window resets", () => {
       reduceEvent(withAgents("a", "b"), output("a", "1\n2\n3\n4\n5")),
       output("b", "1\n2\n3\n4\n5")
     )
-    const scrolled = tuiReducer(base, { type: "stream:scroll", delta: 2, viewport: 2 })
+    const scrolled = tuiReducer(base, {
+      type: "stream:scroll",
+      delta: 2,
+      viewport: 2,
+      width: WIDTH,
+    })
     expect(scrolled.scroll).toBe(2)
     // Auto-follow left the focus on "b"; cycling moves to "a" and resets the window.
     expect(tuiReducer(scrolled, { type: "focus:cycle", delta: 1 }).scroll).toBe(0)
@@ -892,6 +958,7 @@ describe("focus and window resets", () => {
       type: "stream:scroll",
       delta: 2,
       viewport: 2,
+      width: WIDTH,
     })
     expect(tuiReducer(scrolled, { type: "focus:cycle", delta: 1 })).toBe(scrolled)
   })
@@ -901,6 +968,7 @@ describe("focus and window resets", () => {
       type: "stream:scroll",
       delta: 2,
       viewport: 2,
+      width: WIDTH,
     })
     const next = tuiReducer(scrolled, {
       type: "turn:start",

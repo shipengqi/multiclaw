@@ -36,6 +36,31 @@ describe("computeLayout", () => {
     expect(layout.logViewport).toBe(layout.bodyHeight - 1)
   })
 
+  // The stream pre-wraps its output, so `streamWidth` has to be a number it can
+  // trust before Ink has laid anything out. The failure that matters is being
+  // too generous: a row wrapped a column late gets shaved at the pane edge.
+  describe("streamWidth", () => {
+    it("leaves the roster, the rule and its own padding out of the budget", () => {
+      const layout = computeLayout(base)
+      const text = base.columns - layout.teamWidth - 1 - 1
+      expect(layout.streamWidth).toBeLessThanOrEqual(text)
+      // Still a usable pane, not a budget so timid it wraps every other word.
+      expect(layout.streamWidth).toBeGreaterThan(text - 4)
+    })
+
+    it("takes the roster's columns back when the roster is dropped", () => {
+      const columns = 60
+      const layout = computeLayout({ ...base, columns })
+      expect(layout.showTeam).toBe(false)
+      expect(layout.streamWidth).toBeLessThanOrEqual(columns - 1)
+      expect(layout.streamWidth).toBeGreaterThan(columns - 5)
+    })
+
+    it("never collapses to nothing on a terminal narrower than the minimum", () => {
+      expect(computeLayout({ ...base, columns: 0 }).streamWidth).toBeGreaterThanOrEqual(1)
+    })
+  })
+
   it("charges the palette and the notice line against the body", () => {
     const layout = computeLayout({ ...base, menuRows: 4, notice: true })
     expect(layout.menuRows).toBe(4)

@@ -7,6 +7,7 @@ import type {
   StageInfo,
   TurnRecord,
 } from "@multiclawcli/core"
+import { wrapLine } from "./format"
 
 /**
  * Per-agent log buffer cap, in characters.
@@ -75,9 +76,12 @@ export interface TurnView {
    */
   autoFollow: boolean
   /**
-   * How many lines the stream is scrolled back from the tail. Zero means the
+   * How many rows the stream is scrolled back from the tail. Zero means the
    * stream is live. Kept as an offset rather than an absolute index so new
    * output arriving underneath does not shift what the user is reading.
+   *
+   * Counted in *terminal rows*, not log lines: a log line can wrap over
+   * several rows, and the window has to add up to the pane's height.
    */
   scroll: number
   success?: boolean
@@ -132,8 +136,12 @@ export type TuiAction =
   | { type: "event"; event: MultiClawEvent }
   | { type: "focus:cycle"; delta: number }
   | { type: "focus:set"; agentId: string }
-  /** Scroll the focused stream. `viewport` is needed to clamp at the tail. */
-  | { type: "stream:scroll"; delta: number; viewport: number }
+  /**
+   * Scroll the focused stream, in terminal rows. `viewport` is needed to clamp
+   * at the tail, and `width` because how many rows a log line spends depends on
+   * the pane's width — a line that wraps to three rows scrolls three rows.
+   */
+  | { type: "stream:scroll"; delta: number; viewport: number; width: number }
   /** Drop the focused agent's buffered output without touching its status. */
   | { type: "stream:clear" }
   /** Open a finished turn for reading, by its turn number. */
@@ -398,12 +406,22 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
   }
 }
 
-/** Line count of the focused agent's buffer, which is what scroll clamps against. */
-function focusedLineCount(turn: TurnView): number {
-  const agent = turn.focusId ? turn.agents[turn.focusId] : undefined
-  return agent?.logs ? agent.logs.split("\n").length : 0
+/**
+ * The focused agent's buffer, as the rows the pane will spend drawing it.
+ *
+ * `logs` holds *log lines*; the pane draws *terminal rows*. A wrapped line is
+ * many rows, so the two cannot be the same unit — every window and scroll
+ * calculation goes through here, and none of them may count `\n` instead.
+ */
+function wrapLog(logs: string, width: number): string[] {
+  return logs.split("\n").flatMap((line) => wrapLine(line, width))
 }
 
+/** Row count of the focused agent's buffer, which is what scroll clamps against. */
+function focusedRowCount(turn: TurnView, width: number): number {
+  const agent = turn.focusId ? turn.agents[turn.focusId] : undefined
+  return agent?.logs ? wrapLog(agent.logs, width).length : 0
+}
 /**
  * Freeze the live turn into a record that can be read back later.
  *
@@ -551,8 +569,8 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
 
     case "stream:scroll":
       return mapShown(state, (turn) => {
-        const lines = focusedLineCount(turn)
-        const maxScroll = Math.max(0, lines - Math.max(1, action.viewport))
+        const rows = focusedRowCount(turn, action.width)
+        const maxScroll = Math.max(0, rows - Math.max(1, action.viewport))
         const next = Math.min(Math.max(0, turn.scroll + action.delta), maxScroll)
         return next === turn.scroll ? turn : { ...turn, scroll: next }
       })
@@ -614,8 +632,9 @@ export function turnElapsed(turn: TurnView, now: number): number | undefined {
 }
 
 export interface LogWindow {
-  lines: string[]
-  /** How many lines sit below the window. Zero means the stream is live. */
+  /** The wrapped rows that fit, oldest first. */
+  rows: string[]
+  /** How many rows sit below the window. Zero means the stream is live. */
   scrolledBack: number
   following: boolean
 }
@@ -623,18 +642,23 @@ export interface LogWindow {
 /**
  * The slice of the focused agent's output that fits the pane.
  *
+ * Wrapped first, then windowed, and both steps are needed: the pane is a fixed
+ * number of *rows*, while the buffer is a string of *lines*, and one line can
+ * spend several rows. Slicing lines would hand the pane more rows than it has
+ * and push the newest output out of sight.
+ *
  * Clamping here as well as in the reducer keeps the window correct even when
  * the pane is resized between two scroll actions.
  */
-export function visibleLog(turn: TurnView, viewport: number): LogWindow {
+export function visibleLog(turn: TurnView, viewport: number, width: number): LogWindow {
   const agent = turn.focusId ? turn.agents[turn.focusId] : undefined
-  const all = agent?.logs ? agent.logs.split("\n") : []
+  const all = agent?.logs ? wrapLog(agent.logs, width) : []
   const height = Math.max(1, viewport)
   const maxScroll = Math.max(0, all.length - height)
   const scrolledBack = Math.min(Math.max(0, turn.scroll), maxScroll)
   const end = all.length - scrolledBack
   return {
-    lines: all.slice(Math.max(0, end - height), end),
+    rows: all.slice(Math.max(0, end - height), end),
     scrolledBack,
     following: scrolledBack === 0,
   }

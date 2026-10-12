@@ -72,6 +72,17 @@ export interface Layout {
   bodyHeight: number
   logViewport: number
   teamWidth: number
+  /**
+   * Text columns available to the stream pane's *content* — the roster, the
+   * rule between the panes and the stream's own left padding already taken out.
+   *
+   * The stream pre-wraps its output, so it has to know this before Ink lays
+   * anything out; there is no way to measure it back out of Yoga. The arithmetic
+   * is therefore deliberate about erring small: a row wrapped a column early
+   * costs a few characters of width, while a row wrapped a column late would be
+   * cut at the pane edge — the bug this exists to prevent.
+   */
+  streamWidth: number
   menuRows: number
   queueRows: number
 }
@@ -137,19 +148,27 @@ export function computeLayout(input: LayoutInput): Layout {
     1 // hint bar
 
   const bodyHeight = Math.max(MIN_BODY_ROWS, rows - reserved)
+  const showTeam = !compact
+  const teamWidth = Math.min(30, Math.max(18, Math.floor(columns * 0.24)))
+  // Columns the stream cannot draw text in: the roster, the rule between the
+  // panes, and the stream's own one-column left padding. The roster's right
+  // padding is already inside `teamWidth`.
+  const streamChrome = (showTeam ? teamWidth + 1 : 0) + 1
+  const streamWidth = Math.max(1, columns - streamChrome - 1)
 
   return {
     columns,
     rows,
     compact,
-    showTeam: !compact,
+    showTeam,
     showRail,
     railRows,
     welcome,
     bodyHeight,
     // The stream spends one of the body's rows on its own header.
     logViewport: Math.max(1, bodyHeight - 1),
-    teamWidth: Math.min(30, Math.max(18, Math.floor(columns * 0.24))),
+    teamWidth,
+    streamWidth,
     menuRows,
     queueRows,
   }

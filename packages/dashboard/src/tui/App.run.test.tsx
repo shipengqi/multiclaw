@@ -589,3 +589,95 @@ describe("App · answering a question the leader asked", () => {
     expect(secondPrompt).not.toContain("{{conversation}}")
   })
 })
+
+/**
+ * A runtime whose agents emit one long line of prose.
+ *
+ * The stream pane wraps its output itself, against a width it works out from the
+ * terminal geometry rather than one it can measure back out of Yoga. That
+ * arithmetic is the risk: too generous and every full row gets shaved at the
+ * pane edge, which is exactly the truncation the wrapping was added to remove.
+ * Only a real run through the real layout can catch it.
+ */
+const LONG_RUNTIME = "tui-integration-long"
+
+/** Long enough to wrap over several rows of the stream pane, but not to overflow it. */
+const LONG_LINE = Array.from({ length: 30 }, (_, i) => `word${i}`).join(" ")
+
+const LONG_CONFIG: MultiClawConfig = {
+  name: "dev-team",
+  workDir: "/tmp/multiclaw-tui-long",
+  leader: {
+    id: "leader",
+    name: "Leader",
+    icon: "◆",
+    runtime: LONG_RUNTIME,
+    systemPrompt: "",
+    taskPrompt: "",
+  },
+  agents: [
+    {
+      id: "architect",
+      name: "Architect",
+      icon: "◇",
+      runtime: LONG_RUNTIME,
+      model: "sonnet-4",
+      systemPrompt: "",
+      taskPrompt: "",
+    },
+  ],
+}
+
+describe("App · a turn whose output is wider than the pane", () => {
+  beforeAll(() => {
+    runtimeRegistry.register({
+      name: LONG_RUNTIME,
+      describe: alwaysAvailable(LONG_RUNTIME),
+      async execute(task) {
+        if (task.agentId === "leader") {
+          return { output: '{"mode":"run","run":["architect"]}', exitCode: 0 }
+        }
+        task.onEvent?.({
+          runId: "run-1",
+          agentId: task.agentId,
+          seq: 0,
+          type: "message_delta",
+          role: "agent",
+          text: `${LONG_LINE}\n`,
+        })
+        return { output: `${task.agentId} finished`, exitCode: 0 }
+      },
+    })
+  })
+
+  async function runLongTurn(columns: number): Promise<string> {
+    let complete: () => void = () => {}
+    const finished = new Promise<void>((resolve) => {
+      complete = resolve
+    })
+
+    const frame = await driveFrame(
+      <App
+        config={LONG_CONFIG}
+        onTurnStart={(bus) => {
+          bus.subscribe((event) => {
+            if (event.type === "orchestration:complete") complete()
+          })
+        }}
+      />,
+      { keys: ["add a --json flag", "\r"], columns, rows: 30, ready: finished }
+    )
+    return stripAnsi(frame)
+  }
+
+  it("wraps a wide line instead of cutting it off at the pane edge", async () => {
+    const frame = await runLongTurn(100)
+    // Every word survives, so the pane did not truncate the line.
+    for (const word of LONG_LINE.split(" ")) expect(frame).toContain(word)
+  })
+
+  it("wraps to the narrower pane of a compact terminal too", async () => {
+    const frame = await runLongTurn(60)
+    for (const word of LONG_LINE.split(" ")) expect(frame).toContain(word)
+  })
+})

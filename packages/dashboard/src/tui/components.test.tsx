@@ -82,6 +82,15 @@ function midRun(): TuiState {
   })
 }
 
+/** {@link midRun} with the focused agent's buffer swapped for `logs`. */
+function withLogs(logs: string): TuiState {
+  const state = midRun()
+  return {
+    ...state,
+    agents: { ...state.agents, architect: { ...state.agents.architect, logs } },
+  }
+}
+
 describe("Header", () => {
   it("carries the console name, the project and the live context", async () => {
     const frame = stripAnsi(await renderFrame(<Header name="dev-team" right="turn 2 · 12.3s" />))
@@ -201,75 +210,100 @@ describe("TeamPanel", () => {
 })
 
 describe("StreamPanel", () => {
+  // The pane is rendered on its own here, so its text width is the frame width
+  // less its own one-column left padding — the same number `computeLayout` hands
+  // it in the real console.
+  const WIDTH = 99
+  const stream = (turn: TurnView, height: number) =>
+    renderFrame(
+      <StreamPanel turn={turn} height={height} width={WIDTH} now={NOW} spinner="\u280b" />
+    ).then(stripAnsi)
+
   it("heads the pane with the agent, its model, its state and the live marker", async () => {
-    const frame = stripAnsi(
-      await renderFrame(<StreamPanel turn={midRun()} height={8} now={NOW} spinner="⠋" />)
-    )
+    const frame = await stream(midRun(), 8)
     expect(frame).toContain("Architect")
     expect(frame).toContain("sonnet-4")
     expect(frame).toContain("running")
-    expect(frame).toContain("▼")
+    expect(frame).toContain("\u25bc")
   })
 
   // Regression: the duration was concatenated straight onto the status label,
   // so a running agent read as `running4.2s`.
   it("puts a space between the status label and the elapsed time", async () => {
-    const frame = stripAnsi(
-      await renderFrame(<StreamPanel turn={midRun()} height={8} now={NOW} spinner="⠋" />)
-    )
+    const frame = await stream(midRun(), 8)
     // The duration is right-aligned, so the gap is wide — but it must exist.
-    expect(frame).toMatch(/running\s+4\.2s\s▼/)
+    expect(frame).toMatch(/running\s+4\.2s\s\u25bc/)
     expect(frame).not.toContain("running4.2s")
   })
 
   // The header is the only place the pane proves it filled its width: a pane
   // sized by its content would leave the marker floating mid-row.
   it("right-aligns the header against the pane's right edge", async () => {
-    const frame = stripAnsi(
-      await renderFrame(<StreamPanel turn={midRun()} height={8} now={NOW} spinner="⠋" />)
-    )
-    const header = frame.split("\n").find((line) => line.includes("▼")) ?? ""
+    const frame = await stream(midRun(), 8)
+    const header = frame.split("\n").find((line) => line.includes("\u25bc")) ?? ""
     expect(header.length).toBe(100)
-    expect(header.endsWith("▼")).toBe(true)
+    expect(header.endsWith("\u25bc")).toBe(true)
   })
 
   it("renders the agent's output verbatim", async () => {
-    const frame = stripAnsi(
-      await renderFrame(<StreamPanel turn={midRun()} height={8} now={NOW} spinner="⠋" />)
-    )
+    const frame = await stream(midRun(), 8)
     expect(frame).toContain("Read packages/core/orchestrator.ts")
     expect(frame).toContain('Grep "withTimeout"')
   })
 
+  // Regression: every row was rendered with `truncate-end`, so one long line of
+  // an agent's prose — the leader's reasoning, typically — was cut off at the
+  // pane edge and the reader got an ellipsis where the sentence was.
+  it("wraps a long line instead of truncating it", async () => {
+    const words = Array.from({ length: 40 }, (_, i) => `word${i}`)
+    const frame = await stream(withLogs(words.join(" ")), 12)
+    // Every word survives, so nothing was silently cut off.
+    for (const word of words) expect(frame).toContain(word)
+    expect(frame).not.toContain("\u2026")
+  })
+
+  // The pane pre-wraps its output, so it has to know how wide it is. A row that
+  // fills the width exactly has to survive intact: if `width` were ever
+  // optimistic, this is where the pane would start shaving off the right edge.
+  it("fits a row that fills the pane exactly", async () => {
+    const row = "x".repeat(WIDTH)
+    const frame = await stream(withLogs(row), 6)
+    expect(frame).toContain(row)
+    expect(frame).not.toContain("\u2026")
+  })
+
+  // Wrapping makes the content taller than the pane, so rows have to be dropped.
+  // They must be dropped from the *oldest* end: an agent's newest output is the
+  // reason the pane is being watched.
+  it("keeps the newest row when the wrapped output is taller than the pane", async () => {
+    // Long enough to wrap past the pane's height several times over.
+    const filler = Array.from({ length: 120 }, (_, i) => `filler${i}`).join(" ")
+    const frame = await stream(withLogs(`${filler}\nTHE-NEWEST-LINE`), 6)
+    expect(frame).toContain("THE-NEWEST-LINE")
+  })
+
   it("swaps the live marker for a parked one once the user scrolls back", async () => {
-    const scrolled = tuiReducer(midRun(), { type: "stream:scroll", delta: 1, viewport: 3 })
-    const frame = stripAnsi(
-      await renderFrame(<StreamPanel turn={scrolled} height={4} now={NOW} spinner="⠋" />)
-    )
-    expect(frame).toContain("⏸")
-    expect(frame).not.toContain("▼")
+    const scrolled = tuiReducer(midRun(), {
+      type: "stream:scroll",
+      delta: 1,
+      viewport: 3,
+      width: WIDTH,
+    })
+    const frame = await stream(scrolled, 4)
+    expect(frame).toContain("\u23f8")
+    expect(frame).not.toContain("\u25bc")
     // The line that scrolled out of the window is gone from the pane.
     expect(frame).not.toContain("Read packages/core/orchestrator.ts")
   })
 
   it("says it is waiting rather than showing an empty pane", async () => {
-    const state = midRun()
-    const quiet: TuiState = {
-      ...state,
-      agents: { ...state.agents, architect: { ...state.agents.architect, logs: "" } },
-    }
-    const frame = stripAnsi(
-      await renderFrame(<StreamPanel turn={quiet} height={8} now={NOW} spinner="⠋" />)
-    )
-    expect(frame).toContain("waiting for output…")
+    const frame = await stream(withLogs(""), 8)
+    expect(frame).toContain("waiting for output\u2026")
   })
 
   it("copes with nothing focused at all", async () => {
-    const state = { ...midRun(), focusId: undefined }
-    const frame = stripAnsi(
-      await renderFrame(<StreamPanel turn={state} height={6} now={NOW} spinner="⠋" />)
-    )
-    expect(frame).toContain("—")
+    const frame = await stream({ ...midRun(), focusId: undefined }, 6)
+    expect(frame).toContain("\u2014")
   })
 })
 

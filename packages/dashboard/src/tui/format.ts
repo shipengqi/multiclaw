@@ -1,3 +1,5 @@
+import stringWidth from "string-width"
+
 /**
  * Truncate to `max` columns, ending in an ellipsis when it does not fit.
  *
@@ -9,6 +11,152 @@ export function truncate(text: string, max: number): string {
   if (max <= 0) return ""
   if (text.length <= max) return text
   return `${text.slice(0, Math.max(0, max - 1))}…`
+}
+
+/**
+ * How many terminal columns a string occupies.
+ *
+ * Deliberately not `text.length`: a CJK character is one code unit and *two*
+ * columns, so counting code units would size a Chinese line at half the pane
+ * and hand it to Ink to cut — the same truncation bug in a new place. Emoji and
+ * combining marks are wrong for the same reason.
+ */
+export function displayWidth(text: string): number {
+  return stringWidth(text)
+}
+
+/**
+ * Break one line of text into the rows a terminal will actually spend on it.
+ *
+ * Word-wrapped, because the stream pane carries an agent's prose as often as it
+ * carries log lines, and breaking mid-word would make the leader's reasoning
+ * harder to read than the truncation this replaced. A word with no space inside
+ * it — a path, a hash, a minified JSON blob — has nowhere to break, so it is
+ * split by width instead.
+ *
+ * Scripts that use wide characters get the rule they actually have: they put no
+ * spaces between words, so a whole Chinese sentence arrives as one "word" and
+ * would be pushed onto the next row whole, leaving the row before it mostly
+ * empty. They may be broken between any two characters instead, so they fill
+ * what is left. Narrow runs — English words, identifiers, numbers — are still
+ * atomic, which is what keeps this a no-op for output that has no CJK in it.
+ *
+ * Every returned row is at most `width` columns, which is what lets the caller
+ * count rows and trust the count.
+ */
+export function wrapLine(line: string, width: number): string[] {
+  const limit = Math.max(1, width)
+  if (line === "") return [""]
+
+  const rows: string[] = []
+  let row = ""
+  // Tracked separately from `row` because an empty row and a row that has not
+  // been started yet are different: splitting on " " yields empty words for runs
+  // of spaces, and those must keep their separator rather than restart the row.
+  let empty = true
+
+  const flush = () => {
+    if (!empty) rows.push(row)
+    row = ""
+    empty = true
+  }
+
+  /** Give a word that has no room left on this row its own rows. */
+  const overflow = (word: string) => {
+    const chunks = splitByWidth(word, limit)
+    // Every chunk but the last fills a row by itself; the last one opens the
+    // next row, where the following words can still join it.
+    for (const chunk of chunks.slice(0, -1)) rows.push(chunk)
+    row = chunks[chunks.length - 1]
+    empty = row === ""
+  }
+
+  for (const word of line.split(" ")) {
+    const candidate = empty ? word : `${row} ${word}`
+    if (displayWidth(candidate) <= limit) {
+      row = candidate
+      empty = false
+      continue
+    }
+    // The word does not fit as it stands. A wide-character script can still
+    // take the rest of this row; anything else is pushed whole.
+    const head = breakableHead(empty ? "" : row, word, limit)
+    if (head === 0) {
+      flush()
+      overflow(word)
+      continue
+    }
+    rows.push(empty ? word.slice(0, head) : `${row} ${word.slice(0, head)}`)
+    overflow(word.slice(head))
+  }
+
+  flush()
+  return rows
+}
+
+/**
+ * Characters that may not begin a row.
+ *
+ * A Chinese comma or full stop belongs to the sentence in front of it, so a row
+ * starting with one reads as a broken sentence — 避头尾, the rule Chinese
+ * typesetting uses for exactly this. Only the closers are listed: they are the
+ * ones a break in front of them would strand, and a break is only ever offered
+ * in front of a character.
+ */
+const CLOSERS = "。，、；：？！）］｝」』】》〉”’…—·"
+
+/**
+ * How many leading characters of `word` fit on a row already holding `row`.
+ *
+ * Only positions next to a wide character are offered, because that is where
+ * the script's own breaks are: a Chinese sentence may be broken between any two
+ * characters, while a run of narrow ones — an English word, an identifier, a
+ * number — may not, and splitting those mid-word is the thing word-wrapping
+ * exists to avoid. Zero means the word cannot usefully be broken here at all.
+ */
+function breakableHead(row: string, word: string, limit: number): number {
+  const chars = [...word]
+  // The separator the word would have been joined with, if the row is not fresh.
+  let used = row === "" ? 0 : displayWidth(row) + 1
+  let head = 0
+  for (let i = 0; i < chars.length; i++) {
+    const charWidth = displayWidth(chars[i])
+    if (used + charWidth > limit) break
+    used += charWidth
+    const next = chars[i + 1]
+    // A break here would put punctuation at the start of the next row.
+    if (next !== undefined && CLOSERS.includes(next)) continue
+    // A break is allowed after a wide character, and before one.
+    if (charWidth >= 2 || (next !== undefined && displayWidth(next) >= 2)) head = i + 1
+  }
+  return head
+}
+
+/**
+ * Split a word with no break opportunities into `width`-column chunks.
+ *
+ * Always returns at least one chunk — an empty word yields `[""]` — so callers
+ * can take the last one as the row to keep building on.
+ */
+function splitByWidth(text: string, width: number): string[] {
+  const chunks: string[] = []
+  let chunk = ""
+  // Carried rather than re-measured: `displayWidth` on a growing string would
+  // make this quadratic, and the buffer it runs on is capped at 8k characters.
+  let used = 0
+  for (const char of text) {
+    const charWidth = displayWidth(char)
+    if (chunk !== "" && used + charWidth > width) {
+      chunks.push(chunk)
+      chunk = char
+      used = charWidth
+    } else {
+      chunk += char
+      used += charWidth
+    }
+  }
+  chunks.push(chunk)
+  return chunks
 }
 
 /**

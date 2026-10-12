@@ -129,17 +129,19 @@ export function Divider() {
 export function StreamPanel({
   turn,
   height,
+  width,
   now,
   spinner,
 }: {
   turn: TurnView
   height: number
+  width: number
   now: number
   spinner: string
 }) {
   const agent = turn.focusId ? turn.agents[turn.focusId] : undefined
   const viewport = Math.max(1, height - 1)
-  const window = visibleLog(turn, viewport)
+  const window = visibleLog(turn, viewport, width)
   const style = agent ? STATUS[agent.status] : undefined
   const elapsed = agent ? agentElapsed(agent, now) : undefined
 
@@ -170,16 +172,33 @@ export function StreamPanel({
         </Box>
       </Box>
 
-      {window.lines.length === 0 ? (
+      {window.rows.length === 0 ? (
         <Text dimColor>{turn.phase === "running" ? "waiting for output…" : "no output yet"}</Text>
       ) : (
-        window.lines.map((line, index) => (
-          // Log lines are an append-only tail; position is the identity.
-          // biome-ignore lint/suspicious/noArrayIndexKey: positional log tail
-          <Text key={index} wrap="truncate-end">
-            {line}
-          </Text>
-        ))
+        // The tail, already wrapped to `width` by `visibleLog` — the pane draws
+        // rows, and one log line is several of them. `visibleLog` also picks
+        // which rows, so the content here is exactly the pane's height and the
+        // oldest rows are the ones already gone: nothing is left to clip, which
+        // is why this box is not bottom-pinned. Pinning it would only leave a
+        // gap under the header whenever an agent has not said much yet.
+        //
+        // Rows are rendered with `truncate-end` rather than letting Ink wrap
+        // them again: they are supposed to fit, and if `width` was ever
+        // optimistic the failure should be a shaved row, not a re-wrap that
+        // overflows the pane and pushes the newest output out of sight.
+        //
+        // `flexShrink={0}` stops Yoga compressing the rows into each other,
+        // and `overflow="hidden"` is the backstop if any of the above is ever
+        // wrong.
+        <Box flexDirection="column" flexShrink={0} height={viewport} overflow="hidden">
+          {window.rows.map((row, index) => (
+            // Rows are an append-only tail; position is the identity.
+            // biome-ignore lint/suspicious/noArrayIndexKey: positional log tail
+            <Box key={index} flexShrink={0}>
+              <Text wrap="truncate-end">{row}</Text>
+            </Box>
+          ))}
+        </Box>
       )}
     </Box>
   )
