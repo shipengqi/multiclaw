@@ -1,7 +1,5 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import * as fs from "node:fs"
-import * as path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { StringDecoder } from "node:string_decoder"
 import { resolveExecutable } from "../providers/bridge"

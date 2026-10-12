@@ -7,7 +7,7 @@ describe("bridge resolution", () => {
     expect(BRIDGE_PACKAGES["claude-agent-acp"]).toBe("@agentclientprotocol/claude-agent-acp")
     expect(BRIDGE_PACKAGES["codex-acp"]).toBe("@agentclientprotocol/codex-acp")
     // opencode speaks ACP natively and is the user's agent, not a bundled bridge.
-    expect(BRIDGE_PACKAGES["opencode"]).toBeUndefined()
+    expect(BRIDGE_PACKAGES.opencode).toBeUndefined()
   })
 
   it("resolves a bundled bridge to an absolute path in node_modules", () => {

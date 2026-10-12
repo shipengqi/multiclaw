@@ -6,7 +6,8 @@
     "useIgnoreFile": true
   },
   "files": {
-    "ignoreUnknown": true
+    "ignoreUnknown": true,
+    "includes": ["**/*.{ts,tsx,cts,mts,js,jsx,mjs,cjs,json,jsonc,css}", "!.claude", "!.codegraph"]
   },
   "formatter": {
     "enabled": true,

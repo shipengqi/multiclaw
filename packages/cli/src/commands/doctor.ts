@@ -93,7 +93,7 @@ const DIM = "\x1b[2m"
 const RESET = "\x1b[0m"
 
 // Matches SGR escape sequences so visible width can be measured for column padding.
-const ANSI_RE = new RegExp(String.fromCharCode(27) + "\\[[0-9;]*m", "g")
+const ANSI_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g")
 
 function color(enabled: boolean, code: string, text: string): string {
   return enabled ? `${code}${text}${RESET}` : text
