@@ -2,13 +2,14 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import type { EventBus } from "../event/EventBus"
 import { resolveArgs, resolveCommand, resolveModel } from "../providers/resolve"
-import { runtimeRegistry } from "../runtime"
+import { KILL_ESCALATION_MS, runtimeRegistry } from "../runtime"
 import type { AgentDefinition, AgentResult } from "../types/agent"
 import type { MultiClawConfig } from "../types/config"
 import type { AgentOutput } from "../types/runtime"
 import { isAbortError } from "../utils/abort"
+import { isPermanent } from "../utils/errors"
 import { renderPrompt } from "../utils/prompt"
-import { withRetry } from "../utils/retry"
+import { DEFAULT_RETRY_DELAY_MS, retryBudgetMs, withRetry } from "../utils/retry"
 import { withTimeout } from "../utils/timeout"
 import { summarizeToolInput, summarizeToolOutput } from "../utils/toolSummary"
 import type { ContextManager } from "./ContextManager"
@@ -62,6 +63,14 @@ export class AgentRunner {
       const timeout = agent.timeout ?? 600_000
       const tools = agent.tools ?? ["Read", "Write", "Bash"]
 
+      // Two timers, two jobs. The inner timer (handed to `execute` as `timeout`)
+      // bounds a *single* attempt; the outer one bounds the *whole* agent —
+      // every attempt plus the backoff between them. A single attempt can
+      // overrun its `timeout` by `KILL_ESCALATION_MS` (a child that ignores
+      // SIGTERM is not reaped until the SIGKILL grace elapses), so the
+      // per-attempt term is `timeout + KILL_ESCALATION_MS`, not `timeout` —
+      // otherwise the outer timer could win the race and kill an attempt that
+      // would have succeeded.
       const completed = await withTimeout(
         (innerSignal) =>
           withRetry(
@@ -158,10 +167,14 @@ export class AgentRunner {
                 },
               })
             },
-            2000,
-            innerSignal
+            DEFAULT_RETRY_DELAY_MS,
+            innerSignal,
+            // A permanent failure (a missing binary, an unsupported capability)
+            // will fail the same way on every attempt, so let the loop fail fast
+            // instead of burning the whole backoff budget on a doomed run.
+            (err) => !isPermanent(err)
           ),
-        timeout,
+        retryBudgetMs(timeout + KILL_ESCALATION_MS, retries),
         agent.name,
         signal
       )

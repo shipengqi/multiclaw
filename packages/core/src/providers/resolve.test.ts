@@ -67,6 +67,32 @@ describe("resolveArgs", () => {
   it("returns undefined for an unknown provider so the runtime default applies", () => {
     expect(resolveArgs(baseAgent({ provider: "unknown" }), baseConfig())).toBeUndefined()
   })
+
+  it("returns undefined for a custom command outside the catalog", () => {
+    // A truly custom command has no known args, so the runtime's own default
+    // must apply rather than the default provider's ["acp"].
+    expect(resolveArgs(baseAgent({ command: "/opt/bin/custom" }), baseConfig())).toBeUndefined()
+  })
+
+  it("pairs an explicit command's catalog args with that command", () => {
+    expect(resolveArgs(baseAgent({ command: "claude-agent-acp" }), baseConfig())).toEqual([])
+    expect(resolveArgs(baseAgent({ command: "opencode" }), baseConfig())).toEqual(["acp"])
+  })
+
+  it("uses config.defaults.command when the agent names none", () => {
+    expect(
+      resolveArgs(baseAgent(), baseConfig({ defaults: { command: "/opt/bin/custom" } }))
+    ).toBeUndefined()
+    expect(resolveArgs(baseAgent(), baseConfig({ defaults: { command: "opencode" } }))).toEqual([
+      "acp",
+    ])
+  })
+
+  it("prefers an explicit args array over the command's catalog args", () => {
+    expect(resolveArgs(baseAgent({ command: "opencode", args: ["--x"] }), baseConfig())).toEqual([
+      "--x",
+    ])
+  })
 })
 
 describe("resolveModel", () => {

@@ -831,6 +831,33 @@ describe("Orchestrator.run · config isolation", () => {
     expect(config.agents[0].taskTitle).toBeUndefined()
     expect(config.agents[0].agentScope).toBeUndefined()
   })
+
+  it("copies each agent's dependsOn so a mutation of the copy cannot reach the config", () => {
+    // `configuredAgents` is private and its copies are not observable through
+    // `run()` (`applyTaskPlan` reassigns `dependsOn` rather than mutating it), so
+    // the invariant is checked directly: the copy's array must not be the
+    // config's array.
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      agents: [agent("a", { dependsOn: ["b"] }), agent("b")],
+    }
+    const orch = new Orchestrator(config)
+    const copies = (orch as unknown as { configuredAgents(): AgentDefinition[] }).configuredAgents()
+
+    expect(copies[0].dependsOn).toEqual(["b"])
+    expect(copies[0].dependsOn).not.toBe(config.agents[0].dependsOn)
+    copies[0].dependsOn?.push("c")
+    expect(config.agents[0].dependsOn).toEqual(["b"])
+  })
+
+  it("does not invent a dependsOn key on an agent that never had one", () => {
+    const config: MultiClawConfig = { name: "test", workDir, agents: [agent("a")] }
+    const orch = new Orchestrator(config)
+    const copies = (orch as unknown as { configuredAgents(): AgentDefinition[] }).configuredAgents()
+
+    expect("dependsOn" in copies[0]).toBe(false)
+  })
 })
 
 describe("Orchestrator.run · cost and model reporting", () => {

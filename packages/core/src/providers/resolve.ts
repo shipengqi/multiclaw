@@ -36,7 +36,14 @@ export function resolveCommand(agent: AgentDefinition, config: MultiClawConfig):
  * command so the runtime's default still applies.
  */
 export function resolveArgs(agent: AgentDefinition, config: MultiClawConfig): string[] | undefined {
-  return agent.args ?? specForProvider(resolveProvider(agent, config))?.args
+  if (agent.args) return agent.args
+  // The command decides its own args: an explicit command must not inherit the
+  // default provider's ["acp"]. Without this, a custom binary outside the
+  // catalog resolved through `resolveProvider` to `opencode` and was launched as
+  // `<custom> acp`.
+  const command = agent.command ?? config.defaults?.command
+  if (command) return specForCommand(command)?.args
+  return specForProvider(resolveProvider(agent, config))?.args
 }
 
 /** Resolve the model id an agent will actually run with. */

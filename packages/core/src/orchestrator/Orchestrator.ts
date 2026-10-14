@@ -317,7 +317,14 @@ export class Orchestrator {
    * prevent, but for the in-memory fields rather than the file.
    */
   private configuredAgents(): AgentDefinition[] {
-    return this.config.agents.map((a) => ({ ...a }))
+    // `dependsOn` is copied too: a shallow spread would leave the array shared
+    // with the config, and a later `push` onto the copy would edit the caller's
+    // config. The key is added only when it existed — spreading a missing
+    // `dependsOn` back as `undefined` would invent the key on agents that never
+    // had one.
+    return this.config.agents.map((a) =>
+      a.dependsOn ? { ...a, dependsOn: [...a.dependsOn] } : { ...a }
+    )
   }
 
   /**

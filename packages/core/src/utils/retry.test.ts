@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { withRetry } from "./retry"
+import { PermanentError } from "./errors"
+import { DEFAULT_RETRY_DELAY_MS, retryBudgetMs, withRetry } from "./retry"
 
 afterEach(() => {
   vi.useRealTimers()
@@ -112,5 +113,66 @@ describe("withRetry", () => {
     expect(error?.message).toBe("boom")
     expect(fn).toHaveBeenCalledTimes(1)
     expect(onRetry).not.toHaveBeenCalled()
+  })
+
+  it("does not retry a failure the predicate rejects", async () => {
+    const err = new PermanentError("permanent")
+    const fn = vi.fn().mockRejectedValue(err)
+    const onRetry = vi.fn()
+
+    const rejected = await withRetry(fn, 3, onRetry, 0, undefined, () => false).then(
+      () => undefined,
+      (e: Error) => e
+    )
+
+    expect(rejected).toBe(err)
+    // One call, no backoff, no notification: a permanent failure fails fast.
+    expect(fn).toHaveBeenCalledTimes(1)
+    expect(onRetry).not.toHaveBeenCalled()
+  })
+
+  it("keeps retrying when the predicate accepts the error", async () => {
+    const fn = vi.fn().mockRejectedValueOnce(new Error("a")).mockResolvedValue("ok")
+    const onRetry = vi.fn()
+
+    await expect(withRetry(fn, 2, onRetry, 0, undefined, () => true)).resolves.toBe("ok")
+
+    expect(fn).toHaveBeenCalledTimes(2)
+    expect(onRetry).toHaveBeenCalledTimes(1)
+  })
+
+  it("passes the error and the 1-based attempt to the predicate", async () => {
+    const err = new Error("boom")
+    const seen: Array<[unknown, number]> = []
+    const fn = vi.fn().mockRejectedValueOnce(err).mockResolvedValue("ok")
+
+    await withRetry(fn, 1, undefined, 0, undefined, (e, attempt) => {
+      seen.push([e, attempt])
+      return true
+    })
+
+    expect(seen).toEqual([[err, 1]])
+  })
+})
+
+describe("retryBudgetMs", () => {
+  it("equals the per-attempt budget when there are no retries", () => {
+    // With a single attempt there is no backoff, so the two timers coincide.
+    expect(retryBudgetMs(1000, 0)).toBe(1000)
+  })
+
+  it("uses the shared default backoff unit", () => {
+    // 2 attempts of 1000ms + one backoff of DEFAULT_RETRY_DELAY_MS * 1.
+    expect(retryBudgetMs(1000, 1)).toBe(2000 + DEFAULT_RETRY_DELAY_MS)
+  })
+
+  it("adds every attempt plus the linear backoff sum", () => {
+    // 3 attempts of 1000 + (2000*1 + 2000*2) = 3000 + 6000.
+    expect(retryBudgetMs(1000, 2)).toBe(9000)
+  })
+
+  it("honours an explicit backoff unit", () => {
+    // 2 attempts of 500 + one backoff of 100*1.
+    expect(retryBudgetMs(500, 1, 100)).toBe(1100)
   })
 })

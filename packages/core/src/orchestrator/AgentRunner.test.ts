@@ -3,11 +3,12 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { EventBus } from "../event/EventBus"
-import { runtimeRegistry } from "../runtime"
+import { KILL_ESCALATION_MS, runtimeRegistry } from "../runtime"
 import { fakeRuntime, makeAgent } from "../testing/helpers"
 import type { MultiClawConfig } from "../types/config"
 import type { MultiClawEvent } from "../types/event"
 import type { AgentOutput, AgentTask } from "../types/runtime"
+import { PermanentError } from "../utils/errors"
 import { AgentRunner } from "./AgentRunner"
 import { ContextManager } from "./ContextManager"
 
@@ -98,11 +99,126 @@ describe("AgentRunner.run", () => {
     handler = () => new Promise<AgentOutput>(() => {})
 
     const promise = makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME, timeout: 100 }))
-    await vi.advanceTimersByTimeAsync(100)
+    // The outer budget is `timeout + KILL_ESCALATION_MS`: even with no retries, a
+    // single attempt may still be reaping a child that ignored SIGTERM during the
+    // SIGKILL grace.
+    await vi.advanceTimersByTimeAsync(100 + KILL_ESCALATION_MS)
     const result = await promise
 
     expect(result.status).toBe("failed")
     expect(result.error).toContain("timed out")
+  })
+
+  it("gives each attempt the full timeout when retries are configured", async () => {
+    // Regression: the outer budget used to be the same `timeout` as the inner
+    // per-attempt budget, so the first attempt consumed the whole allowance and a
+    // retry never got to start. The outer budget must cover every attempt plus
+    // the backoff between them.
+    vi.useFakeTimers()
+    let calls = 0
+    handler = async (task) => {
+      calls += 1
+      if (calls === 1) {
+        // Model the runtime enforcing its own per-attempt budget: reject once
+        // `task.timeout` elapses, exactly as the ACP runtime's inner timer does.
+        return await new Promise<AgentOutput>((_, reject) => {
+          setTimeout(() => reject(new Error("acp timed out")), task.timeout)
+        })
+      }
+      return { output: "second attempt", exitCode: 0 }
+    }
+
+    const promise = makeRunner().run(
+      makeAgent({ id: "a", runtime: RUNTIME, retries: 1, timeout: 100 })
+    )
+    // Attempt 1 times out at 100ms, the 2000ms backoff runs, attempt 2 succeeds.
+    await vi.advanceTimersByTimeAsync(3000)
+    const result = await promise
+
+    expect(result.status).toBe("success")
+    expect(result.output).toBe("second attempt")
+    expect(result.attempts).toBe(2)
+  })
+
+  it("does not let the outer timer beat the last attempt when attempts overrun their timeout", async () => {
+    // The outer budget must cover the *worst case* per attempt, not the nominal
+    // timeout. An attempt that ignores SIGTERM is not reaped until the SIGKILL
+    // grace elapses, so it can consume `timeout + KILL_ESCALATION_MS`. Budgeting
+    // only `timeout` per attempt makes the outer timer fire while the final
+    // attempt is still running — killing the very attempt that would have saved
+    // the run.
+    vi.useFakeTimers()
+    let calls = 0
+    handler = async (task) => {
+      calls += 1
+      if (calls <= 2) {
+        // Worst case: the child ignores SIGTERM, so the reject only lands after
+        // the SIGKILL grace has elapsed.
+        return await new Promise<AgentOutput>((_, reject) => {
+          setTimeout(() => reject(new Error("acp timed out")), task.timeout + KILL_ESCALATION_MS)
+        })
+      }
+      // The last attempt succeeds inside its own timeout.
+      return await new Promise<AgentOutput>((resolve) => {
+        setTimeout(() => resolve({ output: "third attempt", exitCode: 0 }), task.timeout)
+      })
+    }
+
+    const promise = makeRunner().run(
+      makeAgent({ id: "a", runtime: RUNTIME, retries: 2, timeout: 100 })
+    )
+    // Attempts 1+2 each burn 100+3000ms; backoffs are 2000+4000ms; attempt 3
+    // finishes at 100ms. Advance well past all of it.
+    await vi.advanceTimersByTimeAsync(30_000)
+    const result = await promise
+
+    expect(result.status).toBe("success")
+    expect(result.output).toBe("third attempt")
+    expect(result.attempts).toBe(3)
+  })
+
+  it("does not retry a permanent runtime failure", async () => {
+    // A missing binary or an unsupported capability fails identically on every
+    // attempt, so the runner must not spend the backoff budget on it.
+    vi.useFakeTimers()
+    let calls = 0
+    handler = async () => {
+      calls += 1
+      throw new PermanentError("Failed to start opencode: ENOENT")
+    }
+
+    const promise = makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME, retries: 3 }))
+    // Under the fix this settles with no retries; under a revert it would need
+    // 2s+4s+6s of backoff. A wide window makes the difference a call count
+    // rather than a hang.
+    await vi.advanceTimersByTimeAsync(60_000)
+    const result = await promise
+
+    expect(calls).toBe(1)
+    expect(result.status).toBe("failed")
+    expect(result.error).toContain("ENOENT")
+    expect(result.attempts).toBe(1)
+    expect(events.some((e) => e.type === "agent:retrying")).toBe(false)
+  })
+
+  it("still retries a transient runtime failure", async () => {
+    // The complement of the previous test: an ordinary error is retried, so the
+    // permanent classification did not turn every failure into a one-shot.
+    vi.useFakeTimers()
+    let calls = 0
+    handler = async () => {
+      calls += 1
+      if (calls === 1) throw new Error("transient")
+      return { output: "ok", exitCode: 0 }
+    }
+
+    const promise = makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME, retries: 1 }))
+    await vi.advanceTimersByTimeAsync(2000)
+    const result = await promise
+
+    expect(calls).toBe(2)
+    expect(result.status).toBe("success")
+    expect(result.attempts).toBe(2)
   })
 
   it("renders the task prompt with context and per-agent scope", async () => {

@@ -14,13 +14,41 @@ import type {
   RuntimeQuery,
 } from "../types/runtime"
 import { abortError } from "../utils/abort"
+import { PermanentError } from "../utils/errors"
 import { RuntimeBase } from "./RuntimeBase"
 
-/** Cache of model ids discovered per command, to avoid re-asking every session. */
+/**
+ * Cache of model ids discovered per command, to avoid re-asking every session.
+ *
+ * Module-level, so it lives for the whole process. The key is the command, and a
+ * command resolves to the same binary every time within one process —
+ * `resolveExecutable` is a pure function of the command, `PATH` and the
+ * filesystem, and `exe = resolveExecutable(command) ?? command` is a 1:1
+ * function of `command` on every branch — so this key is reliable. Its size is
+ * bounded by the number of distinct commands a run touches (one to four in
+ * practice), so no eviction is needed.
+ *
+ * Known limitation, recorded rather than fixed: the list comes from a single
+ * `session/new`'s `configOptions` and is then reused for every later session of
+ * that binary. If a provider's advertised list changes between sessions (e.g.
+ * with the account or subscription), the cached list goes stale — and the check
+ * below only emits a `warn(...)` and *skips* `setConfigOption` when the
+ * configured model is absent, so the configured model would not take effect (a
+ * warning is raised, but the model the user asked for is not applied).
+ * Verifying that needs a real agent, so it is documented, not patched.
+ */
 const discoveredModels = new Map<string, string[]>()
 
-/** Grace period between SIGTERM and SIGKILL when an agent will not stop. */
-const KILL_ESCALATION_MS = 3000
+/**
+ * Grace period between SIGTERM and SIGKILL when an agent will not stop.
+ *
+ * This is time a single attempt can still consume *after* its `timeout`: the
+ * inner timeout fires a SIGTERM, and a child that ignores it is not reaped until
+ * this grace elapses — the reject itself lands on the child's `close`. A caller
+ * that budgets for a whole retry sequence must therefore add this to the
+ * per-attempt timeout, or its "upper bound" is not one (see `retryBudgetMs`).
+ */
+export const KILL_ESCALATION_MS = 3000
 
 /**
  * Grace period between asking the agent to cancel (`session/cancel`) and killing
@@ -547,7 +575,10 @@ export class AcpRuntime extends RuntimeBase {
         settleReject(new Error(`${command} exited with code ${code}: ${errorOutput}`))
       })
       child.on("error", (err) => {
-        settleReject(new Error(`Failed to start ${command}: ${err.message}`))
+        // ENOENT / EACCES: the binary is missing or not runnable. That is a
+        // property of the install, not a transient fault — a retry would fail
+        // identically after the backoff, so classify it as permanent.
+        settleReject(new PermanentError(`Failed to start ${command}: ${err.message}`))
       })
 
       const run = async () => {
@@ -561,7 +592,10 @@ export class AcpRuntime extends RuntimeBase {
           // blind earns a cryptic protocol error. Do NOT fall back to a fresh
           // session — the caller asked to resume and would wrongly believe it did.
           if (init.agentCapabilities?.loadSession !== true) {
-            throw new Error(
+            // The capability is fixed for this agent: retrying cannot make it
+            // start advertising `session/load`, so fail fast rather than after
+            // the backoff budget.
+            throw new PermanentError(
               `Agent does not support session/load (loadSession=false); cannot resume session ${task.sessionId}`
             )
           }

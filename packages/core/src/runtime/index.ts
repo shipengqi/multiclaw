@@ -1,5 +1,5 @@
 import type { AgentRuntime } from "../types/runtime"
-import { AcpRuntime } from "./AcpRuntime"
+import { AcpRuntime, KILL_ESCALATION_MS } from "./AcpRuntime"
 
 class RuntimeRegistry {
   private runtimes = new Map<string, AgentRuntime>()
@@ -26,4 +26,4 @@ class RuntimeRegistry {
 }
 
 export const runtimeRegistry = new RuntimeRegistry()
-export { AcpRuntime }
+export { AcpRuntime, KILL_ESCALATION_MS }
