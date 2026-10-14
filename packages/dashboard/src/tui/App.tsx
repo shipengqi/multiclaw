@@ -3,7 +3,16 @@ import type { EventBus, MultiClawConfig, MultiClawEvent } from "@multiclawcli/co
 import { isAbortError, Orchestrator } from "@multiclawcli/core"
 import { Box, type Key, Text, useApp, useInput, useWindowSize } from "ink"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
-import { matchCommands, menuQuery, parseCommand } from "./commands"
+import {
+  argQuery,
+  completeAgents,
+  matchCommands,
+  menuQuery,
+  type PaletteRow,
+  paletteRows,
+  parseCommand,
+  resolveAgentId,
+} from "./commands"
 import {
   Header,
   HintBar,
@@ -12,7 +21,7 @@ import {
   Rule,
   railCellWidths,
 } from "./components/chrome"
-import { HelpOverlay, HistoryOverlay } from "./components/overlays"
+import { HelpOverlay, HistoryOverlay, listWindowStart } from "./components/overlays"
 import {
   Divider,
   ErrorPanel,
@@ -34,6 +43,7 @@ import {
   progress,
   recordedTurns,
   seedAgents,
+  type TurnView,
   tuiReducer,
   turnElapsed,
 } from "./state"
@@ -66,6 +76,29 @@ interface Line {
 }
 
 const EMPTY_LINE: Line = { text: "", cursor: 0 }
+
+/**
+ * The turn `/replay` or `/fork` should act on, or the reason there is none.
+ *
+ * Shared by both commands so "which turn" — the last one by default, or the one
+ * whose number was typed — is one rule rather than two. The empty-case wording
+ * is the caller's, because "nothing to replay" and "nothing to fork" are not the
+ * same sentence. On success the requirement is returned alongside the record, so
+ * neither caller has to re-prove it is set.
+ */
+function pickTurn(
+  state: ReturnType<typeof tuiReducer>,
+  raw: string | undefined,
+  whenEmpty: string
+): { record: TurnView; requirement: string } | { error: string } {
+  const turns = recordedTurns(state)
+  if (turns.length === 0) return { error: whenEmpty }
+  const target =
+    raw === undefined ? turns[turns.length - 1] : turns.find((t) => String(t.turn) === raw)
+  if (!target) return { error: `no turn ${raw}` }
+  if (!target.requirement) return { error: `turn ${target.turn} has no requirement` }
+  return { record: target, requirement: target.requirement }
+}
 
 function StatusLine({
   state,
@@ -334,17 +367,21 @@ export function App({ config, onTurnStart }: AppProps) {
           )
           return
         case "focus": {
-          const id = args[0]
-          if (!id) {
+          const input = args[0]
+          if (!input) {
             setNotice("usage: /focus <agent id>")
             return
           }
-          if (!shown.agents[id]) {
-            setNotice(`unknown agent: ${id}`)
+          // A unique prefix is accepted, the same way `/retry` does — typing a
+          // whole id is a chore, and the two commands have to agree on what an id
+          // means or a prefix that works in one would fail in the other.
+          const resolved = resolveAgentId(input, Object.keys(shown.agents))
+          if ("error" in resolved) {
+            setNotice(resolved.error)
             return
           }
-          dispatch({ type: "focus:set", agentId: id })
-          setNotice(`focused ${id}`)
+          dispatch({ type: "focus:set", agentId: resolved.id })
+          setNotice(`focused ${resolved.id}`)
           return
         }
         case "clear":
@@ -377,18 +414,23 @@ export function App({ config, onTurnStart }: AppProps) {
             setNotice("nothing to retry yet")
             return
           }
-          const ids = args[0]
-            ? [args[0]]
-            : Object.values(state.agents)
-                .filter((agent) => agent.status === "failed")
-                .map((agent) => agent.id)
+          // An explicit id accepts a unique prefix, matching `/focus`; with no id
+          // the command falls back to every agent that failed.
+          let ids: string[]
+          if (args[0]) {
+            const resolved = resolveAgentId(args[0], Object.keys(state.agents))
+            if ("error" in resolved) {
+              setNotice(resolved.error)
+              return
+            }
+            ids = [resolved.id]
+          } else {
+            ids = Object.values(state.agents)
+              .filter((agent) => agent.status === "failed")
+              .map((agent) => agent.id)
+          }
           if (ids.length === 0) {
             setNotice("nothing failed")
-            return
-          }
-          const unknown = ids.filter((id) => !state.agents[id])
-          if (unknown.length > 0) {
-            setNotice(`unknown agent: ${unknown[0]}`)
             return
           }
           // Only agents that reported a session have one to continue; a failed
@@ -406,6 +448,34 @@ export function App({ config, onTurnStart }: AppProps) {
               ...(Object.keys(sessions).length > 0 ? { sessions } : {}),
             },
           })
+          return
+        }
+        case "replay": {
+          const target = pickTurn(state, args[0], "nothing to replay yet")
+          if ("error" in target) {
+            setNotice(target.error)
+            return
+          }
+          // The success notice is set *after* `startTurn`, which begins with a
+          // synchronous `setNotice(undefined)`: React batches both into one
+          // commit and the last write wins, so a notice placed before the call
+          // would be wiped before it ever rendered.
+          void startTurn(target.requirement)
+          setNotice(`replaying turn ${target.record.turn}`)
+          return
+        }
+        case "fork": {
+          const target = pickTurn(state, args[0], "nothing to fork yet")
+          if ("error" in target) {
+            setNotice(target.error)
+            return
+          }
+          // Branching means growing a new requirement out of an old one, so this
+          // only fills the prompt — it does not run. It touches no controller, so
+          // it is safe mid-run: the user edits the text and presses enter, which
+          // queues it like any other follow-up.
+          setLine({ text: target.requirement, cursor: target.requirement.length })
+          setNotice(`editing turn ${target.record.turn} — enter to run`)
           return
         }
         case "cancel": {
@@ -494,16 +564,6 @@ export function App({ config, onTurnStart }: AppProps) {
     () => (query === undefined ? [] : matchCommands(query, running)),
     [query, running]
   )
-  // A new query is a new list, and carrying the old highlight over would land on
-  // a command the user never looked at. Derived rather than reset in an effect,
-  // so no frame is ever rendered with a stale index.
-  const menuIndex = menuCursor.query === query ? menuCursor.index : 0
-  const selected = matches.length === 0 ? 0 : Math.min(menuIndex, matches.length - 1)
-
-  // The palette is allowed mid-run too, which is the only place `/cancel` is
-  // offered. Opening it is a deliberate act (the user typed `/`), so spending the
-  // arrows on it is fair — scrolling the stream is still one keystroke away.
-  const menuOpen = !helpOpen && !historyOpen && query !== undefined && matches.length > 0
 
   // Newest first: "what did I just ask" is the question a history list answers.
   const historyTurns = useMemo(() => [...state.history].reverse(), [state.history])
@@ -515,12 +575,46 @@ export function App({ config, onTurnStart }: AppProps) {
   // turn renders through exactly the same components.
   const shown = state.view ?? state
 
+  // The palette shows one of two lists, never both: the command names while the
+  // command is still being typed, or — once a space commits to arguments — the
+  // agents a completer command's first argument could name. `menuQuery` closes
+  // on a space and `argQuery` opens there, so the two are mutually exclusive.
+  const arg = argQuery(line.text)
+  const argRows: PaletteRow[] = arg
+    ? completeAgents(arg.partial, Object.keys(shown.agents)).map((id) => ({
+        key: id,
+        label: id,
+        // The static role, not the per-turn task title: while completing, the
+        // user is asking "which agent is this", not "what is it doing now".
+        description: shown.agents[id]?.description ?? shown.agents[id]?.name ?? id,
+      }))
+    : []
+  const allRows: PaletteRow[] = arg ? argRows : paletteRows(matches)
+  // One cursor serves both lists; the key it resets on is whichever list is open.
+  const paletteKey = arg ? `${arg.command.name} ${arg.partial}` : query
+  const paletteTotal = allRows.length
+  // A new list is a new highlight, and carrying the old one over would land on a
+  // row the user never looked at. Derived rather than reset in an effect, so no
+  // frame is ever rendered with a stale index.
+  const menuIndex = menuCursor.query === paletteKey ? menuCursor.index : 0
+  const selected = paletteTotal === 0 ? 0 : Math.min(menuIndex, paletteTotal - 1)
+
+  // The command palette is allowed mid-run too, which is the only place
+  // `/cancel` is offered. Opening it is a deliberate act (the user typed `/`),
+  // so spending the arrows on it is fair — scrolling the stream is still one
+  // keystroke away.
+  const menuOpen = !helpOpen && !historyOpen && query !== undefined && matches.length > 0
+  // The argument palette opens where the command palette closed, and only when
+  // there is something to offer — an empty list is not a palette.
+  const argOpen = !helpOpen && !historyOpen && arg !== undefined && argRows.length > 0
+  const paletteOpen = menuOpen || argOpen
+
   const layout = computeLayout({
     columns,
     rows,
     turn: state.turn,
     overlay: helpOpen || historyOpen,
-    menuRows: menuOpen ? matches.length : 0,
+    menuRows: paletteOpen ? paletteTotal : 0,
     queueRows: queue.length,
     notice: notice !== undefined,
     viewing: state.view !== undefined,
@@ -528,12 +622,14 @@ export function App({ config, onTurnStart }: AppProps) {
     railCells: railCellWidths(shown),
   })
 
-  // The palette renders at most `layout.menuRows` entries, so the highlight has
-  // to be clamped to the same window. `selected` is bounded by the full match
-  // list, which today is exactly as long as the window — but a longer list would
-  // otherwise highlight a row that was never drawn.
-  const menuWindow = matches.slice(0, layout.menuRows)
-  const menuSelected = Math.min(selected, Math.max(0, menuWindow.length - 1))
+  // The palette draws at most `layout.menuRows` rows, so the window has to
+  // follow the selection: `listWindowStart` keeps the highlighted row on screen
+  // once the list is longer than the budget (there are more commands than
+  // `MAX_MENU_ROWS`). The component is handed `selected - windowStart`, because
+  // it only knows the rows it was given.
+  const windowStart = listWindowStart(selected, paletteTotal, layout.menuRows)
+  const paletteWindow = allRows.slice(windowStart, windowStart + layout.menuRows)
+  const paletteSelected = selected - windowStart
 
   const now = Date.now()
   const spinner = SPINNER[tick % SPINNER.length]
@@ -617,13 +713,13 @@ export function App({ config, onTurnStart }: AppProps) {
 
     // While the palette is open the arrows belong to it, not to the stream —
     // the same contract every fuzzy finder uses.
-    if (menuOpen) {
+    if (paletteOpen) {
       if (key.upArrow) {
-        setMenuCursor({ query, index: (menuIndex - 1 + matches.length) % matches.length })
+        setMenuCursor({ query: paletteKey, index: (menuIndex - 1 + paletteTotal) % paletteTotal })
         return
       }
       if (key.downArrow) {
-        setMenuCursor({ query, index: (menuIndex + 1) % matches.length })
+        setMenuCursor({ query: paletteKey, index: (menuIndex + 1) % paletteTotal })
         return
       }
       if (key.escape) {
@@ -631,7 +727,11 @@ export function App({ config, onTurnStart }: AppProps) {
         return
       }
       if (key.return) {
-        runCommand(matches[selected].name, [])
+        // Enter accepts the highlighted row and runs it, in both panels: a
+        // command runs itself, and an agent id completes `/focus <id>`. There is
+        // no "accept and keep typing" case, because `/focus` takes one argument.
+        if (arg) runCommand(arg.command.name, [allRows[selected].key])
+        else runCommand(matches[selected].name, [])
         return
       }
     }
@@ -747,15 +847,17 @@ export function App({ config, onTurnStart }: AppProps) {
     ? "esc close"
     : historyOpen
       ? "↑↓ select · enter open · esc close"
-      : menuOpen
-        ? "↑↓ select · enter run · esc close"
-        : running
-          ? "enter queues · ctrl+c cancel"
-          : state.view
-            ? "esc live · tab agent · ? help"
-            : state.reply
-              ? "enter sends · / commands · ? help"
-              : "tab switch · / commands · ? help"
+      : argOpen
+        ? `↑↓ select · enter ${arg?.command.name} · esc close`
+        : menuOpen
+          ? "↑↓ select · enter run · esc close"
+          : running
+            ? "enter queues · ctrl+c cancel"
+            : state.view
+              ? "esc live · tab agent · ? help"
+              : state.reply
+                ? "enter sends · / commands · ? help"
+                : "tab switch · / commands · ? help"
 
   return (
     <Box flexDirection="column" height={layout.rows}>
@@ -860,7 +962,7 @@ export function App({ config, onTurnStart }: AppProps) {
 
       <QueueStrip items={queue} max={layout.queueRows} />
 
-      {menuOpen ? <CommandMenu commands={menuWindow} selected={menuSelected} /> : null}
+      {paletteOpen ? <CommandMenu rows={paletteWindow} selected={paletteSelected} /> : null}
 
       <Prompt
         value={line.text}

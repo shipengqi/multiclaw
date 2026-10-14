@@ -1032,6 +1032,180 @@ describe("App · the prompt line", () => {
   })
 })
 
+/** A runtime that records the requirement the leader was handed, once per turn. */
+const REPLAY_RUNTIME = "tui-integration-replay"
+
+const REPLAY_CONFIG: MultiClawConfig = {
+  name: "dev-team",
+  workDir: "/tmp/multiclaw-tui-replay",
+  leader: {
+    id: "leader",
+    name: "Leader",
+    icon: "◆",
+    runtime: REPLAY_RUNTIME,
+    // The raw requirement, so the leader's prompt *is* what a turn was asked to
+    // do — which is exactly what `/replay` and `/fork` act on.
+    systemPrompt: "",
+    taskPrompt: "{{requirement}}",
+  },
+  agents: [
+    {
+      id: "architect",
+      name: "Architect",
+      runtime: REPLAY_RUNTIME,
+      systemPrompt: "",
+      taskPrompt: "",
+    },
+  ],
+}
+
+describe("App · replaying and forking finished turns", () => {
+  /** The requirement the leader was handed, once per turn. */
+  let prompts: string[] = []
+  /** How many turns have started, across every turn of the test. */
+  let starts = 0
+
+  beforeEach(() => {
+    prompts = []
+    starts = 0
+  })
+
+  beforeAll(() => {
+    runtimeRegistry.register({
+      name: REPLAY_RUNTIME,
+      describe: alwaysAvailable(REPLAY_RUNTIME),
+      async execute(task) {
+        if (task.agentId === "leader") {
+          prompts.push(task.prompt)
+          return { output: '{"mode":"run","run":["architect"]}', exitCode: 0 }
+        }
+        return { output: `${task.agentId} finished`, exitCode: 0 }
+      },
+    })
+  })
+
+  /**
+   * Type `keys` until `readyAt` turns have completed, then type `thenKeys`.
+   *
+   * The `thenKeys` start one more turn (a replay), which is given `settleMs` to
+   * finish — the same shape the `/retry` test uses.
+   */
+  async function drive(keys: string[], readyAt: number, thenKeys: string[] = []): Promise<string> {
+    let completes = 0
+    let resolveReady: () => void = () => {}
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve
+    })
+
+    const frame = await driveFrame(
+      <App
+        config={REPLAY_CONFIG}
+        onTurnStart={(bus) => {
+          starts += 1
+          bus.subscribe((event) => {
+            if (event.type !== "orchestration:complete") return
+            completes += 1
+            if (completes === readyAt) resolveReady()
+          })
+        }}
+      />,
+      { keys, ready, thenKeys, settleMs: 500, timeoutMs: 8000 }
+    )
+    return stripAnsi(frame)
+  }
+
+  it("replays the last finished turn by default", async () => {
+    await drive(["first task", "\r", "second task", "\r"], 2, ["/replay", "\r"])
+
+    // Three turns ran; the third re-ran the second's requirement verbatim.
+    expect(prompts).toEqual(["first task", "second task", "second task"])
+  })
+
+  it("replays the turn named by number", async () => {
+    await drive(["first task", "\r", "second task", "\r"], 2, ["/replay 1", "\r"])
+
+    expect(prompts).toEqual(["first task", "second task", "first task"])
+  })
+
+  it("reports an unknown turn without starting one", async () => {
+    const frame = await drive(["first task", "\r"], 1, ["/replay 99", "\r"])
+
+    expect(frame).toContain("no turn 99")
+    // The failed replay started nothing: only the original turn ever began.
+    expect(starts).toBe(1)
+  })
+
+  it("says there is nothing to replay on a fresh console", async () => {
+    const frame = stripAnsi(
+      await driveFrame(<App config={REPLAY_CONFIG} />, { keys: ["/replay", "\r"], settleMs: 200 })
+    )
+
+    expect(frame).toContain("nothing to replay yet")
+  })
+
+  // Forking only edits the prompt — it must not run anything, so the whole point
+  // is that the turn count does not move.
+  it("fills the prompt from a past turn without running it", async () => {
+    const frame = await drive(["first task", "\r", "second task", "\r"], 2, ["/fork 1", "\r"])
+
+    expect(frame).toContain("› first task")
+    expect(starts).toBe(2)
+  })
+})
+
+describe("App · completing an agent id", () => {
+  beforeAll(() => {
+    runtimeRegistry.register({
+      name: REPLAY_RUNTIME,
+      describe: alwaysAvailable(REPLAY_RUNTIME),
+      async execute(task) {
+        if (task.agentId === "leader") {
+          return { output: '{"mode":"run","run":["architect"]}', exitCode: 0 }
+        }
+        return { output: `${task.agentId} finished`, exitCode: 0 }
+      },
+    })
+  })
+
+  // The argument palette opens where the command palette closes (on the space),
+  // and the hint bar advertises the key that accepts a row.
+  it("opens the argument palette after /focus and advertises the accept key", async () => {
+    const frame = stripAnsi(
+      await driveFrame(<App config={REPLAY_CONFIG} />, { keys: ["/focus "], settleMs: 200 })
+    )
+
+    expect(frame).toContain("↑↓ select · enter focus · esc close")
+  })
+
+  it("runs /focus with the highlighted agent when a row is accepted", async () => {
+    const frame = stripAnsi(
+      await driveFrame(<App config={REPLAY_CONFIG} />, { keys: ["/focus ", "\r"], settleMs: 200 })
+    )
+
+    expect(frame).toContain("focused leader")
+  })
+})
+
+describe("App · the command palette window", () => {
+  // There are more commands than `MAX_MENU_ROWS`, so the palette draws a window
+  // that has to follow the selection. Before this, the window was pinned to the
+  // top `MAX_MENU_ROWS` rows and the highlight was clamped inside it, so the
+  // eighth command could not be reached with the arrow keys at all.
+  it("follows the selection past the first window", async () => {
+    const down = "\u001b[B"
+    const frame = stripAnsi(
+      await driveFrame(<App config={REPLAY_CONFIG} />, {
+        // `/` opens the palette on every command; seven `↓` moves onto the
+        // eighth, which is `/fork` and sits below the first window.
+        keys: ["/", ...Array.from({ length: 7 }, () => down)],
+        settleMs: 0,
+      })
+    )
+
+    expect(frame).toContain("› /fork")
+  })
+})
+
 /**
  * A clean workspace before every test.
  *
@@ -1054,6 +1228,7 @@ beforeEach(() => {
     RETRY_OK_CONFIG,
     RETRY_FAIL_CONFIG,
     PROMPT_CONFIG,
+    REPLAY_CONFIG,
   ]) {
     fs.rmSync(path.join(workDir, ".multiclaw", "console"), { recursive: true, force: true })
   }

@@ -1,14 +1,14 @@
 import type { AgentResult, MultiClawConfig, StageInfo } from "@multiclawcli/core"
 import { Text } from "ink"
 import { describe, expect, it } from "vitest"
-import { COMMANDS } from "./commands"
+import { COMMANDS, paletteRows } from "./commands"
 import { Header, HintBar, PipelineRail, QueueStrip, Rule } from "./components/chrome"
 import {
   HelpOverlay,
   HistoryOverlay,
   helpRows,
   historyCapacity,
-  historyWindowStart,
+  listWindowStart,
 } from "./components/overlays"
 import { ErrorPanel, ReplyPanel, StreamPanel, TeamPanel, WelcomePanel } from "./components/panels"
 import { CommandMenu, Prompt } from "./components/prompt"
@@ -677,7 +677,7 @@ describe("HistoryOverlay", () => {
   })
 })
 
-describe("historyCapacity / historyWindowStart", () => {
+describe("historyCapacity / listWindowStart", () => {
   it("never offers less than one row", () => {
     expect(historyCapacity(0)).toBe(1)
     expect(historyCapacity(6)).toBe(1)
@@ -689,19 +689,19 @@ describe("historyCapacity / historyWindowStart", () => {
   })
 
   it("does not scroll when everything already fits", () => {
-    expect(historyWindowStart(0, 2, 10)).toBe(0)
+    expect(listWindowStart(0, 2, 10)).toBe(0)
   })
 
   it("scrolls the selection into view from below", () => {
-    expect(historyWindowStart(9, 12, 3)).toBe(7)
+    expect(listWindowStart(9, 12, 3)).toBe(7)
   })
 
   it("never scrolls past the end of the list", () => {
-    expect(historyWindowStart(11, 12, 3)).toBe(9)
+    expect(listWindowStart(11, 12, 3)).toBe(9)
   })
 
   it("scrolls back up when the selection returns to the top", () => {
-    expect(historyWindowStart(0, 12, 3)).toBe(0)
+    expect(listWindowStart(0, 12, 3)).toBe(0)
   })
 })
 
@@ -725,6 +725,16 @@ describe("HelpOverlay", () => {
     expect(stripAnsi(await renderFrame(<HelpOverlay width={80} maxRows={30} />))).toContain(
       "esc or ? to close"
     )
+  })
+
+  // The command count is derived from `COMMANDS`, so it cannot drift the way a
+  // hand-written list would. The assertion uses the variable rather than a
+  // literal for the same reason: a hard-coded "11" would just have to be edited
+  // the next time a command is added.
+  it("counts the commands without enumerating them", async () => {
+    const frame = stripAnsi(await renderFrame(<HelpOverlay width={80} maxRows={30} />))
+    expect(frame).toContain("commands")
+    expect(frame).toContain(String(COMMANDS.length))
   })
 
   // Regression: on a 24-row terminal the full help does not fit, and what used
@@ -752,7 +762,7 @@ describe("HelpOverlay", () => {
 describe("CommandMenu", () => {
   it("shows each command with its description", async () => {
     const frame = stripAnsi(
-      await renderFrame(<CommandMenu commands={[...COMMANDS]} selected={0} />)
+      await renderFrame(<CommandMenu rows={paletteRows(COMMANDS)} selected={0} />)
     )
     expect(frame).toContain("/agents")
     expect(frame).toContain("List the configured team")
@@ -760,17 +770,26 @@ describe("CommandMenu", () => {
 
   it("shows an argument hint where a command takes one", async () => {
     const frame = stripAnsi(
-      await renderFrame(<CommandMenu commands={[...COMMANDS]} selected={0} />)
+      await renderFrame(<CommandMenu rows={paletteRows(COMMANDS)} selected={0} />)
     )
     expect(frame).toContain("/focus <id>")
   })
 
   it("marks the highlighted row and only that row", async () => {
     const frame = stripAnsi(
-      await renderFrame(<CommandMenu commands={[...COMMANDS]} selected={1} />)
+      await renderFrame(<CommandMenu rows={paletteRows(COMMANDS)} selected={1} />)
     )
     expect(frame).toContain("› /focus")
     expect(frame).not.toContain("› /agents")
+  })
+
+  // The palette is handed a *window*, so it only knows relative indices. This is
+  // the "caret lands on the right row" contract the windowing depends on.
+  it("marks the row at the selected index within the window it was given", async () => {
+    const window = paletteRows(COMMANDS).slice(2, 5)
+    const frame = stripAnsi(await renderFrame(<CommandMenu rows={window} selected={1} />))
+    expect(frame).toContain(`› ${window[1].label}`)
+    expect(frame).not.toContain(`› ${window[0].label}`)
   })
 })
 

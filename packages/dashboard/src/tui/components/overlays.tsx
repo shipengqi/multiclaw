@@ -1,4 +1,5 @@
 import { Box, Text } from "ink"
+import { COMMANDS } from "../commands"
 import { formatDuration, padRight, truncate } from "../format"
 import { progress, type TurnView } from "../state"
 import { COLOR, GLYPH, STATUS } from "../theme"
@@ -10,7 +11,14 @@ interface HelpGroup {
 
 /**
  * Grouped the way the user meets them: what the prompt does, then the panes,
- * then the command layer. Anything not listed here does not exist.
+ * then the command layer.
+ *
+ * The command layer lists only keys that are *not* slash commands — `/`, `?`,
+ * `ctrl+c` — plus a single derived line counting the commands. It deliberately
+ * does not enumerate them: the list would drift from `COMMANDS` the moment a
+ * command is added, and it would not fit (see `helpRows`). The `/` palette is
+ * built from `COMMANDS` itself, so it can never drift, and that is where the
+ * enumeration belongs.
  */
 export const HELP_GROUPS: readonly HelpGroup[] = [
   {
@@ -36,9 +44,9 @@ export const HELP_GROUPS: readonly HelpGroup[] = [
     title: "commands",
     rows: [
       ["/", "Command menu"],
-      ["/history", "Browse finished turns"],
       ["?", "This help"],
       ["ctrl+c", "Cancel the turn and its queue · again to quit"],
+      ["/<command>", `All ${COMMANDS.length} commands — type / to browse`],
     ],
   },
 ]
@@ -60,13 +68,14 @@ export function historyCapacity(maxRows: number): number {
 }
 
 /**
- * The first turn to draw, given the one the cursor is on.
+ * The first item to draw, given the one the cursor is on.
  *
- * The list can be longer than the body, so without this the cursor walks off the
- * bottom and `enter` opens a turn the user cannot see — which is exactly when
- * the list is worth opening.
+ * A generic list window — nothing here is specific to history — so the command
+ * palette uses it too. The list can be longer than the body, so without this the
+ * cursor walks off the bottom and `enter` opens a row the user cannot see —
+ * which is exactly when the list is worth opening.
  */
-export function historyWindowStart(selected: number, total: number, capacity: number): number {
+export function listWindowStart(selected: number, total: number, capacity: number): number {
   const maxStart = Math.max(0, total - capacity)
   // Keep the selection on the last row when it moves past the bottom, and on the
   // first when it moves back above it.
@@ -160,7 +169,7 @@ export function HistoryOverlay({
   maxRows: number
 }) {
   const capacity = historyCapacity(maxRows)
-  const start = historyWindowStart(selected, turns.length, capacity)
+  const start = listWindowStart(selected, turns.length, capacity)
   const visible = turns.slice(start, start + capacity)
   const range =
     turns.length > capacity

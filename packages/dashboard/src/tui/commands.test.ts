@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest"
 import {
+  argQuery,
   availableCommands,
   COMMANDS,
+  completeAgents,
   isCommandLine,
   matchCommands,
   menuQuery,
+  paletteRows,
   parseCommand,
+  resolveAgentId,
 } from "./commands"
 
 describe("availableCommands", () => {
@@ -119,5 +123,103 @@ describe("COMMANDS", () => {
     for (const command of COMMANDS) {
       expect(command.description.length).toBeGreaterThan(0)
     }
+  })
+
+  it("offers /replay while idle but not while running", () => {
+    // Replaying re-runs a finished turn, so mid-run it would race the live turn
+    // (and `startTurn` would drop the running controller).
+    expect(availableCommands(false).map((c) => c.name)).toContain("replay")
+    expect(availableCommands(true).map((c) => c.name)).not.toContain("replay")
+  })
+
+  it("offers /fork in both phases, since it only edits the prompt", () => {
+    expect(availableCommands(false).map((c) => c.name)).toContain("fork")
+    expect(availableCommands(true).map((c) => c.name)).toContain("fork")
+  })
+})
+
+describe("paletteRows", () => {
+  it("labels every row with a leading slash", () => {
+    for (const row of paletteRows(COMMANDS)) {
+      expect(row.label.startsWith("/")).toBe(true)
+    }
+  })
+
+  it("includes the argument hint when a command takes one", () => {
+    expect(paletteRows(COMMANDS).find((row) => row.key === "focus")?.label).toBe("/focus <id>")
+  })
+
+  it("keeps each command's description", () => {
+    expect(paletteRows(COMMANDS).find((row) => row.key === "agents")?.description).toBe(
+      "List the configured team"
+    )
+  })
+})
+
+describe("argQuery", () => {
+  it("opens on the first argument of a completer command", () => {
+    expect(argQuery("/focus ")).toEqual({
+      command: COMMANDS.find((c) => c.name === "focus"),
+      partial: "",
+    })
+  })
+
+  it("carries the partial argument typed so far", () => {
+    expect(argQuery("/focus ar")?.partial).toBe("ar")
+  })
+
+  it("stays closed before the space that begins the argument", () => {
+    expect(argQuery("/focus")).toBeUndefined()
+  })
+
+  it("stays closed for a command that takes no completer", () => {
+    expect(argQuery("/agents x")).toBeUndefined()
+  })
+
+  it("stays closed outside command mode", () => {
+    expect(argQuery("plain")).toBeUndefined()
+  })
+})
+
+describe("completeAgents", () => {
+  const ids = ["architect", "dev", "archivist", "qa"]
+
+  it("matches a prefix", () => {
+    expect(completeAgents("ar", ids)).toEqual(["architect", "archivist"])
+  })
+
+  it("matches case-insensitively", () => {
+    expect(completeAgents("AR", ids)).toEqual(["architect", "archivist"])
+  })
+
+  it("lists the roster when nothing has been typed", () => {
+    expect(completeAgents("", ids)).toEqual(ids)
+  })
+
+  it("caps the list at the limit", () => {
+    const many = Array.from({ length: 20 }, (_, i) => `agent-${i}`)
+    expect(completeAgents("", many)).toHaveLength(8)
+  })
+})
+
+describe("resolveAgentId", () => {
+  it("prefers an exact id over a prefix", () => {
+    // `dev` is itself an id, so it must resolve to `dev` even though it is also
+    // a prefix of `developer`.
+    expect(resolveAgentId("dev", ["dev", "developer"])).toEqual({ id: "dev" })
+  })
+
+  it("resolves a unique prefix", () => {
+    expect(resolveAgentId("arch", ["architect", "dev"])).toEqual({ id: "architect" })
+  })
+
+  it("reports every candidate for an ambiguous prefix", () => {
+    expect(resolveAgentId("d", ["dev", "designer"])).toEqual({
+      error: "ambiguous: dev, designer",
+    })
+  })
+
+  it("reports an unknown id", () => {
+    expect(resolveAgentId("nope", ["dev"])).toEqual({ error: "unknown agent: nope" })
   })
 })

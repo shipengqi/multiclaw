@@ -1,5 +1,5 @@
 import { Box, Text } from "ink"
-import type { CommandSpec } from "../commands"
+import type { PaletteRow } from "../commands"
 import { padRight } from "../format"
 import { COLOR, GLYPH } from "../theme"
 
@@ -66,31 +66,32 @@ export function Prompt({
 }
 
 /**
- * The `/` palette, rendered directly above the prompt.
+ * The palette, rendered directly above the prompt.
  *
  * Keeping it attached to the line being typed — rather than in a floating box —
  * means the filtered list and the query are always read together, which is how
  * fzf-style pickers work.
+ *
+ * It takes rows rather than commands so the command list and an argument
+ * completer (see `argQuery`) draw through one path: both reduce to a key, a
+ * label and a description, and the label already carries whatever prefix it
+ * needs.
  */
-export function CommandMenu({ commands, selected }: { commands: CommandSpec[]; selected: number }) {
-  const nameWidth = Math.max(
-    1,
-    ...commands.map((c) => c.name.length + (c.args ? c.args.length + 1 : 0))
-  )
+export function CommandMenu({ rows, selected }: { rows: PaletteRow[]; selected: number }) {
+  const labelWidth = Math.max(1, ...rows.map((row) => row.label.length))
 
   return (
     <Box flexDirection="column" paddingLeft={2}>
-      {commands.map((command, index) => {
+      {rows.map((row, index) => {
         const active = index === selected
-        const label = command.args ? `${command.name} ${command.args}` : command.name
         return (
           <Text
-            key={command.name}
+            key={row.key}
             color={active ? COLOR.accent : undefined}
             dimColor={!active}
             wrap="truncate-end"
           >
-            {active ? GLYPH.caret : " "} /{padRight(label, nameWidth)} {command.description}
+            {active ? GLYPH.caret : " "} {padRight(row.label, labelWidth)} {row.description}
           </Text>
         )
       })}

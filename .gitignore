@@ -155,3 +155,6 @@ graft
 
 # Ad-hoc local scripts (not shared; deliverables/ is tracked)
 scripts/
+
+# Runtime state written by `multiclaw run` and the console under `workDir`
+.multiclaw/

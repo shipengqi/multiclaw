@@ -336,6 +336,10 @@ never to the turn that is still running.
 The turn currently on screen is not listed, because it is already in front of you. The console keeps
 the last 20 finished turns.
 
+Finished turns are written to `workDir/.multiclaw/console/history.json`, so closing the console and
+reopening it restores the list — and the turn numbering carries on from where it left off rather than
+restarting at one.
+
 ## Logs
 
 After each run, all generated files are written under `workDir/.multiclaw/runs/run-<timestamp>/` (or `logDir` if set):

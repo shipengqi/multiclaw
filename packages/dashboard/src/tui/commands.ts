@@ -17,6 +17,14 @@ export interface CommandSpec {
   args?: string
   description: string
   availability: Availability
+  /**
+   * What this command's first argument completes against, if anything.
+   *
+   * Declared as data rather than matched on the name in `App`, so "this command
+   * takes a completer" is one fact in one place: a second such command needs no
+   * edit to the console's key handling.
+   */
+  completes?: "agent"
 }
 
 export const COMMANDS: readonly CommandSpec[] = [
@@ -26,6 +34,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     args: "<id>",
     description: "Focus an agent by id",
     availability: "always",
+    completes: "agent",
   },
   { name: "clear", description: "Clear the focused agent's log", availability: "always" },
   {
@@ -43,6 +52,18 @@ export const COMMANDS: readonly CommandSpec[] = [
     args: "[id]",
     description: "Re-run a failed agent (or all of them)",
     availability: "idle",
+  },
+  {
+    name: "replay",
+    args: "[turn]",
+    description: "Run an earlier turn again",
+    availability: "idle",
+  },
+  {
+    name: "fork",
+    args: "[turn]",
+    description: "Edit an earlier turn's requirement",
+    availability: "always",
   },
   {
     name: "cancel",
@@ -107,4 +128,78 @@ export function parseCommand(text: string): ParsedCommand | undefined {
   if (!isCommandLine(text)) return undefined
   const [name = "", ...args] = text.slice(1).trim().split(/\s+/)
   return name ? { name, args } : undefined
+}
+
+/**
+ * One row of the palette, whether it lists commands or their arguments.
+ *
+ * The label carries the leading slash (commands) or is a bare id (arguments),
+ * so the renderer draws one shape for both panels and never needs to know which
+ * it is showing.
+ */
+export interface PaletteRow {
+  key: string
+  label: string
+  description: string
+}
+
+/** The palette rows for a command list, in the order given. */
+export function paletteRows(commands: readonly CommandSpec[]): PaletteRow[] {
+  return commands.map((command) => ({
+    key: command.name,
+    label: command.args ? `/${command.name} ${command.args}` : `/${command.name}`,
+    description: command.description,
+  }))
+}
+
+/**
+ * The command whose first argument is being typed, and what has been typed so
+ * far — or `undefined` when no argument completer applies.
+ *
+ * The mirror image of {@link menuQuery}: that one closes the moment a space is
+ * typed, this one opens there. They are mutually exclusive, so the two palettes
+ * can never be open at once.
+ *
+ * Only the first argument is recognised, which is all any current command needs
+ * — a command with two completable arguments would extend this, not the caller.
+ */
+export function argQuery(text: string): { command: CommandSpec; partial: string } | undefined {
+  if (!isCommandLine(text)) return undefined
+  const match = /^(\S+)\s+(\S*)$/.exec(text)
+  if (!match) return undefined
+  const command = COMMANDS.find((c) => c.name === match[1].slice(1))
+  if (!command?.completes) return undefined
+  return { command, partial: match[2] }
+}
+
+/**
+ * Agent ids matching a partial id, case-insensitively, capped at `limit`.
+ *
+ * An empty partial lists the whole roster (up to the cap), so `/focus ` alone is
+ * a way to see who is available rather than an empty panel.
+ */
+export function completeAgents(partial: string, ids: readonly string[], limit = 8): string[] {
+  const query = partial.toLowerCase()
+  const matches = query ? ids.filter((id) => id.toLowerCase().startsWith(query)) : [...ids]
+  return matches.slice(0, limit)
+}
+
+/**
+ * Turn a typed agent id into the id it names, or the reason it does not.
+ *
+ * An exact id always wins; otherwise a unique prefix resolves, and an ambiguous
+ * prefix reports every candidate so the user can see what to disambiguate
+ * between. `/focus` and `/retry` share this so the two commands accept ids the
+ * same way.
+ */
+export function resolveAgentId(
+  input: string,
+  ids: readonly string[]
+): { id: string } | { error: string } {
+  if (ids.includes(input)) return { id: input }
+  const query = input.toLowerCase()
+  const hits = ids.filter((id) => id.toLowerCase().startsWith(query))
+  if (hits.length === 1) return { id: hits[0] }
+  if (hits.length === 0) return { error: `unknown agent: ${input}` }
+  return { error: `ambiguous: ${hits.join(", ")}` }
 }
