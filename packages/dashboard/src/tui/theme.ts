@@ -35,6 +35,9 @@ export const STATUS: Record<AgentStatus, StatusStyle> = {
   retrying: { glyph: "↻", color: COLOR.warn, label: "retrying" },
   success: { glyph: "✓", color: COLOR.ok, label: "done" },
   failed: { glyph: "✗", color: COLOR.error, label: "failed" },
+  // Stopped, not broken: a filled square reads as "halted" and shares the muted
+  // treatment of a skip, so a Ctrl-C does not paint the roster red.
+  cancelled: { glyph: "■", color: COLOR.muted, dim: true, label: "cancelled" },
   skipped: { glyph: "⊘", color: COLOR.muted, dim: true, label: "skipped" },
 }
 

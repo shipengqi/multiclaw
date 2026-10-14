@@ -10,7 +10,7 @@ import {
   historyCapacity,
   historyWindowStart,
 } from "./components/overlays"
-import { ReplyPanel, StreamPanel, TeamPanel, WelcomePanel } from "./components/panels"
+import { ErrorPanel, ReplyPanel, StreamPanel, TeamPanel, WelcomePanel } from "./components/panels"
 import { CommandMenu, Prompt } from "./components/prompt"
 import {
   createInitialState,
@@ -88,6 +88,38 @@ function withLogs(logs: string): TuiState {
   return {
     ...state,
     agents: { ...state.agents, architect: { ...state.agents.architect, logs } },
+  }
+}
+
+/**
+ * {@link midRun} with the focused architect carrying a per-turn task title.
+ *
+ * The title is cleared by `orchestration:start` in {@link midRun} (the stage
+ * list carries none), which is exactly how a turn looks before the leader's
+ * plan has been applied — so the title has to be set here to exercise the
+ * panels' handling of one.
+ */
+function withTaskTitle(title: string): TuiState {
+  const state = midRun()
+  return {
+    ...state,
+    agents: { ...state.agents, architect: { ...state.agents.architect, taskTitle: title } },
+  }
+}
+
+/** {@link midRun} with the focused architect carrying reported usage and cost. */
+function withMetering(): TuiState {
+  const state = midRun()
+  return {
+    ...state,
+    agents: {
+      ...state.agents,
+      architect: {
+        ...state.agents.architect,
+        usage: { contextTokens: 45200, contextSize: 200000 },
+        costUsd: 0.42,
+      },
+    },
   }
 }
 
@@ -207,6 +239,16 @@ describe("TeamPanel", () => {
     )
     expect(frame).toContain("retry 2/3")
   })
+
+  it("shows each agent's per-turn task title while it runs", async () => {
+    // Wide enough that the title survives between the name and the clock.
+    const frame = stripAnsi(
+      await renderFrame(
+        <TeamPanel turn={withTaskTitle("Design auth module")} width={60} now={NOW} spinner="⠋" />
+      )
+    )
+    expect(frame).toContain("Design auth module")
+  })
 })
 
 describe("StreamPanel", () => {
@@ -225,6 +267,26 @@ describe("StreamPanel", () => {
     expect(frame).toContain("sonnet-4")
     expect(frame).toContain("running")
     expect(frame).toContain("\u25bc")
+  })
+
+  it("appends the focused agent's per-turn task title to the header", async () => {
+    const frame = await stream(withTaskTitle("Design auth module"), 8)
+    expect(frame).toContain("Design auth module")
+  })
+
+  // The title segment is optional: when there is none, the header must not
+  // leave a dangling `·` behind. Counting separators is the tightest way to say
+  // "exactly one segment fewer, nothing orphaned".
+  it("leaves no orphan separator when the focused agent has no task title", async () => {
+    const headerOf = (frame: string) =>
+      frame.split("\n").find((line) => line.includes("\u25bc")) ?? ""
+
+    const withTitle = headerOf(await stream(withTaskTitle("Design auth module"), 8))
+    const noTitle = headerOf(await stream(midRun(), 8))
+
+    expect(withTitle).toContain("Design auth module")
+    expect(noTitle).not.toContain("Design auth module")
+    expect((withTitle.match(/·/g) ?? []).length).toBe((noTitle.match(/·/g) ?? []).length + 1)
   })
 
   // Regression: the duration was concatenated straight onto the status label,
@@ -304,6 +366,29 @@ describe("StreamPanel", () => {
   it("copes with nothing focused at all", async () => {
     const frame = await stream({ ...midRun(), focusId: undefined }, 6)
     expect(frame).toContain("\u2014")
+  })
+
+  it("appends context usage and cost to the header when they were reported", async () => {
+    const frame = await stream(withMetering(), 8)
+    expect(frame).toContain("ctx 45.2k/200k")
+    expect(frame).toContain("$0.42")
+  })
+
+  it("adds no usage or cost segment when none was reported", async () => {
+    const frame = await stream(midRun(), 8)
+    expect(frame).not.toContain("ctx")
+    expect(frame).not.toContain("$")
+  })
+
+  // The header must stay exactly one row: `logViewport = bodyHeight - 1` and the
+  // pane's own `height - 1` are paired arithmetic, so a second header row would
+  // push the stream past its budget and overflow the body.
+  it("keeps the header to a single row even with usage and cost", async () => {
+    const frame = await stream(withMetering(), 8)
+    const headerLines = frame.split("\n").filter((line) => line.includes("\u25bc"))
+    expect(headerLines).toHaveLength(1)
+    // It still fills the pane's width, so nothing was pushed to a new row.
+    expect(headerLines[0].length).toBe(100)
   })
 })
 
@@ -456,6 +541,24 @@ describe("ReplyPanel", () => {
     )
     // Every word survives, so nothing is silently cut off.
     for (let i = 0; i < 6; i++) expect(frame).toContain(`word${i}`)
+    for (const line of frame.split("\n")) expect(line.length).toBeLessThanOrEqual(40)
+  })
+})
+
+describe("ErrorPanel", () => {
+  it("shows the whole multi-line error instead of compressing it to one row", async () => {
+    const message = "jiti failed to load\n  at config.ts:12\n  at loadConfig.ts:4"
+    const frame = stripAnsi(await renderFrame(<ErrorPanel message={message} width={80} />))
+    expect(frame).toContain("the run stopped")
+    expect(frame).toContain("jiti failed to load")
+    expect(frame).toContain("at config.ts:12")
+    expect(frame).toContain("at loadConfig.ts:4")
+  })
+
+  it("wraps a long single-line error inside the pane", async () => {
+    const message = Array.from({ length: 8 }, (_, i) => `token${i}`).join(" ")
+    const frame = stripAnsi(await renderFrame(<ErrorPanel message={message} width={40} />))
+    for (let i = 0; i < 8; i++) expect(frame).toContain(`token${i}`)
     for (const line of frame.split("\n")) expect(line.length).toBeLessThanOrEqual(40)
   })
 })

@@ -559,6 +559,12 @@ describe("stageStatus", () => {
     )
   })
 
+  it("is cancelled when every member was cancelled, not pending", () => {
+    expect(stageStatus(stage(0, ["a", "b"]), agents({ a: "cancelled", b: "cancelled" }))).toBe(
+      "cancelled"
+    )
+  })
+
   it("is pending when members are missing or mixed", () => {
     expect(stageStatus(stage(0, ["a"]), {})).toBe("pending")
     expect(stageStatus(stage(0, ["a", "b"]), agents({ a: "success", b: "pending" }))).toBe(
@@ -1077,5 +1083,186 @@ describe("conversationTurns", () => {
     })
 
     expect(conversationTurns(state)).toEqual([])
+  })
+})
+
+describe("verbose and tool detail", () => {
+  const outputEvent = (
+    agentId: string,
+    chunk: string,
+    kind?: "text" | "tool" | "tool-detail"
+  ): MultiClawEvent => ({
+    type: "agent:output",
+    timestamp: TS,
+    payload: { agentId, chunk, ...(kind ? { kind } : {}) },
+  })
+
+  it("defaults to off, on the console rather than the turn", () => {
+    expect(initialState.verbose).toBe(false)
+    expect(createInitialState(config()).verbose).toBe(false)
+  })
+
+  it("toggles", () => {
+    expect(tuiReducer(initialState, { type: "verbose:toggle" }).verbose).toBe(true)
+    expect(tuiReducer({ ...initialState, verbose: true }, { type: "verbose:toggle" }).verbose).toBe(
+      false
+    )
+  })
+
+  it("drops tool-detail output while verbose is off", () => {
+    const state = withAgents("a")
+    // Dropped at the reducer, not at render: a later toggle must not resurrect
+    // history that was never buffered.
+    expect(reduceEvent(state, outputEvent("a", "  ✓ detail\n", "tool-detail"))).toBe(state)
+  })
+
+  it("keeps tool-detail output while verbose is on", () => {
+    const state = { ...withAgents("a"), verbose: true }
+    const next = reduceEvent(state, outputEvent("a", "  ✓ detail\n", "tool-detail"))
+    expect(next.agents.a.logs).toBe("  ✓ detail\n")
+  })
+
+  it("always keeps the tool summary line, and untagged text", () => {
+    const state = withAgents("a")
+    const tool = reduceEvent(state, outputEvent("a", "\n› Bash\n", "tool"))
+    expect(tool.agents.a.logs).toContain("Bash")
+    const text = reduceEvent(state, outputEvent("a", "prose"))
+    expect(text.agents.a.logs).toBe("prose")
+  })
+
+  it("carries verbose across turns, since it is a console setting", () => {
+    const on = { ...withAgents("a"), verbose: true }
+    const next = tuiReducer(on, {
+      type: "turn:start",
+      requirement: "again",
+      agents: seedAgents(config()),
+      leaderIds: ["leader"],
+      startedAt: T0,
+    })
+    expect(next.verbose).toBe(true)
+  })
+})
+
+describe("cost and usage", () => {
+  it("copies usage and cost from an agent's result", () => {
+    const state = reduceEvent(withAgents("a"), {
+      type: "agent:complete",
+      timestamp: TS,
+      payload: result("a", {
+        usage: { contextTokens: 45200, contextSize: 200000 },
+        costUsd: 0.42,
+      }),
+    })
+    expect(state.agents.a.usage).toEqual({ contextTokens: 45200, contextSize: 200000 })
+    expect(state.agents.a.costUsd).toBe(0.42)
+  })
+
+  it("records the turn's total cost from orchestration:complete", () => {
+    const state = reduceEvent(withAgents("a"), {
+      type: "orchestration:complete",
+      timestamp: TS,
+      payload: {
+        name: "demo",
+        success: true,
+        totalDuration: 10,
+        agentResults: [],
+        startTime: TS,
+        endTime: TS,
+        totalCostUsd: 1.23,
+      },
+    })
+    expect(state.totalCostUsd).toBe(1.23)
+  })
+
+  it("keeps the total cost when a finished turn is snapshotted into history", () => {
+    // Turn 1, not the seeded turn 0 — only a real turn is snapshotted.
+    const base = { ...withAgents("a"), turn: 1 }
+    const done = reduceEvent(base, {
+      type: "orchestration:complete",
+      timestamp: TS,
+      payload: {
+        name: "demo",
+        success: true,
+        totalDuration: 10,
+        agentResults: [],
+        startTime: TS,
+        endTime: TS,
+        totalCostUsd: 1.23,
+      },
+    })
+    const next = tuiReducer(done, {
+      type: "turn:start",
+      requirement: "again",
+      agents: seedAgents(config()),
+      leaderIds: ["leader"],
+      startedAt: T0,
+    })
+    // `snapshot()` is written field by field; a missing field here would drop
+    // the cost from every historical turn.
+    expect(next.history[next.history.length - 1].totalCostUsd).toBe(1.23)
+  })
+})
+
+describe("cancelled agents", () => {
+  it("takes the status from the result, not from the event type", () => {
+    // A cancelled run arrives on `agent:failed`; the status is what tells the
+    // roster it was stopped rather than broken.
+    const state = reduceEvent(withAgents("a"), {
+      type: "agent:failed",
+      timestamp: TS,
+      payload: result("a", { status: "cancelled" }),
+    })
+    expect(state.agents.a.status).toBe("cancelled")
+  })
+
+  it("counts a cancelled agent as settled, so the turn does not stall at N-1", () => {
+    const state = reduceEvent(withAgents("a"), {
+      type: "agent:failed",
+      timestamp: TS,
+      payload: result("a", { status: "cancelled" }),
+    })
+    expect(progress(state)).toEqual({ done: 1, total: 1 })
+  })
+})
+
+describe("session ids", () => {
+  it("copies an agent's session id from its result", () => {
+    const state = reduceEvent(withAgents("a"), {
+      type: "agent:complete",
+      timestamp: TS,
+      payload: result("a", { sessionId: "sess-7" }),
+    })
+    expect(state.agents.a.sessionId).toBe("sess-7")
+  })
+
+  it("keeps the session id when a finished turn is snapshotted into history", () => {
+    // Turn 1, not the seeded turn 0 — only a real turn is snapshotted.
+    const base = { ...withAgents("a"), turn: 1 }
+    const done = reduceEvent(base, {
+      type: "agent:complete",
+      timestamp: TS,
+      payload: result("a", { sessionId: "sess-7" }),
+    })
+    const next = tuiReducer(done, {
+      type: "turn:start",
+      requirement: "again",
+      agents: seedAgents(config()),
+      leaderIds: ["leader"],
+      startedAt: T0,
+    })
+
+    // `snapshot()` carries `agents` wholesale, so the id rides along without the
+    // snapshot needing a field of its own.
+    expect(next.history[next.history.length - 1].agents.a.sessionId).toBe("sess-7")
+  })
+
+  it("leaves the session id off a failed agent", () => {
+    const state = reduceEvent(withAgents("a"), {
+      type: "agent:failed",
+      timestamp: TS,
+      payload: result("a", { status: "failed", error: "boom" }),
+    })
+    // A failed agent has no session to continue, so `/retry` re-runs it cold.
+    expect(state.agents.a.sessionId).toBeUndefined()
   })
 })

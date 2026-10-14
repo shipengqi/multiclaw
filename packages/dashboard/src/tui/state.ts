@@ -1,5 +1,6 @@
 import type {
   AgentDefinition,
+  AgentOutput,
   AgentStatus,
   LeaderMessage,
   MultiClawConfig,
@@ -39,6 +40,16 @@ export interface AgentView {
   /** In-flight retry counter, present only while the agent is between attempts. */
   retry?: { attempt: number; max: number }
   error?: string
+  /** Context-window usage the runtime reported, when it reported any. */
+  usage?: AgentOutput["usage"]
+  /** USD cost the runtime reported, when the provider priced itself. */
+  costUsd?: number
+  /**
+   * Session the agent ran under, when the runtime reported one. Carried so
+   * `/retry` can ask the agent to continue where it left off instead of
+   * re-exploring from scratch.
+   */
+  sessionId?: string
   logs: string
 }
 
@@ -86,6 +97,12 @@ export interface TurnView {
   scroll: number
   success?: boolean
   totalDuration?: number
+  /**
+   * Sum of the per-agent costs the runtime reported, in USD. Absent when none
+   * was reported — "no data" is not the same as "free", so the console must not
+   * print a cost that was never measured.
+   */
+  totalCostUsd?: number
   warning?: string
   /**
    * Set when the turn ended in words rather than a pipeline: the leader answered
@@ -111,6 +128,14 @@ export interface TuiState extends TurnView {
    * `focusId` / `scroll` edits land on it rather than on the live turn.
    */
   view?: TurnView
+  /**
+   * Whether tool detail is shown in the stream.
+   *
+   * Console state, not turn state: it belongs here rather than on `TurnView` so
+   * `snapshot()` never writes it into a history record, and toggling it applies
+   * to whichever turn is on screen.
+   */
+  verbose: boolean
 }
 
 export const initialState: TuiState = {
@@ -123,6 +148,7 @@ export const initialState: TuiState = {
   autoFollow: true,
   scroll: 0,
   history: [],
+  verbose: false,
 }
 
 export type TuiAction =
@@ -148,6 +174,8 @@ export type TuiAction =
   | { type: "view:open"; turn: number }
   /** Go back to the live turn. */
   | { type: "view:close" }
+  /** Flip whether tool detail is shown in the stream. */
+  | { type: "verbose:toggle" }
 
 export function stripAnsi(text: string): string {
   return text.replace(ANSI_PATTERN, "")
@@ -231,6 +259,7 @@ export function createInitialState(config: MultiClawConfig): TuiState {
     autoFollow: true,
     scroll: 0,
     history: [],
+    verbose: false,
   }
 }
 
@@ -334,7 +363,11 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
     }
 
     case "agent:output": {
-      const { agentId, chunk } = event.payload
+      const { agentId, chunk, kind } = event.payload
+      // Tool detail is verbose-only, and it is dropped here rather than at
+      // render time so a later toggle never re-injects history that was never
+      // buffered in the first place.
+      if (kind === "tool-detail" && !state.verbose) return state
       const existing = state.agents[agentId]
       if (!existing) return state
       return {
@@ -349,22 +382,23 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
     case "agent:complete":
     case "agent:failed": {
       const result = event.payload
-      const status: AgentStatus = event.type === "agent:complete" ? "success" : "failed"
+      // The status comes from the result itself, not the event type: a cancelled
+      // run arrives on `agent:failed` with `status: "cancelled"`.
+      const patch: Partial<AgentView> = {
+        status: result.status,
+        duration: result.duration,
+        attempts: result.attempts,
+        error: result.error,
+        usage: result.usage,
+        costUsd: result.costUsd,
+        // Present only on the success path; a failed agent has no session to
+        // continue, so `/retry` re-runs it cold.
+        sessionId: result.sessionId,
+      }
       const existing = state.agents[result.agentId]
       const next: AgentView = existing
-        ? {
-            ...existing,
-            status,
-            duration: result.duration,
-            attempts: result.attempts,
-            error: result.error,
-          }
-        : blankAgent(result.agentId, result.agentName, {
-            status,
-            duration: result.duration,
-            attempts: result.attempts,
-            error: result.error,
-          })
+        ? { ...existing, ...patch }
+        : blankAgent(result.agentId, result.agentName, patch)
       return { ...state, agents: { ...state.agents, [result.agentId]: next } }
     }
 
@@ -397,6 +431,7 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
         phase: "complete",
         success: event.payload.success,
         totalDuration: event.payload.totalDuration,
+        totalCostUsd: event.payload.totalCostUsd,
         endedAt: epoch(event.timestamp) ?? Date.now(),
         reply: event.payload.reply,
       }
@@ -450,6 +485,7 @@ function snapshot(state: TuiState): TurnView {
     scroll: state.scroll,
     success: state.success,
     totalDuration: state.totalDuration,
+    totalCostUsd: state.totalCostUsd,
     warning: state.warning,
     reply: state.reply,
   }
@@ -540,6 +576,8 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         // a past turn ends for the same reason — the panes belong to the run.
         reply: undefined,
         view: undefined,
+        // A console setting, carried across turns rather than reset with them.
+        verbose: state.verbose,
       }
     }
 
@@ -590,20 +628,38 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
 
     case "view:close":
       return state.view ? { ...state, view: undefined } : state
+
+    case "verbose:toggle":
+      return { ...state, verbose: !state.verbose }
   }
 }
 
-/** Roll a stage's member statuses up into one status for the pipeline bar. */
+/**
+ * Roll a stage's member statuses up into one status for the pipeline bar.
+ *
+ * Ordering is by severity: a failure anywhere outranks a run in flight, which
+ * outranks a uniform outcome. `cancelled` is a settled outcome like `success`
+ * and `skipped`, so a stage of cancelled members reads as `cancelled` rather
+ * than falling through to `pending` — a stopped stage is not one that has yet
+ * to start, and reporting it as `pending` would be the same lie B2-6 fixed one
+ * level down.
+ */
 export function stageStatus(stage: StageInfo, agents: Record<string, AgentView>): AgentStatus {
   const statuses = stage.agents.map((a) => agents[a.id]?.status ?? "pending")
   if (statuses.some((s) => s === "failed")) return "failed"
   if (statuses.some((s) => s === "running" || s === "retrying")) return "running"
   if (statuses.length > 0 && statuses.every((s) => s === "success")) return "success"
   if (statuses.length > 0 && statuses.every((s) => s === "skipped")) return "skipped"
+  if (statuses.length > 0 && statuses.every((s) => s === "cancelled")) return "cancelled"
   return "pending"
 }
 
-const SETTLED: ReadonlySet<AgentStatus> = new Set<AgentStatus>(["success", "failed", "skipped"])
+const SETTLED: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
+  "success",
+  "failed",
+  "cancelled",
+  "skipped",
+])
 
 /** How many agents have finished, out of how many the turn will run. */
 export function progress(turn: TurnView): { done: number; total: number } {

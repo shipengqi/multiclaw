@@ -13,7 +13,16 @@ export interface ProviderModel {
   defaultForTier?: boolean
 }
 
-export type ModelSelectionMode = "config-option" | "arg" | "none"
+/**
+ * How a provider is told which model to run.
+ *
+ * `"arg"` used to be a member here, but nothing in `AcpRuntime` ever implemented
+ * it — so a provider that declared it silently ran with its own default. It is
+ * gone rather than kept as a dead branch: re-introducing it means also
+ * implementing the `arg` path in `AcpRuntime`, and this note is the cost the
+ * next person to add it back has to pay.
+ */
+export type ModelSelectionMode = "config-option" | "none"
 
 export interface ProviderSpec {
   id: ProviderId

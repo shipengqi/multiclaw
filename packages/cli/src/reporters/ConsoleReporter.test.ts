@@ -88,6 +88,78 @@ describe("ConsoleReporter", () => {
     expect(writeSpy).toHaveBeenCalledWith("  hello")
   })
 
+  // Headless stdout carries the agent's prose only. Tool activity is tagged, so
+  // filtering it here keeps the byte stream identical to before `kind` existed.
+  it("keeps tagged tool activity out of stdout", () => {
+    const bus = reporter()
+    bus.emit(event("agent:output", { agentId: "a", chunk: "prose" }))
+    bus.emit(event("agent:output", { agentId: "a", chunk: "  ✓ detail\n", kind: "tool-detail" }))
+    bus.emit(event("agent:output", { agentId: "a", chunk: "\n› Bash\n", kind: "tool" }))
+    bus.emit(event("agent:output", { agentId: "a", chunk: "text", kind: "text" }))
+    expect(writeSpy.mock.calls.map((call) => call[0])).toEqual(["  prose", "  text"])
+  })
+
+  it("prints a total cost only when the run reported one", () => {
+    reporter().emit(
+      event("orchestration:complete", {
+        success: true,
+        totalDuration: 3000,
+        agentResults: [{ agentName: "Leader", status: "success", duration: 1000 }],
+        totalCostUsd: 1.23,
+      })
+    )
+    expect(out()).toContain("$1.23")
+  })
+
+  it("omits the cost column entirely when no cost was reported", () => {
+    reporter().emit(
+      event("orchestration:complete", {
+        success: true,
+        totalDuration: 3000,
+        agentResults: [{ agentName: "Leader", status: "success", duration: 1000 }],
+      })
+    )
+    // No "$0.00": a run nobody priced must not read as costing nothing.
+    expect(out()).not.toContain("$")
+  })
+
+  it("words a cancelled agent as cancelled, not failed", () => {
+    reporter().emit(
+      event("agent:failed", {
+        agentName: "Tester",
+        status: "cancelled",
+        error: "Operation aborted",
+      })
+    )
+    expect(out()).toContain("Tester cancelled")
+    expect(out()).not.toContain("Tester failed")
+  })
+
+  it("marks a cancelled agent's summary row apart from a failure", () => {
+    reporter().emit(
+      event("orchestration:complete", {
+        success: false,
+        totalDuration: 1000,
+        agentResults: [{ agentName: "Tester", status: "cancelled", duration: 1000 }],
+      })
+    )
+    expect(out()).toContain("- Tester")
+    expect(out()).not.toContain("x Tester")
+  })
+
+  it("heads a cancelled run as cancelled rather than failed", () => {
+    reporter().emit(
+      event("orchestration:complete", {
+        success: false,
+        cancelled: true,
+        totalDuration: 1000,
+        agentResults: [],
+      })
+    )
+    expect(out()).toContain("Cancelled")
+    expect(out()).not.toContain("Done (with failures)")
+  })
+
   it("summarises a successful orchestration", () => {
     reporter().emit(
       event("orchestration:complete", {

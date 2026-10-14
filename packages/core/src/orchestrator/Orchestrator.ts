@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { EventBus } from "../event/EventBus"
+import { resolveModel } from "../providers/resolve"
 import type { AgentDefinition, AgentResult, TaskPlan } from "../types/agent"
 import type { MultiClawConfig, OrchestratorResult } from "../types/config"
 import type { StageInfo } from "../types/event"
@@ -58,9 +59,12 @@ export class Orchestrator {
 
     let stages = this.buildStagesOrFallback(agents, "Could not order the configured agents")
 
-    const getModel = (agent: AgentDefinition): string | undefined => {
-      return agent.model ?? agent.models?.[agent.runtime ?? "acp"]
-    }
+    // The model an agent will *actually* run with, resolved the same way the
+    // runner resolves it. The old lookup read only `model` / `models[runtime]`,
+    // so a tier-only or defaults-only agent reported `undefined` here while it
+    // really ran a concrete model — the TUI's pipeline bar then showed no model.
+    const getModel = (agent: AgentDefinition): string | undefined =>
+      resolveModel(agent, this.config)
 
     const toStageInfos = (list: AgentDefinition[][]): StageInfo[] =>
       list.map((stage, i) => ({
@@ -89,6 +93,11 @@ export class Orchestrator {
     const results: AgentResult[] = []
     let allSuccess = true
     let cancelled = false
+    // Guards the task-plan application to the first stage that runs the planner.
+    // Keying off the planner's *position* instead of "stage 0" is the whole
+    // point: a preset can put a product-manager first and the architect second,
+    // and the old `i === 0` test silently skipped the plan for every such team.
+    let planApplied = false
 
     for (let i = 0; i < stages.length; i++) {
       const stage = stages[i]
@@ -104,21 +113,26 @@ export class Orchestrator {
 
       // Cancelled mid-stage: stop scheduling further stages and fall through to
       // the completion result rather than emitting a misleading stage:complete.
-      // Both flags are needed — `AgentRunner` turns an abort into an ordinary
-      // `failed` result, so leaving `allSuccess` alone here would report a
-      // cancelled run as a success and make the CLI exit 0 on Ctrl-C.
+      // Both flags are needed — `AgentRunner` records an abort as `cancelled`
+      // (not `failed`), and `cancelled` is still not a `success`, so leaving
+      // `allSuccess` alone here would report a cancelled run as a success and
+      // make the CLI exit 0 on Ctrl-C.
       if (options.signal?.aborted) {
         cancelled = true
         allSuccess = false
         break
       }
 
-      // After architect stage completes, apply task plan and rebuild stages
+      // After the planner's stage completes, apply the task plan and rebuild the
+      // stages. The planner is not always stage 0 — a preset may front-load a
+      // product-manager — so the trigger is "the first stage that ran a planner",
+      // not a fixed index.
       if (
-        i === 0 &&
-        stage.some((a) => a.id === "architect") &&
+        !planApplied &&
+        stage.some((a) => this.isPlanner(a)) &&
         stageResults.some((r) => r.status === "success")
       ) {
+        planApplied = true
         await this.applyTaskPlan(agents)
         stages = this.buildStagesOrFallback(
           agents,
@@ -162,6 +176,9 @@ export class Orchestrator {
     }
 
     const endTime = new Date()
+    // Only agents that reported a cost contribute; when none did, the field is
+    // absent rather than 0 — "no data" is not the same as "free".
+    const totalCostUsd = sumCosts(results)
     const result: OrchestratorResult = {
       name: this.config.name,
       success: allSuccess,
@@ -170,6 +187,8 @@ export class Orchestrator {
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
       ...(cancelled ? { cancelled: true } : {}),
+      ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
+      ...this.requirementField(),
     }
 
     this.eventBus.emit({
@@ -221,6 +240,19 @@ export class Orchestrator {
    * job, and that is what `message` records.
    */
   private async resolveTurn(signal?: AbortSignal): Promise<Resolution> {
+    // A resume/retry already knows who runs: re-deciding with the leader would
+    // re-route the turn and could pick a different team than the one being
+    // resumed. Reusing `selectAgents` keeps the unknown-id warning, the
+    // `agent:skipped` emission and — crucially — the pruning of a `dependsOn`
+    // that points outside the resumed set, which is what lets a single-agent
+    // retry run without its (absent) dependency.
+    if (this.config.resume) {
+      return {
+        kind: "run",
+        agents: this.selectAgents(this.config.resume.agents, "The resume list"),
+      }
+    }
+
     if (!this.config.leader || this.config.useLeader === false) {
       return { kind: "run", agents: this.configuredAgents() }
     }
@@ -271,22 +303,27 @@ export class Orchestrator {
   }
 
   /**
-   * Narrow the configured team to the ids the leader named.
+   * Narrow the configured team to the ids `namedBy` asked for.
    *
    * Always a subset: an id that is not in the config is reported and dropped
    * rather than added, so a typo in a prompt cannot conjure an agent that has no
    * definition behind it.
+   *
+   * `namedBy` labels the warning. A resume names agents too — with no leader in
+   * the run at all — so blaming "the leader" for a bad resumed id would send the
+   * reader looking in the wrong place.
    */
-  private selectAgents(run: string[]): AgentDefinition[] {
+  private selectAgents(run: string[], namedBy = "The leader"): AgentDefinition[] {
     const runSet = new Set(run)
     const known = new Set(this.config.agents.map((a) => a.id))
 
-    // The leader is told to pick from the configured list, but a model can still
-    // name something that is not there. Dropping it in silence makes a typo in a
-    // prompt indistinguishable from a deliberate decision to skip.
+    // The caller is told to pick from the configured list, but a model (or a
+    // hand-written resume list) can still name something that is not there.
+    // Dropping it in silence makes a typo indistinguishable from a deliberate
+    // decision to skip.
     for (const id of run) {
       if (!known.has(id)) {
-        this.warn(`The leader named "${id}", which is not in the config — ignoring it.`)
+        this.warn(`${namedBy} named "${id}", which is not in the config — ignoring it.`)
       }
     }
 
@@ -319,6 +356,17 @@ export class Orchestrator {
       results.push(...(await Promise.all(batch.map((a) => this.runner.run(a, signal)))))
     }
     return results
+  }
+
+  /**
+   * Whether `agent` owns task decomposition.
+   *
+   * The explicit `role` is the source of truth, so a config can name its planner
+   * anything. The id `"architect"` is kept as a fallback so every config written
+   * before `role` existed keeps working unchanged.
+   */
+  private isPlanner(agent: AgentDefinition): boolean {
+    return agent.role === "planner" || agent.id === "architect"
   }
 
   private async applyTaskPlan(agents: AgentDefinition[]): Promise<void> {
@@ -370,6 +418,18 @@ export class Orchestrator {
   }
 
   /**
+   * The `requirement` field for a result, present only when the caller set one.
+   *
+   * Spread into every result builder so all three outcomes carry it the same
+   * way: a completion event doubles as the report a resume driver reads back,
+   * and a requirement that never reaches the report cannot be resumed.
+   */
+  private requirementField(): { requirement?: string } {
+    const requirement = this.config.context?.requirement
+    return requirement !== undefined ? { requirement } : {}
+  }
+
+  /**
    * Close out a turn the leader answered rather than planned.
    *
    * `success: true` on purpose: the user asked something and got an answer. What
@@ -390,6 +450,7 @@ export class Orchestrator {
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
       reply: { mode, message },
+      ...this.requirementField(),
     }
 
     this.eventBus.emit({
@@ -431,6 +492,7 @@ export class Orchestrator {
       agentResults: [],
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
+      ...this.requirementField(),
     }
 
     this.eventBus.emit({
@@ -444,4 +506,23 @@ export class Orchestrator {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Sum the per-agent costs that were actually reported, in USD.
+ *
+ * Returns `undefined` when no agent reported one, so the caller can leave the
+ * field off the result entirely: a run nobody priced must not read as costing
+ * nothing.
+ */
+function sumCosts(results: AgentResult[]): number | undefined {
+  let total = 0
+  let reported = false
+  for (const result of results) {
+    if (typeof result.costUsd === "number") {
+      total += result.costUsd
+      reported = true
+    }
+  }
+  return reported ? total : undefined
 }

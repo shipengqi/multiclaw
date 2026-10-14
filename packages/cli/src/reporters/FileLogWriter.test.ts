@@ -36,6 +36,9 @@ async function waitFor(fn: () => boolean, timeout = 1000): Promise<void> {
 const outputEvent = (agentId: string, chunk: string) =>
   ({ type: "agent:output", payload: { agentId, chunk } }) as unknown as MultiClawEvent
 
+const taggedOutputEvent = (agentId: string, chunk: string, kind: "tool" | "tool-detail") =>
+  ({ type: "agent:output", payload: { agentId, chunk, kind } }) as unknown as MultiClawEvent
+
 const completeEvent = (payload: Record<string, unknown>) =>
   ({ type: "orchestration:complete", payload }) as unknown as MultiClawEvent
 
@@ -96,6 +99,29 @@ describe("FileLogWriter", () => {
     const nested = path.join(logDir, "deep", "nested")
     new FileLogWriter(nested)
     expect(fs.existsSync(nested)).toBe(true)
+  })
+
+  // The log file is the agent's prose, exactly as before `kind` existed: tool
+  // activity is a live-view affordance, and writing it here would change every
+  // existing log file's contents.
+  it("keeps tagged tool activity out of the log files", async () => {
+    const bus = fakeBus()
+    const writer = new FileLogWriter(logDir)
+    writer.attach(bus as unknown as EventBus)
+
+    bus.emit(outputEvent("alpha", "prose"))
+    bus.emit(taggedOutputEvent("alpha", "  ✓ detail\n", "tool-detail"))
+    bus.emit(taggedOutputEvent("alpha", "\n› Bash\n", "tool"))
+    bus.emit(outputEvent("alpha", " more"))
+
+    const alphaLog = path.join(logDir, "alpha.log")
+    await waitFor(
+      () => fs.existsSync(alphaLog) && fs.readFileSync(alphaLog, "utf8") === "prose more"
+    )
+    expect(fs.readFileSync(alphaLog, "utf8")).toBe("prose more")
+
+    bus.emit(completeEvent({}))
+    await waitFor(() => fs.existsSync(path.join(logDir, "report.json")))
   })
 
   it("stops writing after detach", async () => {

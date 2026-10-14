@@ -3,7 +3,9 @@ import {
   circled,
   displayWidth,
   elapsedSince,
+  formatCost,
   formatDuration,
+  formatTokens,
   padRight,
   truncate,
   wrapLine,
@@ -60,6 +62,44 @@ describe("circled", () => {
 
   it("falls back past twenty stages", () => {
     expect(circled(21)).toBe("(21)")
+  })
+})
+
+describe("formatTokens", () => {
+  it("keeps small counts exact", () => {
+    expect(formatTokens(0)).toBe("0")
+    expect(formatTokens(950)).toBe("950")
+  })
+
+  it("abbreviates thousands and millions with one decimal", () => {
+    expect(formatTokens(45_200)).toBe("45.2k")
+    expect(formatTokens(200_000)).toBe("200k")
+    expect(formatTokens(1_200_000)).toBe("1.2M")
+  })
+
+  it("refuses to print a nonsense count", () => {
+    expect(formatTokens(-1)).toBe("—")
+    expect(formatTokens(Number.NaN)).toBe("—")
+  })
+})
+
+describe("formatCost", () => {
+  it("prints a normal cost to the cent", () => {
+    expect(formatCost(0.42)).toBe("$0.42")
+    expect(formatCost(1.23)).toBe("$1.23")
+  })
+
+  it("prints zero as zero", () => {
+    expect(formatCost(0)).toBe("$0.00")
+  })
+
+  it("flags a sub-cent cost rather than rounding it away to nothing", () => {
+    expect(formatCost(0.004)).toBe("<$0.01")
+  })
+
+  it("refuses to print a nonsense cost", () => {
+    expect(formatCost(-1)).toBe("—")
+    expect(formatCost(Number.NaN)).toBe("—")
   })
 })
 

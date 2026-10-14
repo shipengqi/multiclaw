@@ -760,6 +760,107 @@ describe("AcpRuntime.execute", () => {
     const output = await runWith(child, { command: "claude-agent-acp", model: "unknown-model" })
     expect(output.exitCode).toBe(0)
   })
+
+  it("reports an unknown model through onWarning rather than stderr", async () => {
+    const child = new FakeChild()
+    attachAgent(child, {
+      newSession: () => ({
+        sessionId: "sess-1",
+        configOptions: [
+          {
+            id: "model",
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: "default",
+            options: [{ value: "default" }],
+          },
+        ],
+      }),
+    })
+
+    const warnings: string[] = []
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      await runWith(child, {
+        command: "claude-agent-acp",
+        model: "unknown-model",
+        onWarning: (message: string) => warnings.push(message),
+      })
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]).toContain("unknown-model")
+      // The caller's channel is used, so nothing lands where a TUI would hide it.
+      expect(stderrSpy).not.toHaveBeenCalled()
+    } finally {
+      stderrSpy.mockRestore()
+    }
+  })
+
+  it("falls back to stderr for a warning when the caller supplies no channel", async () => {
+    const child = new FakeChild()
+    attachAgent(child, {
+      newSession: () => ({
+        sessionId: "sess-1",
+        configOptions: [
+          {
+            id: "model",
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: "default",
+            options: [{ value: "default" }],
+          },
+        ],
+      }),
+    })
+
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      await runWith(child, { command: "claude-agent-acp", model: "unknown-model" })
+      expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("unknown-model"))
+    } finally {
+      stderrSpy.mockRestore()
+    }
+  })
+
+  it("warns, including the error, when the model cannot be set", async () => {
+    const child = new FakeChild()
+    attachAgent(child, {
+      newSession: () => ({
+        sessionId: "sess-1",
+        configOptions: [
+          {
+            id: "model",
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: "default",
+            options: [{ value: "sonnet" }],
+          },
+        ],
+      }),
+      setConfigOption: () => {
+        throw new Error("nope")
+      },
+    })
+
+    const warnings: string[] = []
+    await runWith(child, {
+      command: "claude-agent-acp",
+      model: "sonnet",
+      onWarning: (message: string) => warnings.push(message),
+    })
+
+    // Fail-closed on the model, but not silent: the user must learn which model
+    // actually ran and why the requested one did not take. The SDK surfaces a
+    // throwing agent handler as the generic "Internal error", so the message is
+    // asserted to *carry* an error, not a specific one.
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain("Could not set model")
+    expect(warnings[0]).toContain("sonnet")
+    expect(warnings[0]).toContain("claude-agent-acp")
+    expect(warnings[0]).toMatch(/provider's default \(.+\)/)
+  })
 })
 
 /** Params of a session-defining request, as captured from the fake agent. */

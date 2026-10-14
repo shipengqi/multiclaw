@@ -194,3 +194,36 @@ export function elapsedSince(startedAt: number | undefined, now: number): number
   if (startedAt === undefined) return undefined
   return Math.max(0, now - startedAt)
 }
+
+/** One decimal place, with a trailing ".0" dropped: 45.2 → "45.2", 200 → "200". */
+function oneDecimal(value: number): string {
+  const fixed = value.toFixed(1)
+  return fixed.endsWith(".0") ? fixed.slice(0, -2) : fixed
+}
+
+/**
+ * A compact token count, for a column that must stay narrow.
+ *
+ * `45200 → "45.2k"`, `950 → "950"`, `1_200_000 → "1.2M"`. Below a thousand the
+ * exact number is short enough to show; above it the decimal is what the eye
+ * reads, so the digits past it are dropped.
+ */
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "—"
+  if (n < 1_000) return String(Math.round(n))
+  if (n < 1_000_000) return `${oneDecimal(n / 1_000)}k`
+  return `${oneDecimal(n / 1_000_000)}M`
+}
+
+/**
+ * A USD cost, at the precision a session total is read at.
+ *
+ * `0.42 → "$0.42"`, `0 → "$0.00"`, and anything under a cent as `"<$0.01"` rather
+ * than rounding it away to "$0.00" — a real but tiny cost must not read as free.
+ */
+export function formatCost(usd: number): string {
+  if (!Number.isFinite(usd) || usd < 0) return "—"
+  if (usd === 0) return "$0.00"
+  if (usd < 0.01) return "<$0.01"
+  return `$${usd.toFixed(2)}`
+}

@@ -1,6 +1,6 @@
 import type { LeaderMessage } from "@multiclawcli/core"
 import { Box, Text } from "ink"
-import { formatDuration, padRight, truncate } from "../format"
+import { formatCost, formatDuration, formatTokens, padRight, truncate } from "../format"
 import { type AgentView, agentElapsed, progress, type TurnView, visibleLog } from "../state"
 import { COLOR, GLYPH, STATUS } from "../theme"
 
@@ -37,6 +37,10 @@ function TeamRow({
   return (
     <Box justifyContent="space-between">
       <Box flexShrink={1}>
+        {/* One Text, so the row truncates from the tail: the name is what has to
+            survive a narrow panel, and the per-turn title is what gives way
+            first. A separate middle box would fight the row's `space-between`
+            and stop the clock on the right from staying right-aligned. */}
         <Text
           color={focused ? COLOR.accent : style.color}
           dimColor={!focused && style.dim}
@@ -46,6 +50,9 @@ function TeamRow({
           {focused ? `${GLYPH.caret} ` : "  "}
           {glyph} {agent.icon ? `${agent.icon} ` : ""}
           {agent.name}
+          {/* The per-turn title, when the leader's plan has assigned one. No
+              orphan separator when it is absent. */}
+          {agent.taskTitle ? <Text dimColor> {agent.taskTitle}</Text> : null}
         </Text>
       </Box>
       <Box flexShrink={0}>
@@ -149,18 +156,39 @@ export function StreamPanel({
     <Box flexDirection="column" flexGrow={1} height={height} paddingLeft={1}>
       <Box justifyContent="space-between">
         <Box flexShrink={1}>
-          <Text bold wrap="truncate-end">
-            {agent?.name ?? "—"}
-          </Text>
-          {agent?.model ? <Text dimColor> · {agent.model}</Text> : null}
-          {agent && style ? (
-            <>
-              <Text dimColor> · </Text>
-              <Text color={style.color} dimColor={style.dim}>
-                {agent.status === "running" ? `${spinner} ${style.label}` : style.label}
+          {/* One Text so the header truncates as a unit: a long task title
+              shaves the header instead of wrapping onto a second row, which
+              would push the log viewport past its height budget. The right-hand
+              group keeps `flexShrink={0}`, so the elapsed time and the live
+              marker are never the thing that gets cut. */}
+          <Text wrap="truncate-end">
+            <Text bold>{agent?.name ?? "—"}</Text>
+            {agent?.model ? <Text dimColor> · {agent.model}</Text> : null}
+            {agent && style ? (
+              <>
+                <Text dimColor> · </Text>
+                <Text color={style.color} dimColor={style.dim}>
+                  {agent.status === "running" ? `${spinner} ${style.label}` : style.label}
+                </Text>
+              </>
+            ) : null}
+            {/* The per-turn title, when the leader's plan has assigned one. No
+                orphan separator when it is absent. */}
+            {agent?.taskTitle ? <Text dimColor> · {agent.taskTitle}</Text> : null}
+            {/* Context usage, only when the runtime reported both halves — a
+                lone numerator would read as a broken fraction. */}
+            {agent?.usage?.contextTokens !== undefined && agent.usage.contextSize !== undefined ? (
+              <Text dimColor>
+                {" "}
+                · ctx {formatTokens(agent.usage.contextTokens)}/
+                {formatTokens(agent.usage.contextSize)}
               </Text>
-            </>
-          ) : null}
+            ) : null}
+            {/* Cost, only when the provider priced itself. */}
+            {agent?.costUsd !== undefined ? (
+              <Text dimColor> · {formatCost(agent.costUsd)}</Text>
+            ) : null}
+          </Text>
         </Box>
         <Box flexShrink={0}>
           {/* The trailing space lives here, not on the follow marker, so an
@@ -231,6 +259,31 @@ export function ReplyPanel({ reply, width }: { reply: LeaderMessage; width: numb
         <Text dimColor>
           {asking ? "Answer below and press enter." : "Type a requirement and press enter."}
         </Text>
+      </Box>
+    </Box>
+  )
+}
+
+/**
+ * A turn that stopped with an error, shown in full.
+ *
+ * The status line has one row and truncates, which is the wrong shape for the
+ * errors that matter here: a jiti load failure or an ACP protocol error is
+ * several lines, and squeezing it to one leaves the user nothing to act on. So
+ * the error takes the body, the same way a reply does, and lets Ink wrap it.
+ */
+export function ErrorPanel({ message, width }: { message: string; width: number }) {
+  return (
+    // `flexShrink={0}` — see ReplyPanel. A compressed column box folds its own
+    // text rows into each other before the body gets a chance to clip them.
+    <Box flexDirection="column" flexShrink={0} paddingLeft={2} paddingTop={1} width={width}>
+      <Text color={COLOR.error} bold>
+        {GLYPH.warn} the run stopped
+      </Text>
+      {/* One Text, so Ink wraps the whole message: multi-line errors keep their
+          own line breaks instead of being flattened onto one row. */}
+      <Box marginTop={1}>
+        <Text color={COLOR.error}>{message}</Text>
       </Box>
     </Box>
   )

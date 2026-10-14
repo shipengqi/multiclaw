@@ -31,6 +31,21 @@ export interface MultiClawConfig {
    * unset and sees no conversation at all.
    */
   history?: TurnRecord[]
+  /**
+   * Re-run a known set of agents instead of letting the leader route, continuing
+   * their sessions where one is known.
+   *
+   * Set by a resume/retry driver — the CLI's `--resume`, the console's `/retry` —
+   * which already knows which agents to redo. Like `history`, it is per-run state
+   * the caller carries: core has no session of its own, and a config that never
+   * resumes leaves it unset and behaves exactly as before.
+   */
+  resume?: {
+    /** Agent ids to run, in the order they were originally selected. */
+    agents: string[]
+    /** agentId → session id, for agents whose session is worth continuing. */
+    sessions?: Record<string, string>
+  }
   logDir?: string
   continueOnError?: boolean
   maxConcurrency?: number
@@ -68,4 +83,20 @@ export interface OrchestratorResult {
    * an empty `agentResults`.
    */
   reply?: LeaderMessage
+  /**
+   * Sum of the per-agent costs that were actually reported, in USD.
+   *
+   * Present only when at least one agent reported a cost — "no data" is not the
+   * same as "free", so a run in which nobody priced itself must leave this
+   * `undefined` rather than reporting `0`.
+   */
+  totalCostUsd?: number
+  /**
+   * The requirement this turn was run for, when the caller supplied one.
+   *
+   * Carried on the result because the completion event *is* the report a resume
+   * driver reads back: without it, a resumed run has no way to recover the
+   * requirement it is continuing.
+   */
+  requirement?: string
 }

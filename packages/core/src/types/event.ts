@@ -50,7 +50,23 @@ export type MultiClawEvent =
         taskTitle?: string
       }
     }
-  | { type: "agent:output"; timestamp: string; payload: { agentId: string; chunk: string } }
+  | {
+      type: "agent:output"
+      timestamp: string
+      payload: {
+        agentId: string
+        chunk: string
+        /**
+         * What kind of output this chunk is. Absent means `"text"`, so every
+         * producer and consumer written before this field existed is unchanged.
+         *
+         * - `"text"` — the agent's natural-language output (default)
+         * - `"tool"` — a summary line of tool activity, shown by default
+         * - `"tool-detail"` — a successful tool's detail, shown only in verbose mode
+         */
+        kind?: "text" | "tool" | "tool-detail"
+      }
+    }
   | { type: "agent:complete"; timestamp: string; payload: AgentResult }
   | { type: "agent:failed"; timestamp: string; payload: AgentResult }
   | {

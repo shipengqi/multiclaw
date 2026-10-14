@@ -4,24 +4,53 @@ import { assertRuntimesAvailable } from "../lib"
 import { loadConfig } from "../loader/loadConfig"
 import { ConsoleReporter } from "../reporters/ConsoleReporter"
 import { FileLogWriter } from "../reporters/FileLogWriter"
+import { readReport, resolveRunDir, resumeOptionsFromReport } from "./resume"
 
 export interface RunOptions {
   config?: string
   noLeader?: boolean
+  /**
+   * `true` for a bare `--resume` (latest run), or a path to a specific run.
+   * Commander only ever produces `undefined`, `true` or a string, so `false` is
+   * not part of the domain.
+   */
+  resume?: string | true
 }
 
 /** Conventional exit code for a process stopped by SIGINT. */
 const EXIT_CANCELLED = 130
 
-export async function runCommand(requirement: string, options: RunOptions): Promise<void> {
-  const config = await loadConfig(options.config, requirement)
+export async function runCommand(
+  requirementArg: string | undefined,
+  options: RunOptions
+): Promise<void> {
+  const config = await loadConfig(options.config, requirementArg)
 
   if (options.noLeader) {
     config.useLeader = false
   }
 
-  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
-  config.workDir = path.join(config.workDir, ".multiclaw", "runs", `run-${ts}`)
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
+  if (options.resume !== undefined) {
+    // Resolve against the project directory: `loadConfig` already resolved
+    // `workDir` against the config file's directory, and the run dirs live under
+    // it. Only after we know which run we are resuming do we move `workDir`
+    // onto it — the agents must continue in the directory they wrote to, or the
+    // bridge sees a different cwd and rebuilds the session instead of loading it.
+    const runsRoot = path.join(config.workDir, ".multiclaw", "runs")
+    const runDir = resolveRunDir(runsRoot, options.resume)
+    const report = readReport(runDir)
+    const { requirement, resume } = resumeOptionsFromReport(report, requirementArg)
+    config.workDir = runDir
+    config.resume = resume
+    config.context = { ...config.context, requirement }
+    // Never reuse `logs/`: the original report.json lives there and the resumed
+    // run must not overwrite the record it was derived from.
+    config.logDir = path.join(runDir, `logs-resume-${stamp}`)
+    console.log(`\x1b[2mResuming ${runDir} (${resume.agents.length} agents)\x1b[0m`)
+  } else {
+    config.workDir = path.join(config.workDir, ".multiclaw", "runs", `run-${stamp}`)
+  }
 
   await assertRuntimesAvailable(config)
 

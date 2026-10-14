@@ -206,6 +206,11 @@ function withAuthHint(acp: AcpModule, err: unknown): Error {
   return error
 }
 
+/** Render an unknown error as a string for a diagnostic message. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 export class AcpRuntime extends RuntimeBase {
   readonly name = "acp"
 
@@ -230,7 +235,7 @@ export class AcpRuntime extends RuntimeBase {
       capabilities: {
         ...BASE_CAPABILITIES,
         tools: specForCommand(command)?.tools ?? false,
-        models: (specForCommand(command)?.modelSelection ?? "none") !== "none",
+        models: specForCommand(command)?.modelSelection === "config-option",
       },
     }
   }
@@ -325,6 +330,21 @@ export class AcpRuntime extends RuntimeBase {
       let seq = 0
       const emit = (event: RuntimeEventPayload) => {
         task.onEvent?.({ ...event, runId, agentId: task.agentId, seq: seq++ } as RuntimeEvent)
+      }
+
+      /**
+       * Surface a non-fatal diagnostic.
+       *
+       * The caller's channel is preferred: under a TUI's alternate screen a
+       * stderr write is never seen. A direct caller that supplies no channel
+       * still gets the message on stderr, so nothing is lost.
+       */
+      const warn = (message: string) => {
+        if (task.onWarning) {
+          task.onWarning(message)
+          return
+        }
+        process.stderr.write(`[multiclaw] Warning: ${message}\n`)
       }
 
       let sessionId: string | undefined
@@ -585,11 +605,12 @@ export class AcpRuntime extends RuntimeBase {
         if (task.model && spec?.modelSelection === "config-option" && sessionId) {
           const known = discoveredModels.get(command)
           if (known && !known.includes(task.model)) {
-            // Model id is not in the provider's advertised list — warn but do not fail.
-            // The runtime has no orchestration:warning channel; surface via stderr
-            // so it at least appears in logs.
-            process.stderr.write(
-              `[multiclaw] Warning: model "${task.model}" is not offered by ${command}; running with provider default.\n`
+            // Model id is not in the provider's advertised list — warn but do not
+            // fail. The warning travels on the caller's channel so the TUI can
+            // actually show it; the runtime is not told what the default is, so
+            // it does not guess one.
+            warn(
+              `model "${task.model}" is not offered by ${command}; running with the provider's default.`
             )
           } else {
             try {
@@ -598,8 +619,13 @@ export class AcpRuntime extends RuntimeBase {
                 configId: "model",
                 value: task.model,
               })
-            } catch {
-              // Fail-closed on model selection: a mismatch must not kill the run.
+            } catch (err) {
+              // Fail-closed on model selection: a mismatch must not kill the run
+              // — but it must not be silent either, or the user cannot tell which
+              // model actually ran.
+              warn(
+                `Could not set model "${task.model}" on ${command}; running with the provider's default (${errorMessage(err)}).`
+              )
             }
           }
         }

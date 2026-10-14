@@ -216,6 +216,218 @@ describe("Orchestrator.run", () => {
     expect(regroupedStages(events)).toEqual([[["architect"], ["dev"]]])
   })
 
+  it("applies the task plan when the planner runs in a later stage", async () => {
+    // Regression: the guard used to require the planner in stage 0. A preset
+    // that front-loads a product-manager puts the architect in stage 1, so the
+    // plan was never applied and every task title / scope / dependency was lost.
+    const plan = {
+      projectName: "demo",
+      requirement: "build it",
+      tasks: [
+        {
+          id: "dev",
+          title: "Implement",
+          scope: "s2",
+          plan: ["first", "second"],
+          dependsOn: ["architect"],
+        },
+      ],
+    }
+    handler = async (task) => {
+      if (task.agentId === "architect") {
+        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+      }
+      return { output: `out:${task.agentId}`, exitCode: 0 }
+    }
+
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      agents: [
+        agent("product-manager"),
+        agent("architect", { dependsOn: ["product-manager"] }),
+        agent("dev", { dependsOn: ["architect"] }),
+      ],
+    }
+    const orch = new Orchestrator(config)
+    const starts: Array<Record<string, unknown>> = []
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => {
+      events.push(e)
+      if (e.type === "agent:start") starts.push(e.payload as unknown as Record<string, unknown>)
+    })
+
+    const result = await orch.run()
+
+    const dev = starts.find((p) => p.agentId === "dev")
+    expect(dev?.taskTitle).toBe("Implement")
+    expect(result.agentResults.find((r) => r.agentId === "dev")?.status).toBe("success")
+    // The regroup is announced so the console draws the pipeline that ran.
+    expect(regroupedStages(events)).toEqual([[["product-manager"], ["architect"], ["dev"]]])
+  })
+
+  it("honours a custom planner id declared with role: planner", async () => {
+    // The planner is identified by role, not by a hard-coded "architect" id, so
+    // a team can name the decomposer anything and still get its task plan.
+    const plan = {
+      projectName: "demo",
+      requirement: "build it",
+      tasks: [{ id: "dev", title: "Implement", scope: "s2", dependsOn: ["lead-designer"] }],
+    }
+    handler = async (task) => {
+      if (task.agentId === "lead-designer") {
+        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+      }
+      return { output: `out:${task.agentId}`, exitCode: 0 }
+    }
+
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      agents: [
+        agent("pm"),
+        agent("lead-designer", { role: "planner", dependsOn: ["pm"] }),
+        agent("dev", { dependsOn: ["lead-designer"] }),
+      ],
+    }
+    const orch = new Orchestrator(config)
+    const starts: Array<Record<string, unknown>> = []
+    orch.eventBus.subscribe((e) => {
+      if (e.type === "agent:start") starts.push(e.payload as unknown as Record<string, unknown>)
+    })
+
+    const result = await orch.run()
+
+    expect(starts.find((p) => p.agentId === "dev")?.taskTitle).toBe("Implement")
+    expect(result.success).toBe(true)
+  })
+
+  it("does not apply a task plan for an agent that is neither planner nor architect", async () => {
+    // Negative invariant: an ordinary agent that happens to write task-plan.json
+    // must not trigger the plan — only a planner (by role or by the architect
+    // fallback) does.
+    const plan = {
+      projectName: "x",
+      requirement: "y",
+      tasks: [{ id: "dev", title: "Should not apply", scope: "s" }],
+    }
+    handler = async (task) => {
+      if (task.agentId === "designer") {
+        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+      }
+      return { output: `out:${task.agentId}`, exitCode: 0 }
+    }
+
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      agents: [agent("designer"), agent("dev", { dependsOn: ["designer"] })],
+    }
+    const orch = new Orchestrator(config)
+    const starts: Array<Record<string, unknown>> = []
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => {
+      events.push(e)
+      if (e.type === "agent:start") starts.push(e.payload as unknown as Record<string, unknown>)
+    })
+
+    await orch.run()
+
+    expect(starts.find((p) => p.agentId === "dev")?.taskTitle).toBeUndefined()
+    expect(regroupedStages(events)).toEqual([])
+  })
+
+  it("does not apply the task plan when the planner's stage fails", async () => {
+    // The success check is half the guard. Without it a planner that wrote a
+    // half-finished plan and then crashed would still hand that plan to the
+    // rest of the team.
+    const plan = {
+      projectName: "demo",
+      requirement: "build it",
+      tasks: [{ id: "dev", title: "Implement", scope: "s2", dependsOn: ["architect"] }],
+    }
+    handler = async (task) => {
+      if (task.agentId === "architect") {
+        // Writes a plan, then fails — so a wrongly-applied plan shows up as a
+        // task title on dev rather than as an absent file.
+        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+        throw new Error("architect exploded")
+      }
+      return { output: `out:${task.agentId}`, exitCode: 0 }
+    }
+
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      // continueOnError so dev still runs — otherwise it is merely skipped and
+      // the assertion would hold for the wrong reason.
+      continueOnError: true,
+      agents: [
+        agent("product-manager"),
+        agent("architect", { dependsOn: ["product-manager"] }),
+        agent("dev", { dependsOn: ["architect"] }),
+      ],
+    }
+    const orch = new Orchestrator(config)
+    const starts: Array<Record<string, unknown>> = []
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => {
+      events.push(e)
+      if (e.type === "agent:start") starts.push(e.payload as unknown as Record<string, unknown>)
+    })
+
+    const result = await orch.run()
+
+    // dev really did start, so its missing title is meaningful.
+    expect(starts.some((p) => p.agentId === "dev")).toBe(true)
+    expect(starts.find((p) => p.agentId === "dev")?.taskTitle).toBeUndefined()
+    // And the console was never told the team had been regrouped.
+    expect(regroupedStages(events)).toEqual([])
+    expect(result.agentResults.find((r) => r.agentId === "architect")?.status).toBe("failed")
+  })
+
+  it("applies the task plan only once when several planners run", async () => {
+    // `planApplied` is what stops the regroup from firing again for a second
+    // planner. A second re-emit would make the console redraw the pipeline
+    // mid-run.
+    const plan = {
+      projectName: "demo",
+      requirement: "build it",
+      tasks: [{ id: "dev", title: "Implement", scope: "s2", dependsOn: ["planner-b"] }],
+    }
+    handler = async (task) => {
+      if (task.agentId === "planner-a") {
+        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+      }
+      return { output: `out:${task.agentId}`, exitCode: 0 }
+    }
+
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      agents: [
+        agent("planner-a", { role: "planner" }),
+        agent("planner-b", { role: "planner", dependsOn: ["planner-a"] }),
+        agent("dev", { dependsOn: ["planner-b"] }),
+      ],
+    }
+    const orch = new Orchestrator(config)
+    const starts: Array<Record<string, unknown>> = []
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => {
+      events.push(e)
+      if (e.type === "agent:start") starts.push(e.payload as unknown as Record<string, unknown>)
+    })
+
+    const result = await orch.run()
+
+    // Exactly one regroup, even though two planners ran.
+    expect(regroupedStages(events)).toHaveLength(1)
+    // The plan still took effect — once.
+    expect(starts.find((p) => p.agentId === "dev")?.taskTitle).toBe("Implement")
+    expect(result.success).toBe(true)
+  })
+
   it("warns instead of failing silently when task-plan.json is malformed", async () => {
     handler = async (task) => {
       if (task.agentId === "architect") {
@@ -618,5 +830,161 @@ describe("Orchestrator.run · config isolation", () => {
 
     expect(config.agents[0].taskTitle).toBeUndefined()
     expect(config.agents[0].agentScope).toBeUndefined()
+  })
+})
+
+describe("Orchestrator.run · cost and model reporting", () => {
+  it("sums the costs the agents actually reported", async () => {
+    handler = async (task) => ({
+      output: `out:${task.agentId}`,
+      exitCode: 0,
+      ...(task.agentId === "a" ? { costUsd: 1.2 } : {}),
+      ...(task.agentId === "b" ? { costUsd: 0.3 } : {}),
+    })
+
+    const { result } = await runOrch([agent("a"), agent("b")])
+
+    expect(result.totalCostUsd).toBeCloseTo(1.5)
+  })
+
+  it("only counts the agents that reported a cost", async () => {
+    handler = async (task) => ({
+      output: `out:${task.agentId}`,
+      exitCode: 0,
+      ...(task.agentId === "a" ? { costUsd: 0.4 } : {}),
+    })
+
+    const { result } = await runOrch([agent("a"), agent("b")])
+
+    expect(result.totalCostUsd).toBeCloseTo(0.4)
+  })
+
+  it("leaves totalCostUsd undefined when nobody reported a cost", async () => {
+    const { result } = await runOrch([agent("a"), agent("b")])
+
+    // "No data" must not read as "free": the field is absent, never 0.
+    expect(result.totalCostUsd).toBeUndefined()
+    expect("totalCostUsd" in result).toBe(false)
+  })
+
+  it("reports the model each agent will actually run in the stage list", async () => {
+    // Regression: the old lookup read only `model` / `models[runtime]`, so a
+    // tier-only agent reported `undefined` here while it really ran a concrete
+    // model — the TUI's pipeline bar then showed no model at all.
+    const events: MultiClawEvent[] = []
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      agents: [agent("a", { provider: "claude", modelTier: "fast" })],
+    }
+    const orch = new Orchestrator(config)
+    orch.eventBus.subscribe((e) => events.push(e))
+
+    await orch.run()
+
+    const start = events.find(
+      (e): e is Extract<MultiClawEvent, { type: "orchestration:start" }> =>
+        e.type === "orchestration:start"
+    )
+    expect(start?.payload.stages[0].agents[0].model).toBe("haiku")
+  })
+})
+
+describe("Orchestrator.run · resume", () => {
+  it("re-runs only the named agents and never asks the leader", async () => {
+    let leaderCalls = 0
+    handler = async (task) => {
+      if (task.agentId === "leader") leaderCalls += 1
+      return { output: `out:${task.agentId}`, exitCode: 0 }
+    }
+
+    const { result, events } = await runOrch([agent("architect"), agent("dev")], {
+      leader: agent("leader"),
+      resume: { agents: ["dev"] },
+    })
+
+    // The leader would re-route the turn and could pick a different team than
+    // the one being resumed, so a resume bypasses it entirely.
+    expect(leaderCalls).toBe(0)
+    expect(startedIds(events)).toEqual(["dev"])
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["dev"])
+    expect(result.success).toBe(true)
+  })
+
+  it("warns about a resumed agent it does not recognise and drops it", async () => {
+    const { result, events } = await runOrch([agent("dev")], {
+      resume: { agents: ["dev", "ghost"] },
+    })
+
+    expect(startedIds(events)).toEqual(["dev"])
+    const messages = warningsOf(events).map((w) => w.payload.message)
+    expect(messages.some((m) => m.includes("ghost"))).toBe(true)
+    // A resume runs no leader, so blaming "the leader" for a bad resumed id
+    // would send the reader looking in the wrong place.
+    expect(messages.some((m) => m.includes("leader"))).toBe(false)
+    expect(result.success).toBe(true)
+  })
+
+  it("marks the agents it is not re-running as skipped", async () => {
+    const { events } = await runOrch([agent("architect"), agent("dev")], {
+      resume: { agents: ["dev"] },
+    })
+
+    const skipped = events.filter((e) => e.type === "agent:skipped")
+    expect(skipped.map((e) => e.payload.agentId)).toEqual(["architect"])
+  })
+
+  it("clears a resumed agent's dependency on an agent that is not re-run", async () => {
+    // A single-agent retry names one id. Without the prune, `buildStages` would
+    // throw on the dependency the original run had, and the retry would degrade
+    // to declaration order instead of running cleanly.
+    const { result, events } = await runOrch(
+      [agent("architect"), agent("dev", { dependsOn: ["architect"] })],
+      { resume: { agents: ["dev"] } }
+    )
+
+    expect(result.success).toBe(true)
+    expect(startedIds(events)).toEqual(["dev"])
+    expect(warningsOf(events).some((w) => w.payload.message.includes("declaration order"))).toBe(
+      false
+    )
+  })
+
+  it("reports a resumed run that names no agents as an empty failure", async () => {
+    const { result } = await runOrch([agent("dev")], { resume: { agents: [] } })
+
+    expect(result.success).toBe(false)
+    expect(result.agentResults).toEqual([])
+  })
+
+  it("carries the requirement onto the result", async () => {
+    const { result } = await runOrch([agent("dev")], { context: { requirement: "ship it" } })
+
+    expect(result.requirement).toBe("ship it")
+  })
+
+  it("omits the requirement when the caller supplied none", async () => {
+    const { result } = await runOrch([agent("dev")])
+
+    // Absent, not "": a run with no requirement must not report one.
+    expect("requirement" in result).toBe(false)
+  })
+
+  it("carries the requirement onto a turn that ends in words", async () => {
+    leaderSays("hello there")
+    const { result } = await runOrch([agent("a")], {
+      leader: agent("leader"),
+      context: { requirement: "say hi" },
+    })
+
+    expect(result.reply).toBeDefined()
+    expect(result.requirement).toBe("say hi")
+  })
+
+  it("carries the requirement onto an empty run", async () => {
+    const { result } = await runOrch([], { context: { requirement: "nothing to do" } })
+
+    expect(result.success).toBe(false)
+    expect(result.requirement).toBe("nothing to do")
   })
 })

@@ -42,9 +42,79 @@ const PRESET_DESCRIPTIONS: Record<string, string> = {
     "Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer + DevOps  (10 agents)",
 }
 
+/**
+ * The agents each preset actually contains, by their `agents.<id>()` name.
+ *
+ * Kept adjacent to {@link AGENT_BLOCKS} because the two must stay in step: the
+ * override checkbox offers exactly these ids, and the regex that injects an
+ * override only matches an id that really appears in the block. A mismatch is a
+ * silently dropped override, which is what this list exists to prevent. The
+ * `init.test.ts` consistency check asserts every id here has a matching
+ * `agents.<id>(` in the block string.
+ */
+export const PRESET_AGENT_IDS: Record<string, string[]> = {
+  backend: [
+    "productManager",
+    "architect",
+    "archDesignReviewer",
+    "backendDeveloper",
+    "tester",
+    "codeReviewer",
+    "devops",
+  ],
+  frontend: [
+    "architect",
+    "uiDesigner",
+    "uiDesignReviewer",
+    "frontendDeveloper",
+    "tester",
+    "codeReviewer",
+  ],
+  fullstack: [
+    "productManager",
+    "architect",
+    "archDesignReviewer",
+    "backendDeveloper",
+    "uiDesigner",
+    "uiDesignReviewer",
+    "frontendDeveloper",
+    "tester",
+    "codeReviewer",
+    "devops",
+  ],
+}
+
+/** Human labels for the agents the override checkbox can offer. */
+const OVERRIDE_LABELS: Record<string, string> = {
+  leader: "★ Leader",
+  productManager: "Product Manager",
+  architect: "Architect",
+  archDesignReviewer: "Arch Design Reviewer",
+  backendDeveloper: "Backend Developer",
+  frontendDeveloper: "Frontend Developer",
+  uiDesigner: "UI Designer",
+  uiDesignReviewer: "UI Design Reviewer",
+  tester: "Tester",
+  codeReviewer: "Code Reviewer",
+  devops: "DevOps",
+}
+
+/**
+ * The override choices for a preset: the leader (which belongs to no preset)
+ * plus the preset's own agents. Filtering by preset is what stops an override
+ * for an agent the preset does not contain from being offered and then dropped.
+ */
+export function overrideChoices(preset: string): Array<{ value: string; name: string }> {
+  const ids = PRESET_AGENT_IDS[preset] ?? []
+  return [
+    { value: "leader", name: OVERRIDE_LABELS.leader },
+    ...ids.map((id) => ({ value: id, name: OVERRIDE_LABELS[id] ?? id })),
+  ]
+}
+
 // ─── Config Generator ─────────────────────────────────────────────────────────
 
-function generateConfig(opts: {
+export function generateConfig(opts: {
   preset: string
   workDir: string
   projectName: string
@@ -57,18 +127,36 @@ function generateConfig(opts: {
   const defaultsParts: string[] = [`provider: ${JSON.stringify(opts.provider)}`]
   if (opts.model) defaultsParts.push(`model: ${JSON.stringify(opts.model)}`)
 
+  // The leader is not a pipeline agent, so it has no line in `AGENT_BLOCKS` and
+  // the regex below could never match it. It is written here instead, which is
+  // also what stops a Leader override from being silently discarded.
+  const leaderOverride = opts.overrides?.find((o) => o.id === "leader")
+  const leaderLine = leaderOverride
+    ? `  leader: agents.leader({ model: ${JSON.stringify(leaderOverride.model)} }),`
+    : `  leader: agents.leader(),`
+
   let agentBlock = AGENT_BLOCKS[opts.preset]
   if (opts.overrides && opts.overrides.length > 0) {
     // Inject per-agent model overrides into the block string.
     for (const ov of opts.overrides) {
       const id = ov.id
+      if (id === "leader") continue
       const model = JSON.stringify(ov.model)
       // Match the agent call line and append the model param.
       const re = new RegExp(`(agents\\.${id}\\([^)]*\\))`, "g")
       agentBlock = agentBlock.replace(re, (match) => {
-        const inner = match.slice(id.length + 8, -1) // strip `agents.X(` and `)`
-        const sep = inner.trim() ? ", " : ""
-        return `agents.${id}({ ${inner}${sep}model: ${model} })`
+        // Strip `agents.X(` and `)`, leaving "" or an options object `{ ... }`.
+        // Normalise to the object's body so the model can be appended whether
+        // or not the call already had arguments — the previous version wrapped
+        // the captured braces in a second pair, producing `{ { ... }, model }`.
+        const body = match
+          .slice(id.length + 8, -1)
+          .trim()
+          .replace(/^\{/, "")
+          .replace(/\}$/, "")
+          .trim()
+        const sep = body ? ", " : ""
+        return `agents.${id}({ ${body}${sep}model: ${model} })`
       })
     }
   }
@@ -78,6 +166,7 @@ function generateConfig(opts: {
 export default defineConfig({
   name: ${name},
   workDir: ${workDir},
+${leaderLine}
   context: {
     projectName: ${name},
   },
@@ -156,22 +245,11 @@ export async function initCommand(): Promise<void> {
   })
   const modelDefault = modelAnswer || undefined
 
-  // Per-agent overrides
+  // Per-agent overrides. The choices are the leader (always) plus the preset's
+  // own agents, so every id offered can actually be written into the config.
   const overrideIds = await checkbox({
     message: "Override model for specific agents? (space to select, enter to confirm)",
-    choices: [
-      { value: "leader", name: "★ Leader" },
-      { value: "productManager", name: "Product Manager" },
-      { value: "architect", name: "Architect" },
-      { value: "archDesignReviewer", name: "Arch Design Reviewer" },
-      { value: "backendDeveloper", name: "Backend Developer" },
-      { value: "frontendDeveloper", name: "Frontend Developer" },
-      { value: "uiDesigner", name: "UI Designer" },
-      { value: "uiDesignReviewer", name: "UI Design Reviewer" },
-      { value: "tester", name: "Tester" },
-      { value: "codeReviewer", name: "Code Reviewer" },
-      { value: "devops", name: "DevOps" },
-    ],
+    choices: overrideChoices(preset),
   })
 
   const overrides: Array<{ id: string; model: string }> = []

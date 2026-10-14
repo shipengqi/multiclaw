@@ -179,6 +179,34 @@ describe("App · a full turn", () => {
     expect(frame).not.toMatch(/(running|retrying|done|failed)\d/)
     expect(followLine(frame)).toMatch(/\s\d+(\.\d+)?(ms|s)\s/)
   })
+
+  it("toggles tool detail with the /verbose command", async () => {
+    let complete: () => void = () => {}
+    const finished = new Promise<void>((resolve) => {
+      complete = resolve
+    })
+
+    const frame = stripAnsi(
+      await driveFrame(
+        <App
+          config={CONFIG}
+          onTurnStart={(bus) => {
+            bus.subscribe((event) => {
+              if (event.type === "orchestration:complete") complete()
+            })
+          }}
+        />,
+        {
+          keys: ["add a --json flag", "\r"],
+          thenKeys: ["/verbose", "\r"],
+          ready: finished,
+          settleMs: 200,
+        }
+      )
+    )
+
+    expect(frame).toContain("verbose on — showing tool detail")
+  })
 })
 
 /** A runtime whose leader answers in prose instead of planning a pipeline. */
@@ -679,5 +707,236 @@ describe("App · a turn whose output is wider than the pane", () => {
   it("wraps to the narrower pane of a compact terminal too", async () => {
     const frame = await runLongTurn(60)
     for (const word of LONG_LINE.split(" ")) expect(frame).toContain(word)
+  })
+})
+
+/** A runtime whose agents report a USD cost, as `claude-agent-acp` does. */
+const COST_RUNTIME = "tui-integration-cost"
+
+const COST_CONFIG: MultiClawConfig = {
+  name: "dev-team",
+  workDir: "/tmp/multiclaw-tui-cost",
+  leader: {
+    id: "leader",
+    name: "Leader",
+    icon: "◆",
+    runtime: COST_RUNTIME,
+    systemPrompt: "",
+    taskPrompt: "",
+  },
+  agents: [
+    {
+      id: "architect",
+      name: "Architect",
+      icon: "◇",
+      runtime: COST_RUNTIME,
+      systemPrompt: "",
+      taskPrompt: "",
+    },
+  ],
+}
+
+describe("App · a run that reports cost", () => {
+  beforeAll(() => {
+    runtimeRegistry.register({
+      name: COST_RUNTIME,
+      describe: alwaysAvailable(COST_RUNTIME),
+      async execute(task) {
+        if (task.agentId === "leader") {
+          return { output: '{"mode":"run","run":["architect"]}', exitCode: 0 }
+        }
+        return { output: `${task.agentId} finished`, exitCode: 0, costUsd: 0.42 }
+      },
+    })
+  })
+
+  // The turn's total cost rides on the status line once the turn is over. It is
+  // printed only when a cost was reported — never a default "$0.00".
+  it("shows the turn's total cost in the footer", async () => {
+    let complete: () => void = () => {}
+    const finished = new Promise<void>((resolve) => {
+      complete = resolve
+    })
+
+    const frame = stripAnsi(
+      await driveFrame(
+        <App
+          config={COST_CONFIG}
+          onTurnStart={(bus) => {
+            bus.subscribe((event) => {
+              if (event.type === "orchestration:complete") complete()
+            })
+          }}
+        />,
+        { keys: ["add a --json flag", "\r"], ready: finished }
+      )
+    )
+
+    expect(frame).toContain("$0.42")
+  })
+})
+
+/** A runtime whose single agent succeeds — a turn with nothing to retry. */
+const RETRY_OK_RUNTIME = "tui-integration-retry-ok"
+
+const RETRY_OK_CONFIG: MultiClawConfig = {
+  name: "dev-team",
+  workDir: "/tmp/multiclaw-tui-retry-ok",
+  leader: {
+    id: "leader",
+    name: "Leader",
+    runtime: RETRY_OK_RUNTIME,
+    systemPrompt: "",
+    taskPrompt: "",
+  },
+  agents: [
+    {
+      id: "architect",
+      name: "Architect",
+      runtime: RETRY_OK_RUNTIME,
+      systemPrompt: "",
+      taskPrompt: "",
+    },
+  ],
+}
+
+describe("App · /retry with nothing to retry", () => {
+  beforeAll(() => {
+    runtimeRegistry.register({
+      name: RETRY_OK_RUNTIME,
+      describe: alwaysAvailable(RETRY_OK_RUNTIME),
+      async execute(task) {
+        if (task.agentId === "leader") {
+          return { output: '{"mode":"run","run":["architect"]}', exitCode: 0 }
+        }
+        return { output: `${task.agentId} finished`, exitCode: 0 }
+      },
+    })
+  })
+
+  it("says there is nothing to retry when the turn had no failures", async () => {
+    let complete: () => void = () => {}
+    const finished = new Promise<void>((resolve) => {
+      complete = resolve
+    })
+
+    const frame = stripAnsi(
+      await driveFrame(
+        <App
+          config={RETRY_OK_CONFIG}
+          onTurnStart={(bus) => {
+            bus.subscribe((event) => {
+              if (event.type === "orchestration:complete") complete()
+            })
+          }}
+        />,
+        { keys: ["add a flag", "\r"], thenKeys: ["/retry", "\r"], ready: finished, settleMs: 200 }
+      )
+    )
+
+    expect(frame).toContain("nothing failed")
+  })
+})
+
+/** A runtime whose `dev` agent fails once, then succeeds — so a retry can fix it. */
+const RETRY_FAIL_RUNTIME = "tui-integration-retry-fail"
+
+const RETRY_FAIL_CONFIG: MultiClawConfig = {
+  name: "dev-team",
+  workDir: "/tmp/multiclaw-tui-retry-fail",
+  leader: {
+    id: "leader",
+    name: "Leader",
+    runtime: RETRY_FAIL_RUNTIME,
+    systemPrompt: "",
+    taskPrompt: "",
+  },
+  agents: [
+    {
+      id: "architect",
+      name: "Architect",
+      runtime: RETRY_FAIL_RUNTIME,
+      systemPrompt: "",
+      taskPrompt: "",
+    },
+    {
+      id: "dev",
+      name: "Developer",
+      runtime: RETRY_FAIL_RUNTIME,
+      dependsOn: ["architect"],
+      systemPrompt: "",
+      taskPrompt: "",
+    },
+  ],
+}
+
+describe("App · /retry re-runs a failed agent", () => {
+  /** How many times the leader ran, across every turn. */
+  let leaderRuns = 0
+  /** Every agent the runtime was asked to run, in order, across every turn. */
+  let runs: string[] = []
+  /** `dev` fails on its first attempt and succeeds afterwards. */
+  let devAttempts = 0
+
+  beforeEach(() => {
+    leaderRuns = 0
+    runs = []
+    devAttempts = 0
+  })
+
+  beforeAll(() => {
+    runtimeRegistry.register({
+      name: RETRY_FAIL_RUNTIME,
+      describe: alwaysAvailable(RETRY_FAIL_RUNTIME),
+      async execute(task) {
+        runs.push(task.agentId)
+        if (task.agentId === "leader") {
+          leaderRuns += 1
+          return { output: '{"mode":"run","run":["architect","dev"]}', exitCode: 0 }
+        }
+        if (task.agentId === "dev") {
+          devAttempts += 1
+          if (devAttempts === 1) throw new Error("dev exploded")
+        }
+        return { output: `${task.agentId} finished`, exitCode: 0 }
+      },
+    })
+  })
+
+  it("re-runs only the failed agent, without consulting the leader again", async () => {
+    let completes = 0
+    let firstDone: () => void = () => {}
+    const first = new Promise<void>((resolve) => {
+      firstDone = resolve
+    })
+
+    const frame = stripAnsi(
+      await driveFrame(
+        <App
+          config={RETRY_FAIL_CONFIG}
+          onTurnStart={(bus) => {
+            bus.subscribe((event) => {
+              if (event.type !== "orchestration:complete") return
+              completes += 1
+              if (completes === 1) firstDone()
+            })
+          }}
+        />,
+        {
+          keys: ["add a flag", "\r"],
+          thenKeys: ["/retry", "\r"],
+          ready: first,
+          settleMs: 400,
+        }
+      )
+    )
+
+    // The retry ran as a second turn.
+    expect(completes).toBe(2)
+    // The leader planned once, in turn one; the retry bypassed it entirely.
+    expect(leaderRuns).toBe(1)
+    // Turn two ran exactly the failed agent — not the leader, not architect.
+    expect(runs).toEqual(["leader", "architect", "dev", "dev"])
+    expect(frame).toContain("turn 2")
   })
 })

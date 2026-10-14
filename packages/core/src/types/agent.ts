@@ -1,3 +1,5 @@
+import type { AgentOutput } from "./runtime"
+
 export type ToolName =
   | "Read"
   | "Write"
@@ -49,6 +51,12 @@ export interface AgentDefinition {
    * available before the first turn has been planned.
    */
   description?: string
+  /**
+   * Marks the agent that owns task decomposition (writes task-plan.json).
+   * When absent, the orchestrator falls back to the id "architect" so every
+   * existing config keeps working unchanged.
+   */
+  role?: "planner"
   taskTitle?: string
   agentScope?: string
   agentPlan?: string
@@ -59,7 +67,19 @@ export interface AgentDefinition {
   workDir?: string
 }
 
-export type AgentStatus = "pending" | "running" | "retrying" | "success" | "failed" | "skipped"
+export type AgentStatus =
+  | "pending"
+  | "running"
+  | "retrying"
+  | "success"
+  | "failed"
+  /**
+   * The run was stopped by its AbortSignal rather than finishing or erroring.
+   * Distinct from `failed` so a Ctrl-C does not read as a crash, and so the
+   * roster can mark the agent stopped instead of broken.
+   */
+  | "cancelled"
+  | "skipped"
 
 export interface AgentResult {
   agentId: string
@@ -71,6 +91,14 @@ export interface AgentResult {
   error?: string
   startTime: string
   endTime: string
+  /** Model actually requested for this agent. */
+  model?: string
+  /** Context-window usage the runtime reported; absent when it reported none. */
+  usage?: AgentOutput["usage"]
+  /** USD cost the runtime reported; absent when the provider does not price in USD. */
+  costUsd?: number
+  /** Session the runtime ran under, when it reported one. */
+  sessionId?: string
 }
 
 export interface SubTask {

@@ -16,9 +16,16 @@ describe("availableCommands", () => {
 
   it("always offers the rest", () => {
     const idle = availableCommands(false).map((c) => c.name)
-    for (const name of ["agents", "focus", "clear", "help", "quit"]) {
+    for (const name of ["agents", "focus", "clear", "help", "quit", "verbose"]) {
       expect(idle).toContain(name)
     }
+  })
+
+  it("offers /retry while idle but not while a turn is running", () => {
+    // Retrying re-runs agents from the last finished turn, so there is nothing
+    // to retry mid-run — and offering it there would race the live turn.
+    expect(availableCommands(false).map((c) => c.name)).toContain("retry")
+    expect(availableCommands(true).map((c) => c.name)).not.toContain("retry")
   })
 })
 
@@ -45,6 +52,10 @@ describe("matchCommands", () => {
 
   it("returns nothing for a query that matches nothing", () => {
     expect(matchCommands("zzz", false)).toEqual([])
+  })
+
+  it("finds /verbose by name", () => {
+    expect(matchCommands("verb", false)[0].name).toBe("verbose")
   })
 
   it("does not surface a running-only command when idle", () => {

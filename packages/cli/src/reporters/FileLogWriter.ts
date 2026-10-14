@@ -41,7 +41,12 @@ export class FileLogWriter {
 
   private handle(e: MultiClawEvent): void {
     if (e.type === "agent:output") {
-      this.getStream(e.payload.agentId)?.write(e.payload.chunk)
+      // Log files carry the agent's prose, exactly as they did before `kind`
+      // existed. Tool activity is a live-view affordance, not a transcript, and
+      // writing it here would change every existing log file's contents.
+      const { agentId, chunk, kind } = e.payload
+      if (kind && kind !== "text") return
+      this.getStream(agentId)?.write(chunk)
     }
     if (e.type === "orchestration:complete") {
       try {

@@ -13,9 +13,16 @@ import {
   railCellWidths,
 } from "./components/chrome"
 import { HelpOverlay, HistoryOverlay } from "./components/overlays"
-import { Divider, ReplyPanel, StreamPanel, TeamPanel, WelcomePanel } from "./components/panels"
+import {
+  Divider,
+  ErrorPanel,
+  ReplyPanel,
+  StreamPanel,
+  TeamPanel,
+  WelcomePanel,
+} from "./components/panels"
 import { CommandMenu, Prompt } from "./components/prompt"
-import { formatDuration } from "./format"
+import { formatCost, formatDuration } from "./format"
 import { computeLayout } from "./layout"
 import {
   conversationTurns,
@@ -123,9 +130,12 @@ function StatusLine({
     const outcome = state.success
       ? `${STATUS.success.glyph} done${time}`
       : `${STATUS.failed.glyph} finished with failures${time}`
+    // Cost, only when the run actually reported one — never "$0.00" by default.
+    const cost = state.totalCostUsd === undefined ? "" : ` · ${formatCost(state.totalCostUsd)}`
     return (
       <Text color={state.success ? COLOR.ok : COLOR.error} wrap="truncate-end">
         {outcome}
+        {cost}
         {state.warning ? ` · ${GLYPH.warn} ${state.warning}` : ""}
       </Text>
     )
@@ -199,7 +209,7 @@ export function App({ config, onTurnStart }: AppProps) {
   }, [running, line.text])
 
   const startTurn = useCallback(
-    async (requirement: string) => {
+    async (requirement: string, opts?: { resume?: MultiClawConfig["resume"] }) => {
       setError(undefined)
       setCancelled(false)
       setNotice(undefined)
@@ -229,6 +239,8 @@ export function App({ config, onTurnStart }: AppProps) {
         // so the leader is handed the turns behind this one as well.
         history: earlierTurns,
         logDir,
+        // Only a retry carries this; a normal turn lets the leader route.
+        ...(opts?.resume ? { resume: opts.resume } : {}),
       }
 
       const controller = new AbortController()
@@ -314,6 +326,50 @@ export function App({ config, onTurnStart }: AppProps) {
           setHistoryCursor(0)
           setHistoryOpen(true)
           return
+        case "verbose":
+          // `state.verbose` is the value *before* the toggle, so it names the
+          // state the user is about to be in.
+          dispatch({ type: "verbose:toggle" })
+          setNotice(state.verbose ? "verbose off" : "verbose on — showing tool detail")
+          return
+        case "retry": {
+          // Retrying acts on the *last* turn, not the one being read: a past
+          // turn is not what "run that again" can mean.
+          if (state.phase !== "complete" || !state.requirement) {
+            setNotice("nothing to retry yet")
+            return
+          }
+          const ids = args[0]
+            ? [args[0]]
+            : Object.values(state.agents)
+                .filter((agent) => agent.status === "failed")
+                .map((agent) => agent.id)
+          if (ids.length === 0) {
+            setNotice("nothing failed")
+            return
+          }
+          const unknown = ids.filter((id) => !state.agents[id])
+          if (unknown.length > 0) {
+            setNotice(`unknown agent: ${unknown[0]}`)
+            return
+          }
+          // Only agents that reported a session have one to continue; a failed
+          // agent has none, so it re-runs from scratch. The map is omitted — not
+          // sent empty — when nobody has one, matching the CLI's resume and
+          // core's "absent means a cold start".
+          const sessions = Object.fromEntries(
+            ids
+              .filter((id) => state.agents[id]?.sessionId)
+              .map((id) => [id, state.agents[id].sessionId as string])
+          )
+          void startTurn(state.requirement, {
+            resume: {
+              agents: ids,
+              ...(Object.keys(sessions).length > 0 ? { sessions } : {}),
+            },
+          })
+          return
+        }
         case "cancel": {
           if (!abortRef.current) {
             setNotice("nothing to cancel")
@@ -340,7 +396,7 @@ export function App({ config, onTurnStart }: AppProps) {
           setNotice(`unknown command: /${name}`)
       }
     },
-    [config, exit, queue.length, state]
+    [config, exit, queue.length, state, startTurn]
   )
 
   const submit = useCallback(() => {
@@ -608,6 +664,13 @@ export function App({ config, onTurnStart }: AppProps) {
       return
     }
     if (key.escape) {
+      // A full-screen error is an overlay like any other, so esc clears it first
+      // — the existing semantics (leave a past turn / clear the input line) are
+      // unchanged once there is no error to dismiss.
+      if (error) {
+        setError(undefined)
+        return
+      }
       // Leaving a past turn comes first: while one is open, that is the thing
       // `esc` is for, and the hint bar says so.
       if (state.view) {
@@ -715,6 +778,11 @@ export function App({ config, onTurnStart }: AppProps) {
           />
         ) : layout.welcome ? (
           <WelcomePanel turn={state} width={layout.columns} />
+        ) : error ? (
+          // The error wins over a reply: a run that stopped with an error is the
+          // most urgent thing on screen, and a stale answer underneath it would
+          // read as the outcome. The status line keeps a one-line version too.
+          <ErrorPanel message={error} width={layout.columns} />
         ) : shown.reply ? (
           <ReplyPanel reply={shown.reply} width={layout.columns} />
         ) : (

@@ -5,10 +5,16 @@ import { resolveArgs, resolveCommand, resolveModel } from "../providers/resolve"
 import { runtimeRegistry } from "../runtime"
 import type { AgentDefinition, AgentResult } from "../types/agent"
 import type { MultiClawConfig } from "../types/config"
+import type { AgentOutput } from "../types/runtime"
+import { isAbortError } from "../utils/abort"
 import { renderPrompt } from "../utils/prompt"
 import { withRetry } from "../utils/retry"
 import { withTimeout } from "../utils/timeout"
+import { summarizeToolInput, summarizeToolOutput } from "../utils/toolSummary"
 import type { ContextManager } from "./ContextManager"
+
+/** The `kind` a chunk of agent output carries on the `agent:output` event. */
+type OutputKind = "text" | "tool" | "tool-detail"
 
 export class AgentRunner {
   constructor(
@@ -36,6 +42,10 @@ export class AgentRunner {
 
     let attempts = 0
     let output = ""
+    // Populated only on the success path: a run that never returned has no
+    // usage or cost to report, so both stay undefined rather than becoming 0.
+    let usage: AgentOutput["usage"]
+    let costUsd: number | undefined
 
     try {
       // Everything that can throw lives inside the try. `run` promises to always
@@ -52,7 +62,7 @@ export class AgentRunner {
       const timeout = agent.timeout ?? 600_000
       const tools = agent.tools ?? ["Read", "Write", "Bash"]
 
-      output = await withTimeout(
+      const completed = await withTimeout(
         (innerSignal) =>
           withRetry(
             async (attempt) => {
@@ -69,41 +79,70 @@ export class AgentRunner {
                   agent.agentPlan ?? "No step-by-step plan was provided — use your judgement.",
               }
               const prompt = await renderPrompt(agent.taskPrompt, agentContext, this.globalWorkDir)
-              return (
-                await runtime.execute({
-                  agentId: agent.id,
-                  systemPrompt: agent.systemPrompt,
-                  prompt,
-                  tools,
-                  workDir,
-                  timeout,
-                  signal: innerSignal,
-                  model,
-                  // Resolve through provider/defaults exactly as the CLI's
-                  // availability gate does — an agent that pins `provider` (or
-                  // leans on `defaults`) must launch that provider's bridge, not
-                  // the runtime's built-in default. Passing the raw `agent.command`
-                  // here sent a `provider: "claude"` config straight to `opencode`.
-                  command: resolveCommand(agent, this.config),
-                  args: resolveArgs(agent, this.config),
-                  onEvent: (e) => {
-                    // Only text reaches the TUI's stream pane. Tool calls, usage
-                    // and cost are carried by the runtime event but the bus
-                    // surface is unchanged, so the console needs no changes.
-                    if (
-                      (e.type === "message_delta" || e.type === "message") &&
-                      e.role === "agent" &&
-                      e.text
-                    ) {
-                      this.eventBus.emit({
-                        type: "agent:output",
-                        timestamp: new Date().toISOString(),
-                        payload: { agentId: agent.id, chunk: e.text },
-                      })
-                    }
-                  },
-                })
-              ).output
+              return await runtime.execute({
+                agentId: agent.id,
+                systemPrompt: agent.systemPrompt,
+                prompt,
+                tools,
+                workDir,
+                timeout,
+                signal: innerSignal,
+                model,
+                // Only the caller knows which session to continue; absent means a
+                // fresh one. It must stay `undefined` rather than `""` — the ACP
+                // runtime tests `if (task.sessionId)`, so an empty string would
+                // read as "load this session" for a session that does not exist.
+                sessionId: this.config.resume?.sessions?.[agent.id],
+                // Resolve through provider/defaults exactly as the CLI's
+                // availability gate does — an agent that pins `provider` (or
+                // leans on `defaults`) must launch that provider's bridge, not
+                // the runtime's built-in default. Passing the raw `agent.command`
+                // here sent a `provider: "claude"` config straight to `opencode`.
+                command: resolveCommand(agent, this.config),
+                args: resolveArgs(agent, this.config),
+                // A runtime's diagnostics travel on the event bus rather than
+                // stderr: under the TUI's alternate screen a stderr write is
+                // never seen. The agent name prefixes the line so it is
+                // locatable in the one-row status area.
+                onWarning: (message) => {
+                  this.eventBus.emit({
+                    type: "orchestration:warning",
+                    timestamp: new Date().toISOString(),
+                    payload: { message: `[${agent.name}] ${message}` },
+                  })
+                },
+                onEvent: (e) => {
+                  // The agent's prose is untagged; tool activity is tagged so a
+                  // consumer can decide how much of it to show.
+                  if (
+                    (e.type === "message_delta" || e.type === "message") &&
+                    e.role === "agent" &&
+                    e.text
+                  ) {
+                    this.emitOutput(agent.id, e.text)
+                    return
+                  }
+                  if (e.type === "tool_call") {
+                    const summary = summarizeToolInput(e.input)
+                    this.emitOutput(
+                      agent.id,
+                      `\n› ${e.name}${summary ? ` ${summary}` : ""}\n`,
+                      "tool"
+                    )
+                    return
+                  }
+                  if (e.type === "tool_result") {
+                    const summary = summarizeToolOutput(e.output)
+                    // A failed tool is a summary line the user needs; a
+                    // successful one is detail, shown only in verbose mode.
+                    this.emitOutput(
+                      agent.id,
+                      `  ${e.isError ? "✗" : "✓"} ${summary}\n`,
+                      e.isError ? "tool" : "tool-detail"
+                    )
+                  }
+                },
+              })
             },
             retries,
             (attempt, err) => {
@@ -127,6 +166,14 @@ export class AgentRunner {
         signal
       )
 
+      output = completed.output
+      usage = completed.usage
+      costUsd = completed.costUsd
+      // The session id, when the runtime reported one, is what a later resume
+      // continues. Captured on the success path only: a failed turn has no
+      // `AgentOutput`, and a dead turn's session is not one worth loading.
+      const sessionId = completed.sessionId
+
       const endTime = new Date()
       const result: AgentResult = {
         agentId: agent.id,
@@ -137,6 +184,10 @@ export class AgentRunner {
         attempts,
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),
+        model,
+        ...(usage ? { usage } : {}),
+        ...(costUsd !== undefined ? { costUsd } : {}),
+        ...(sessionId ? { sessionId } : {}),
       }
       this.eventBus.emit({
         type: "agent:complete",
@@ -149,13 +200,16 @@ export class AgentRunner {
       const result: AgentResult = {
         agentId: agent.id,
         agentName: agent.name,
-        status: "failed",
+        // An abort is a cancellation, not a failure: the team stopped because it
+        // was told to, and the roster must not paint every agent as broken.
+        status: isAbortError(err) ? "cancelled" : "failed",
         output,
         duration: endTime.getTime() - startTime.getTime(),
         attempts,
         error: (err as Error).message,
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),
+        model,
       }
       this.eventBus.emit({
         type: "agent:failed",
@@ -164,5 +218,19 @@ export class AgentRunner {
       })
       return result
     }
+  }
+
+  /**
+   * Publish one chunk of agent output.
+   *
+   * `kind` is omitted for text so the payload shape is unchanged for every
+   * consumer written before tool activity was surfaced.
+   */
+  private emitOutput(agentId: string, chunk: string, kind?: OutputKind): void {
+    this.eventBus.emit({
+      type: "agent:output",
+      timestamp: new Date().toISOString(),
+      payload: { agentId, chunk, ...(kind ? { kind } : {}) },
+    })
   }
 }

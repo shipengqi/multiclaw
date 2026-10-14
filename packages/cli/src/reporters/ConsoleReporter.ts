@@ -1,4 +1,4 @@
-import type { EventBus, MultiClawEvent } from "@multiclawcli/core"
+import type { AgentResult, EventBus, MultiClawEvent } from "@multiclawcli/core"
 
 // Degraded to plain ASCII when NO_COLOR is set, TERM=dumb, or stdout is not a TTY (pipe/CI).
 const isFancy =
@@ -29,6 +29,15 @@ const C = isFancy
       red: "",
       purple: "",
     }
+
+/** The glyph and colour for one agent's status in the summary table. */
+function markFor(status: AgentResult["status"]): { icon: string; color: string } {
+  if (status === "success") return { icon: S.ok, color: C.green }
+  // A cancelled agent was stopped, not broken — the same muted mark as a skip,
+  // never the red cross a real failure earns.
+  if (status === "cancelled") return { icon: S.skip, color: C.yellow }
+  return { icon: S.fail, color: C.red }
+}
 
 export class ConsoleReporter {
   attach(eventBus: EventBus): () => void {
@@ -67,6 +76,9 @@ export class ConsoleReporter {
         break
       }
       case "agent:output": {
+        // Tool activity is tagged. Headless stdout carries the agent's prose
+        // only, so the byte stream is exactly what it was before `kind` existed.
+        if (e.payload.kind && e.payload.kind !== "text") break
         process.stdout.write(`  ${e.payload.chunk}`)
         break
       }
@@ -76,6 +88,13 @@ export class ConsoleReporter {
         break
       }
       case "agent:failed": {
+        // A cancelled run arrives on `agent:failed` with `status: "cancelled"`.
+        // Saying "failed" for a Ctrl-C would blame the agent for the user's
+        // decision, so the line is worded as a stop.
+        if (e.payload.status === "cancelled") {
+          console.log(`${C.yellow}${S.skip} ${e.payload.agentName} cancelled${C.reset}`)
+          break
+        }
         console.log(`${C.red}${S.fail} ${e.payload.agentName} failed: ${e.payload.error}${C.reset}`)
         break
       }
@@ -107,18 +126,24 @@ export class ConsoleReporter {
           ? reply.mode === "ask"
             ? `${S.warn} Needs your input`
             : `${S.ok} Answered`
-          : success
-            ? `${S.ok} All done`
-            : `${S.warn} Done (with failures)`
+          : e.payload.cancelled
+            ? `${S.skip} Cancelled`
+            : success
+              ? `${S.ok} All done`
+              : `${S.warn} Done (with failures)`
         console.log(`\n${C.bold}${C.purple}${edge[0]}${line}${edge[3]}`)
         console.log(`${edge[1]}  ${title.padEnd(48)}${edge[1]}`)
         console.log(`${edge[2]}${line}${edge[4]}${C.reset}`)
         const nameWidth = Math.max(8, ...agentResults.map((r) => r.agentName.length))
         const totalStr = `${(totalDuration / 1000).toFixed(1)}s`
-        console.log(`  ~ ${"Total".padEnd(nameWidth)}   ${totalStr.padStart(7)}`)
+        // The total cost is printed only when the run reported one: a provider
+        // that does not price in USD leaves it undefined, and "$0.00" there would
+        // claim a cost that was never measured.
+        const cost = e.payload.totalCostUsd
+        const costStr = cost === undefined ? "" : `  $${cost.toFixed(2)}`
+        console.log(`  ~ ${"Total".padEnd(nameWidth)}   ${totalStr.padStart(7)}${costStr}`)
         for (const r of agentResults) {
-          const icon = r.status === "success" ? S.ok : S.fail
-          const color = r.status === "success" ? C.green : C.red
+          const { icon, color } = markFor(r.status)
           const dur = `${(r.duration / 1000).toFixed(1)}s`
           console.log(
             `  ${color}${icon}${C.reset} ${r.agentName.padEnd(nameWidth)}   ${dur.padStart(7)}`

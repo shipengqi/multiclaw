@@ -73,6 +73,7 @@ export function architect(overrides?: Overrides): AgentDefinition {
     name: "Architect",
     icon: "◆",
     description: "designs the architecture",
+    role: "planner",
     runtime: "acp",
     models: { acp: "opus" },
     modelTier: "strong",

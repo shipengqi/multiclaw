@@ -87,6 +87,15 @@ export interface AgentTask {
   timeout: number
   signal?: AbortSignal
   onEvent?: (event: RuntimeEvent) => void
+  /**
+   * Non-fatal diagnostics the runtime wants the caller to surface.
+   *
+   * A runtime runs under a TUI's alternate screen, where anything written
+   * straight to stderr is invisible — so a warning the user needs to see has to
+   * travel on a channel the caller can render. Optional, so a direct caller that
+   * supplies nothing keeps the old behaviour (the runtime falls back to stderr).
+   */
+  onWarning?: (message: string) => void
   /** Ask the runtime to run under a specific session id, if it supports sessions. */
   sessionId?: string
   /** How to treat an existing session: continue it in place, or fork a copy. */

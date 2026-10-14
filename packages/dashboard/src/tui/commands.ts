@@ -34,6 +34,17 @@ export const COMMANDS: readonly CommandSpec[] = [
     availability: "always",
   },
   {
+    name: "verbose",
+    description: "Toggle tool detail in the stream",
+    availability: "always",
+  },
+  {
+    name: "retry",
+    args: "[id]",
+    description: "Re-run a failed agent (or all of them)",
+    availability: "idle",
+  },
+  {
     name: "cancel",
     description: "Cancel the running turn and its queue",
     availability: "running",
