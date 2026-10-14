@@ -152,3 +152,6 @@ graft
 
 # Claude Code local settings (machine-specific)
 .claude/settings.local.json
+
+# Ad-hoc local scripts (not shared; deliverables/ is tracked)
+scripts/
