@@ -86,6 +86,20 @@ export function availableCommands(running: boolean): CommandSpec[] {
 }
 
 /**
+ * Whether a command may run in the current phase.
+ *
+ * `availableCommands` decides what the palette *offers*; this is the same rule
+ * applied to *running*, because typing a command out bypasses the palette
+ * entirely. An unknown name is not "unavailable" — it is let through so the
+ * caller's `default:` branch can report it.
+ */
+export function canRun(name: string, running: boolean): boolean {
+  const command = COMMANDS.find((c) => c.name === name)
+  if (!command) return true
+  return availableCommands(running).includes(command)
+}
+
+/**
  * Commands matching what has been typed after the slash.
  *
  * Name prefixes outrank description hits: someone typing `/ag` wants `/agents`,

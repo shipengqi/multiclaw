@@ -1207,6 +1207,101 @@ describe("App · the command palette window", () => {
 })
 
 /**
+ * A runtime that holds each agent open, so a command can be issued while a turn
+ * is genuinely in flight. Same shape as `SLOW_RUNTIME`, kept separate so this
+ * describe owns its registration and never races another block's `beforeAll`.
+ */
+const GATE_RUNTIME = "tui-integration-gate"
+
+const GATE_CONFIG: MultiClawConfig = {
+  name: "dev-team",
+  workDir: "/tmp/multiclaw-tui-gate",
+  leader: {
+    id: "leader",
+    name: "Leader",
+    icon: "◆",
+    runtime: GATE_RUNTIME,
+    systemPrompt: "",
+    taskPrompt: "",
+  },
+  agents: [
+    {
+      id: "architect",
+      name: "Architect",
+      icon: "◇",
+      runtime: GATE_RUNTIME,
+      systemPrompt: "",
+      taskPrompt: "",
+    },
+  ],
+}
+
+describe("App · a command typed mid-run", () => {
+  /** How many turns started, across the whole test. */
+  let starts = 0
+
+  beforeEach(() => {
+    starts = 0
+  })
+
+  beforeAll(() => {
+    runtimeRegistry.register({
+      name: GATE_RUNTIME,
+      describe: alwaysAvailable(GATE_RUNTIME),
+      async execute(task) {
+        if (task.agentId === "leader") {
+          return { output: '{"mode":"run","run":["architect"]}', exitCode: 0 }
+        }
+        // Hold the turn open long enough for the keystrokes below to land
+        // mid-run; 400 ms against a 90 ms typing window leaves a wide margin.
+        await new Promise((resolve) => setTimeout(resolve, 400))
+        return { output: `${task.agentId} finished`, exitCode: 0 }
+      },
+    })
+  })
+
+  // Regression: `availability` was enforced only by the palette, and a typed
+  // command bypasses the palette. A mid-run `/replay` therefore overwrote
+  // `abortRef.current` (losing the live turn's controller) and `turn:start`ed a
+  // second turn on top of the running one — the same hole `/retry` had.
+  it("refuses an idle-only command while a turn is running", async () => {
+    let firstDone: () => void = () => {}
+    const first = new Promise<void>((resolve) => {
+      firstDone = resolve
+    })
+
+    const frame = stripAnsi(
+      await driveFrame(
+        <App
+          config={GATE_CONFIG}
+          onTurnStart={(bus) => {
+            starts += 1
+            bus.subscribe((event) => {
+              if (event.type === "orchestration:complete") firstDone()
+            })
+          }}
+        />,
+        {
+          // Turn one finishes first, so there is something `/replay` could act
+          // on. The `thenKeys` then start turn two and issue `/replay` while it
+          // is still held open — the only window in which the hazard exists.
+          keys: ["first task", "\r"],
+          ready: first,
+          thenKeys: ["second task", "\r", "/replay", "\r"],
+          settleMs: 600,
+          timeoutMs: 3000,
+        }
+      )
+    )
+
+    // Two turns started — the original and the follow-up — and no more. Without
+    // the gate, the replay would have aborted turn two and started a third.
+    expect(starts).toBe(2)
+    expect(frame).toContain("/replay is not available right now")
+  })
+})
+
+/**
  * A clean workspace before every test.
  *
  * T9 makes the console persist finished turns under `config.workDir`, and every
@@ -1229,6 +1324,7 @@ beforeEach(() => {
     RETRY_FAIL_CONFIG,
     PROMPT_CONFIG,
     REPLAY_CONFIG,
+    GATE_CONFIG,
   ]) {
     fs.rmSync(path.join(workDir, ".multiclaw", "console"), { recursive: true, force: true })
   }

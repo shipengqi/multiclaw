@@ -3,6 +3,7 @@ import {
   argQuery,
   availableCommands,
   COMMANDS,
+  canRun,
   completeAgents,
   isCommandLine,
   matchCommands,
@@ -30,6 +31,32 @@ describe("availableCommands", () => {
     // to retry mid-run — and offering it there would race the live turn.
     expect(availableCommands(false).map((c) => c.name)).toContain("retry")
     expect(availableCommands(true).map((c) => c.name)).not.toContain("retry")
+  })
+})
+
+describe("canRun", () => {
+  it("lets an idle-only command through while idle", () => {
+    expect(canRun("replay", false)).toBe(true)
+  })
+
+  it("blocks an idle-only command while a turn is running", () => {
+    // The palette never offers it mid-run, but a typed command bypasses the
+    // palette — this is that same rule applied at execution time.
+    expect(canRun("replay", true)).toBe(false)
+  })
+
+  it("blocks a running-only command while idle", () => {
+    expect(canRun("cancel", false)).toBe(false)
+  })
+
+  it("lets a phase-agnostic command through in both phases", () => {
+    expect(canRun("fork", true)).toBe(true)
+    expect(canRun("fork", false)).toBe(true)
+  })
+
+  it("lets an unknown name through, so the caller can still report it", () => {
+    expect(canRun("nope", true)).toBe(true)
+    expect(canRun("nope", false)).toBe(true)
   })
 })
 

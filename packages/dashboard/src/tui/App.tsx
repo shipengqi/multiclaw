@@ -5,6 +5,7 @@ import { Box, type Key, Text, useApp, useInput, useWindowSize } from "ink"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import {
   argQuery,
+  canRun,
   completeAgents,
   matchCommands,
   menuQuery,
@@ -354,6 +355,15 @@ export function App({ config, onTurnStart }: AppProps) {
   const runCommand = useCallback(
     (name: string, args: string[]) => {
       setLine(EMPTY_LINE)
+      // The palette only *offers* commands valid for the phase, but a command can
+      // also be *typed* out, which bypasses the palette entirely — so the phase
+      // rule has to be enforced here too, or a mid-run `/replay` would abort the
+      // live turn and start over on top of it. An unknown name is let through so
+      // `default:` below still reports it.
+      if (!canRun(name, running)) {
+        setNotice(`/${name} is not available right now`)
+        return
+      }
       // Commands act on the turn the panes are showing, not the live one. While a
       // past turn is open, `/clear` clears *its* buffer, so validating and
       // reporting against the live turn would name an agent that did not change.
@@ -504,7 +514,7 @@ export function App({ config, onTurnStart }: AppProps) {
           setNotice(`unknown command: /${name}`)
       }
     },
-    [config, exit, queue.length, state, startTurn]
+    [config, exit, queue.length, running, state, startTurn]
   )
 
   const submit = useCallback(() => {
