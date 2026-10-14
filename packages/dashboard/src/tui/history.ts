@@ -14,18 +14,27 @@ export function historyPath(workDir: string): string {
 }
 
 /**
- * Shallow validation: could the panes render this as a turn?
+ * Is this a turn the panes can actually render?
  *
- * Deliberately not exhaustive. The file is written by this program and, at most,
- * hand-edited by a user who is on their own if they get it wrong. What it has to
- * reject is anything that would throw later — `null`, a bare number, an object
- * with no `turn` — so a single corrupted entry costs that one turn instead of
- * the whole file.
+ * Not exhaustive — the file is written by this program and, at most, hand-edited
+ * by a user who is on their own if they get it wrong. But it must reject
+ * anything that would throw while rendering: the panes dereference `agents`
+ * unconditionally (`progress()` runs `Object.values(turn.agents)`) and read
+ * `stages` and `leaderIds` as lists, so a record that carries only `turn` and
+ * `phase` is not a turn. A single bad entry costs that one turn, not the whole
+ * file.
  */
 function isTurnView(value: unknown): value is TurnView {
   if (typeof value !== "object" || value === null) return false
   const turn = value as Partial<TurnView>
-  return typeof turn.turn === "number" && typeof turn.phase === "string"
+  return (
+    typeof turn.turn === "number" &&
+    typeof turn.phase === "string" &&
+    typeof turn.agents === "object" &&
+    turn.agents !== null &&
+    Array.isArray(turn.stages) &&
+    Array.isArray(turn.leaderIds)
+  )
 }
 
 /**

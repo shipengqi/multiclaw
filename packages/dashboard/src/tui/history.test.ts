@@ -73,6 +73,25 @@ describe("loadHistory", () => {
     expect(loadHistory(workDir)).toEqual([good, turn(2)])
   })
 
+  // `turn` and `phase` are not enough to render a turn: the panes dereference
+  // `agents` (via `progress`'s `Object.values`) and read `stages` / `leaderIds`
+  // as lists for every listed turn. An entry missing any of them would throw
+  // while rendering `/history`, so it must be dropped rather than kept.
+  it("drops an entry missing a field the panes dereference", () => {
+    const good = turn(1)
+    writeRaw([
+      good,
+      { turn: 2, phase: "complete" },
+      { turn: 3, phase: "complete", agents: {}, stages: [] },
+      { turn: 4, phase: "complete", agents: null, stages: [], leaderIds: [] },
+      { turn: 5, phase: "complete", agents: {}, stages: "nope", leaderIds: [] },
+      { turn: 6, phase: "complete", agents: {}, stages: [], leaderIds: "nope" },
+      { turn: 7, phase: 5, agents: {}, stages: [], leaderIds: [] },
+    ])
+
+    expect(loadHistory(workDir)).toEqual([good])
+  })
+
   it("keeps only the last MAX_HISTORY entries", () => {
     writeRaw(Array.from({ length: MAX_HISTORY + 5 }, (_, i) => turn(i + 1)))
 

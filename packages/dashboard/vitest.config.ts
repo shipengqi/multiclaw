@@ -14,15 +14,18 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "json-summary"],
       // Coverage is scoped to the modules that carry decisions: the reducer, the
-      // formatters, the command palette and the layout arithmetic. The Ink
-      // components are render glue — they are exercised by the frame assertions
-      // in components.test.tsx and App.test.tsx, which check output rather than
-      // lines, so counting them here would measure the wrong thing.
+      // formatters, the command palette, the layout arithmetic, and the on-disk
+      // history (which degrades to empty on five bad inputs and writes
+      // atomically). The Ink components are render glue — they are exercised by
+      // the frame assertions in components.test.tsx and App.test.tsx, which check
+      // output rather than lines, so counting them here would measure the wrong
+      // thing.
       include: [
         "src/tui/state.ts",
         "src/tui/format.ts",
         "src/tui/commands.ts",
         "src/tui/layout.ts",
+        "src/tui/history.ts",
       ],
       thresholds: {
         statements: 90,
