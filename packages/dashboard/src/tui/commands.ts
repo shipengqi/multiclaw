@@ -100,6 +100,25 @@ export function canRun(name: string, running: boolean): boolean {
 }
 
 /**
+ * Why a command may not run in the current phase, or `undefined` when it may.
+ *
+ * The mirror of {@link canRun}, and the message names the phase the command
+ * *wants* rather than just saying it is unavailable: the two directions mean
+ * different things to the user. A mid-run `/replay` has to read as "wait for the
+ * turn to finish", while an idle `/cancel` has to read as "this only applies to
+ * a running turn" — one string for both would leave the user without the fact
+ * they need to act on. An unknown name has no reason; it is let through so the
+ * caller's `default:` branch can report it.
+ */
+export function unavailableReason(name: string, running: boolean): string | undefined {
+  const command = COMMANDS.find((c) => c.name === name)
+  if (!command || availableCommands(running).includes(command)) return undefined
+  return running
+    ? `/${name} waits for the current turn to finish`
+    : `/${name} only applies while a turn is running`
+}
+
+/**
  * Commands matching what has been typed after the slash.
  *
  * Name prefixes outrank description hits: someone typing `/ag` wants `/agents`,

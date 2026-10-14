@@ -11,6 +11,7 @@ import {
   paletteRows,
   parseCommand,
   resolveAgentId,
+  unavailableReason,
 } from "./commands"
 
 describe("availableCommands", () => {
@@ -57,6 +58,38 @@ describe("canRun", () => {
   it("lets an unknown name through, so the caller can still report it", () => {
     expect(canRun("nope", true)).toBe(true)
     expect(canRun("nope", false)).toBe(true)
+  })
+})
+
+describe("unavailableReason", () => {
+  it("tells an idle-only command to wait for the turn to finish", () => {
+    // The user's fact is "wait" — the command is real, it just cannot run now.
+    expect(unavailableReason("replay", true)).toBe("/replay waits for the current turn to finish")
+  })
+
+  it("tells a running-only command it only applies to a running turn", () => {
+    // The other direction means something different: there is nothing to cancel.
+    expect(unavailableReason("cancel", false)).toBe("/cancel only applies while a turn is running")
+  })
+
+  it("has no reason for a command that may run in this phase", () => {
+    expect(unavailableReason("replay", false)).toBeUndefined()
+    expect(unavailableReason("cancel", true)).toBeUndefined()
+  })
+
+  it("has no reason for an unknown name, which the caller still reports", () => {
+    expect(unavailableReason("nope", true)).toBeUndefined()
+    expect(unavailableReason("nope", false)).toBeUndefined()
+  })
+
+  it("agrees with canRun across every command and phase", () => {
+    // The gate and the message must not drift: a command is rejected exactly
+    // when there is a reason to give.
+    for (const running of [true, false]) {
+      for (const { name } of COMMANDS) {
+        expect(unavailableReason(name, running) === undefined).toBe(canRun(name, running))
+      }
+    }
   })
 })
 

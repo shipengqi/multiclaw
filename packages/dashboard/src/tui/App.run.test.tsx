@@ -1297,7 +1297,7 @@ describe("App · a command typed mid-run", () => {
     // Two turns started — the original and the follow-up — and no more. Without
     // the gate, the replay would have aborted turn two and started a third.
     expect(starts).toBe(2)
-    expect(frame).toContain("/replay is not available right now")
+    expect(frame).toContain("/replay waits for the current turn to finish")
   })
 })
 

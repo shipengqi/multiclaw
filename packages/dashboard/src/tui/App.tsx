@@ -13,6 +13,7 @@ import {
   paletteRows,
   parseCommand,
   resolveAgentId,
+  unavailableReason,
 } from "./commands"
 import {
   Header,
@@ -359,9 +360,10 @@ export function App({ config, onTurnStart }: AppProps) {
       // also be *typed* out, which bypasses the palette entirely — so the phase
       // rule has to be enforced here too, or a mid-run `/replay` would abort the
       // live turn and start over on top of it. An unknown name is let through so
-      // `default:` below still reports it.
+      // `default:` below still reports it. The notice names the phase the command
+      // wants, so the user knows whether to wait or that it does not apply yet.
       if (!canRun(name, running)) {
-        setNotice(`/${name} is not available right now`)
+        setNotice(unavailableReason(name, running))
         return
       }
       // Commands act on the turn the panes are showing, not the live one. While a
