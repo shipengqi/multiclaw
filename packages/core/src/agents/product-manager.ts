@@ -16,6 +16,7 @@ Principles: Output the document directly without preamble. Mark uncertain items 
 
 const TASK = `## Business Context
 {{requirement}}
+{{upstreamOutputs}}
 
 ## Task
 Based on the context above, create requirements.md in the current directory containing:

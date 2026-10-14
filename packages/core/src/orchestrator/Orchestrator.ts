@@ -8,6 +8,7 @@ import type { StageInfo } from "../types/event"
 import type { LeaderMessage } from "../types/leader"
 import { renderConversation } from "../utils/conversation"
 import { parseLeaderDecision } from "../utils/leaderDecision"
+import { renderUpstreamOutputs } from "../utils/upstream"
 import { AgentRunner } from "./AgentRunner"
 import { ContextManager } from "./ContextManager"
 import { buildStages } from "./StageBuilder"
@@ -36,6 +37,10 @@ export class Orchestrator {
     // placeholder, and a context key that was never set leaves the literal
     // `{{conversation}}` in the prompt for the model to read.
     this.contextManager.set("conversation", renderConversation(config.history))
+    // Set unconditionally, including to "": the built-in task templates carry the
+    // placeholder, and a context key that was never set leaves the literal
+    // `{{upstreamOutputs}}` in the prompt for the model to read.
+    this.contextManager.set("upstreamOutputs", "")
     this.runner = new AgentRunner(this.eventBus, this.contextManager, this.workDir, config)
   }
 
@@ -110,6 +115,19 @@ export class Orchestrator {
 
       const stageResults = await this.runStage(stage, options.signal)
       results.push(...stageResults)
+
+      // Hand the next stage what this one produced. Only what succeeded: a
+      // failed agent's partial output is not a conclusion a downstream agent
+      // should build on. Set before the abort check so the loop's invariant —
+      // "the context reflects every completed stage" — holds on every exit.
+      this.contextManager.set(
+        "upstreamOutputs",
+        renderUpstreamOutputs(
+          results
+            .filter((r) => r.status === "success")
+            .map((r) => ({ agentId: r.agentId, name: r.agentName, output: r.output }))
+        )
+      )
 
       // Cancelled mid-stage: stop scheduling further stages and fall through to
       // the completion result rather than emitting a misleading stage:complete.

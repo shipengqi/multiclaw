@@ -53,6 +53,7 @@ const TASK = `## Project
 ## Pipeline Agents
 The following agents will run in this pipeline (id: name):
 {{pipelineAgents}}
+{{upstreamOutputs}}
 
 ## Task
 Analyze the requirement and create three files in the current directory:

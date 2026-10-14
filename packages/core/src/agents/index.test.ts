@@ -41,4 +41,18 @@ describe("built-in agents", () => {
     const agent = factory()
     expect(agent.models?.[agent.runtime ?? "acp"]).toBeTruthy()
   })
+
+  // Every preset but the leader runs inside the pipeline, so every one of them
+  // carries the placeholder that shows it what upstream produced. Without it the
+  // whole capability is dead code for the built-in team.
+  const PIPELINE = ALL.filter(([name]) => name !== "leader")
+  it.each(PIPELINE)("%s is shown what upstream produced", (_name, factory) => {
+    expect(factory().taskPrompt).toContain("{{upstreamOutputs}}")
+  })
+
+  // The leader runs before any stage exists, so it has no upstream to be shown —
+  // the placeholder there would only ever render as an empty section.
+  it("keeps the upstream placeholder out of the leader's prompt", () => {
+    expect(agents.leader().taskPrompt).not.toContain("{{upstreamOutputs}}")
+  })
 })

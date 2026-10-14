@@ -19,6 +19,7 @@ const TASK = `## Project
 
 ## Requirement
 {{requirement}}
+{{upstreamOutputs}}
 
 ## Task
 Perform an independent code review of all implementation in the current directory and output review.md:

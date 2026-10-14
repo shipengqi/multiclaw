@@ -20,6 +20,7 @@ const TASK = `## Architecture Design
 
 ## API Specification
 {{file:api-spec.md}}
+{{upstreamOutputs}}
 
 ## Task
 Review the architecture design and API specification above. Output arch-review.md:

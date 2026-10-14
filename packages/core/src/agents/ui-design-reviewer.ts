@@ -21,6 +21,7 @@ const TASK = `## Requirement
 
 ## UI Design Specification
 {{file:ui-design.md}}
+{{upstreamOutputs}}
 
 ## Task
 Review the UI design specification above and output ui-review.md:

@@ -22,6 +22,7 @@ import {
   tuiReducer,
 } from "./state"
 import { DEMO, renderFrame } from "./test-helpers"
+import { GLYPH } from "./theme"
 
 const TS = "2026-01-01T00:00:00.000Z"
 /** Four seconds after the turn began, so every live clock reads 4.2s. */
@@ -870,5 +871,20 @@ describe("Prompt", () => {
     // Reversed, and not dimmed: the caret must not inherit the ghost styling.
     expect(frame).toContain("\u001b[7m")
     expect(frame).not.toContain("\u001b[2m\u001b[7m")
+  })
+
+  // A pasted newline is drawn as a single-cell glyph, not a real break: the
+  // prompt is one line, and a real `\n` would split the caret's row in two.
+  it("draws a pasted newline as the newline glyph, not a line break", async () => {
+    const frame = stripAnsi(await prompt({ value: "a\nb", cursor: 3 }))
+    expect(frame).toContain(`a${GLYPH.newline}b`)
+    expect(frame).not.toContain("a\nb")
+  })
+
+  // The glyph substitution is 1:1, so the caret must land on the cell that is
+  // actually under it — including when that cell is a newline.
+  it("keeps the caret on the cell under it when it sits on a newline", async () => {
+    const frame = await prompt({ value: "a\nb", cursor: 1 })
+    expect(frame).toContain(`\u001b[7m${GLYPH.newline}`)
   })
 })

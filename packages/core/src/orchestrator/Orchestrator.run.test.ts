@@ -988,3 +988,67 @@ describe("Orchestrator.run · resume", () => {
     expect(result.requirement).toBe("nothing to do")
   })
 })
+
+describe("Orchestrator.run · upstream outputs", () => {
+  // The bug this guards: `ContextManager` was written by the constructor and the
+  // leader only — never with an agent's output — so a downstream agent's prompt
+  // carried nothing about what upstream had said or decided.
+  it("hands a downstream agent what the stage before it produced", async () => {
+    const prompts: Record<string, string> = {}
+    handler = async (task) => {
+      prompts[task.agentId] = task.prompt
+      return { output: task.agentId === "first" ? "UPSTREAM_MARKER" : "done", exitCode: 0 }
+    }
+
+    await runOrch([
+      agent("first", { name: "First", taskPrompt: "{{upstreamOutputs}}" }),
+      agent("second", { name: "Second", dependsOn: ["first"], taskPrompt: "{{upstreamOutputs}}" }),
+    ])
+
+    expect(prompts.second).toContain("UPSTREAM_MARKER")
+    expect(prompts.second).toContain("## What upstream produced")
+    // And the producer is named, so the reader knows whose conclusion it is.
+    expect(prompts.second).toContain("(first)")
+  })
+
+  it("keeps a failed agent out of the upstream block", async () => {
+    const prompts: Record<string, string> = {}
+    handler = async (task) => {
+      prompts[task.agentId] = task.prompt
+      if (task.agentId === "first") throw new Error("boom")
+      return { output: "done", exitCode: 0 }
+    }
+
+    await runOrch(
+      [
+        agent("first", { name: "FAILED_UPSTREAM", taskPrompt: "{{upstreamOutputs}}" }),
+        agent("second", {
+          name: "Second",
+          dependsOn: ["first"],
+          taskPrompt: "{{upstreamOutputs}}",
+        }),
+      ],
+      { continueOnError: true }
+    )
+
+    // A failed agent's partial output is not a conclusion to build on, so it
+    // must not appear as an upstream entry at all — not even as an empty bullet.
+    expect(prompts.second).not.toContain("FAILED_UPSTREAM")
+    expect(prompts.second).not.toContain("## What upstream produced")
+  })
+
+  it("leaves no upstream block before any stage has run", async () => {
+    const prompts: Record<string, string> = {}
+    handler = async (task) => {
+      prompts[task.agentId] = task.prompt
+      return { output: "out", exitCode: 0 }
+    }
+
+    await runOrch([agent("solo", { taskPrompt: "before\n{{upstreamOutputs}}\nafter" })])
+
+    // Empty rather than a placeholder: the block is not there, so neither is its
+    // heading, and the model is not handed the literal `{{upstreamOutputs}}`.
+    expect(prompts.solo).not.toContain("## What upstream produced")
+    expect(prompts.solo).not.toContain("{{upstreamOutputs}}")
+  })
+})

@@ -940,3 +940,92 @@ describe("App · /retry re-runs a failed agent", () => {
     expect(frame).toContain("turn 2")
   })
 })
+
+/** A runtime that records the requirement it was handed, via the leader's prompt. */
+const PROMPT_RUNTIME = "tui-integration-prompt"
+
+/** The last prompt the leader was handed. Its template is just `{{requirement}}`. */
+let leaderPrompt = ""
+
+const PROMPT_CONFIG: MultiClawConfig = {
+  name: "dev-team",
+  workDir: "/tmp/multiclaw-tui-prompt",
+  leader: {
+    id: "leader",
+    name: "Leader",
+    icon: "◆",
+    runtime: PROMPT_RUNTIME,
+    systemPrompt: "",
+    taskPrompt: "{{requirement}}",
+  },
+  agents: [
+    {
+      id: "architect",
+      name: "Architect",
+      runtime: PROMPT_RUNTIME,
+      systemPrompt: "",
+      taskPrompt: "",
+    },
+  ],
+}
+
+describe("App · the prompt line", () => {
+  beforeEach(() => {
+    leaderPrompt = ""
+  })
+
+  beforeAll(() => {
+    runtimeRegistry.register({
+      name: PROMPT_RUNTIME,
+      describe: alwaysAvailable(PROMPT_RUNTIME),
+      async execute(task) {
+        if (task.agentId === "leader") {
+          leaderPrompt = task.prompt
+          return { output: '{"mode":"run","run":["architect"]}', exitCode: 0 }
+        }
+        return { output: `${task.agentId} finished`, exitCode: 0 }
+      },
+    })
+  })
+
+  /**
+   * Type `keys`, press enter, and return the requirement the leader was handed.
+   *
+   * The leader's template is the raw `{{requirement}}`, so its prompt *is* the
+   * requirement — which is the value `submit` handed the orchestrator.
+   */
+  async function submit(keys: string[]): Promise<string> {
+    let complete: () => void = () => {}
+    const finished = new Promise<void>((resolve) => {
+      complete = resolve
+    })
+    await driveFrame(
+      <App
+        config={PROMPT_CONFIG}
+        onTurnStart={(bus) => {
+          bus.subscribe((event) => {
+            if (event.type === "orchestration:complete") complete()
+          })
+        }}
+      />,
+      { keys: [...keys, "\r"], ready: finished, timeoutMs: 3000 }
+    )
+    return leaderPrompt
+  }
+
+  // Regression: a paste used to be flattened to a single line, so a pasted stack
+  // trace reached the leader as one unreadable row.
+  it("keeps the line breaks a paste carried", async () => {
+    expect(await submit(["a\nb"])).toBe("a\nb")
+  })
+
+  // The glyph substitution must not disturb ordinary single-line editing: a
+  // character typed mid-line lands at the caret, not at the end.
+  it("inserts a character at the caret, not at the end", async () => {
+    expect(await submit(["ac", "\u001b[D", "b"])).toBe("abc")
+  })
+
+  it("deletes the character before the caret", async () => {
+    expect(await submit(["abc", "\u001b[D", "\u001b[D", "\u007f"])).toBe("bc")
+  })
+})

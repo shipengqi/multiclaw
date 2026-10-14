@@ -27,13 +27,26 @@ export function Prompt({
   caretVisible: boolean
   placeholder: string
 }) {
+  // Newlines are drawn as a single-cell glyph rather than a real line break: the
+  // console is a one-line prompt, and `\n` → glyph is 1:1, so `cursor` — which
+  // indexes the original `value` — still points at the right cell in `shown`.
+  //
+  // That 1:1 property is a precondition the *caller* guarantees: `App.insert`
+  // normalises every line ending to `\n`, so the `value` reaching here never
+  // contains `\r`. Clearing `\r` below is defensive only — and it is deliberately
+  // NOT 1:1 (it shortens `shown`), so if a `\r` ever did arrive, `cursor` would
+  // no longer line up. The fix would be to stop one upstream, not to paper over
+  // it here.
+  const shown = value.replace(/\r/g, "").replace(/\n/g, GLYPH.newline)
+  // `ghost` stays keyed off the original value: an empty prompt is the one case
+  // that shows the placeholder, and a value of "\n" is not empty.
   const ghost = value === ""
-  const before = value.slice(0, cursor)
+  const before = shown.slice(0, cursor)
   // Empty line → the ghost text supplies the cell; otherwise it is the
   // character under the cursor. Falling back to a space keeps the cell at the
   // end of a typed line from vanishing when the blink is off.
-  const cell = ghost ? placeholder.slice(0, 1) : value.slice(cursor, cursor + 1)
-  const tail = ghost ? placeholder.slice(1) : value.slice(cursor + 1)
+  const cell = ghost ? placeholder.slice(0, 1) : shown.slice(cursor, cursor + 1)
+  const tail = ghost ? placeholder.slice(1) : shown.slice(cursor + 1)
 
   return (
     <Box flexShrink={0}>

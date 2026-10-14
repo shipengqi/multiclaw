@@ -27,6 +27,7 @@ const TASK = `## Project
 
 ## API Specification
 {{file:api-spec.md}}
+{{upstreamOutputs}}
 
 ## Task
 Perform a thorough code review of all implementation in the current directory and output code-review.md:

@@ -22,6 +22,7 @@ const TASK = `## Task Scope
 
 ## Plan
 {{agentPlan}}
+{{upstreamOutputs}}
 
 ---
 

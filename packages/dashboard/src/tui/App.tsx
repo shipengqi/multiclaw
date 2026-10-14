@@ -689,8 +689,11 @@ export function App({ config, onTurnStart }: AppProps) {
       deleteForward()
       return
     }
-    // A paste arrives as one multi-character chunk; collapse it to a single line.
-    if (char && !key.ctrl && !key.meta) insert(char.replace(/[\r\n]+/g, " "))
+    // A paste keeps its line structure: a requirement is often a stack trace,
+    // and flattening it to one line destroys the thing the leader needs to read.
+    // Only the line endings are normalised. The display flattens it for layout
+    // instead — see `Prompt`.
+    if (char && !key.ctrl && !key.meta) insert(char.replace(/\r\n?/g, "\n"))
   }
 
   // Held in a ref so the key handler does not have to be re-subscribed on every

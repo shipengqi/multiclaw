@@ -69,4 +69,13 @@ export const GLYPH = {
   ask: "?",
   /** A mid-turn warning that rides alongside the outcome rather than hiding it. */
   warn: "⚠",
+  /**
+   * A pasted line break, drawn in the one-line prompt.
+   *
+   * MUST be exactly one column wide. `Prompt` maps `\n` to this glyph 1:1 — one
+   * character in, one character out — so its caret index stays valid; a glyph
+   * that rendered as two columns would push the caret off by one for every
+   * newline before it. If a terminal disagrees, this single glyph is the fix.
+   */
+  newline: "↵",
 } as const
