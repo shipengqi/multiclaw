@@ -18,6 +18,7 @@ import {
   MAX_HISTORY,
   MAX_LOG_CHARS,
   progress,
+  recordedTurns,
   reduceEvent,
   seedAgents,
   stageStatus,
@@ -454,12 +455,73 @@ describe("turn history", () => {
     expect(start(initialState, "first").history).toEqual([])
   })
 
+  it("records the live turn only once it has finished", () => {
+    const running = start(withAgents("a"), "first")
+    // Mid-flight the live turn is half a turn — the requirement is known but the
+    // outcome is not — so it must not be written to disk as a finished turn.
+    expect(recordedTurns(running)).toEqual([])
+
+    const done = reduceEvent(running, {
+      type: "orchestration:complete",
+      timestamp: TS,
+      payload: {
+        name: "demo",
+        success: true,
+        totalDuration: 5,
+        agentResults: [],
+        startTime: TS,
+        endTime: TS,
+      },
+    })
+
+    const recorded = recordedTurns(done)
+    expect(recorded).toHaveLength(1)
+    expect(recorded[0].turn).toBe(1)
+    expect(recorded[0].requirement).toBe("first")
+    expect(recorded[0].phase).toBe("complete")
+  })
+
+  // A console restored from disk has a turn number but no turn on screen:
+  // `requirement` is the field that says a turn is live, not `turn`. Keying the
+  // guard off `turn` would push this empty initial state into history as a
+  // phantom "interrupted" record the moment the user asked for the next turn.
+  it("does not invent a turn when history is restored but nothing is running", () => {
+    const restored: TuiState = {
+      ...initialState,
+      turn: 5,
+      history: [record(4, {}, "leader")],
+    }
+
+    const next = start(restored, "next")
+
+    expect(next.history).toHaveLength(1)
+    expect(next.history[0].turn).toBe(4)
+  })
+
+  it("still remembers the turn on screen when one is actually running", () => {
+    const running: TuiState = { ...initialState, turn: 5, requirement: "x" }
+
+    const next = start(running, "next")
+
+    expect(next.history).toHaveLength(1)
+    expect(next.history[0].turn).toBe(5)
+    expect(next.history[0].requirement).toBe("x")
+  })
+
   it("caps how many turns it keeps, dropping the oldest", () => {
     const older = Array.from(
       { length: MAX_HISTORY },
       (_, i): TurnView => ({ ...initialState, turn: i + 1 })
     )
-    const full: TuiState = { ...initialState, turn: MAX_HISTORY + 1, history: older }
+    // A live turn (requirement set) sitting on top of a full history. `turn`
+    // alone would not say a turn is on screen — the guard keys off `requirement`
+    // — so the fixture has to carry both, the way `turn:start` writes them.
+    const full: TuiState = {
+      ...initialState,
+      turn: MAX_HISTORY + 1,
+      requirement: "running",
+      history: older,
+    }
 
     const next = start(full, "next")
 
@@ -700,6 +762,26 @@ describe("createInitialState", () => {
 
   it("opens with the stream live rather than scrolled back", () => {
     expect(createInitialState(config()).scroll).toBe(0)
+  })
+
+  it("continues the turn number from restored history", () => {
+    const earlier: TurnView = { ...initialState, turn: 4, phase: "complete", requirement: "old" }
+
+    const state = createInitialState(config(), [earlier])
+
+    // Numbering has to keep climbing across sessions, or `/replay 4` would name
+    // two different turns the moment a second session began.
+    expect(state.turn).toBe(4)
+    expect(state.history).toEqual([earlier])
+    // A restored console is idle: nothing is running, so no requirement is set.
+    expect(state.phase).toBe("idle")
+    expect(state.requirement).toBeUndefined()
+  })
+
+  it("matches the argument-less call exactly when no history is given", () => {
+    // The second parameter is additive: every existing caller must behave as it
+    // did before history existed.
+    expect(createInitialState(config(), [])).toEqual(createInitialState(config()))
   })
 })
 
@@ -1084,6 +1166,26 @@ describe("conversationTurns", () => {
 
     expect(conversationTurns(state)).toEqual([])
   })
+
+  // A cancelled turn never emits `orchestration:complete`, so it stays in
+  // `history` with `phase: "running"`. It is remembered — `/history` should show
+  // it — but it is not context, because half a turn is not a turn.
+  it("keeps a cancelled turn in history but out of the conversation", () => {
+    const cancelled = tuiReducer(createInitialState(config()), {
+      type: "turn:start",
+      requirement: "doomed",
+      agents: seedAgents(config()),
+      leaderIds: ["leader"],
+      startedAt: T0,
+    })
+
+    // The next turn pushes the cancelled one into history, still "running".
+    const state = ran(cancelled, "second")
+
+    expect(state.history.map((turn) => turn.requirement)).toEqual(["doomed"])
+    expect(state.history[0].phase).toBe("running")
+    expect(conversationTurns(state).map((turn) => turn.requirement)).toEqual(["second"])
+  })
 })
 
 describe("verbose and tool detail", () => {
@@ -1175,8 +1277,9 @@ describe("cost and usage", () => {
   })
 
   it("keeps the total cost when a finished turn is snapshotted into history", () => {
-    // Turn 1, not the seeded turn 0 — only a real turn is snapshotted.
-    const base = { ...withAgents("a"), turn: 1 }
+    // A real turn, not the seeded turn 0: it carries a requirement, which is
+    // what marks a turn as on screen — only such a turn is snapshotted.
+    const base = { ...withAgents("a"), turn: 1, requirement: "first" }
     const done = reduceEvent(base, {
       type: "orchestration:complete",
       timestamp: TS,
@@ -1236,8 +1339,9 @@ describe("session ids", () => {
   })
 
   it("keeps the session id when a finished turn is snapshotted into history", () => {
-    // Turn 1, not the seeded turn 0 — only a real turn is snapshotted.
-    const base = { ...withAgents("a"), turn: 1 }
+    // A real turn, not the seeded turn 0: it carries a requirement, which is
+    // what marks a turn as on screen — only such a turn is snapshotted.
+    const base = { ...withAgents("a"), turn: 1, requirement: "first" }
     const done = reduceEvent(base, {
       type: "agent:complete",
       timestamp: TS,

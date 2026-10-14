@@ -246,19 +246,36 @@ export function seedAgents(config: MultiClawConfig): Record<string, AgentView> {
   return agents
 }
 
-export function createInitialState(config: MultiClawConfig): TuiState {
+/**
+ * Build the console's opening state, optionally seeded with turns from disk.
+ *
+ * `history` is the second parameter rather than part of `config` because it is
+ * *session* state, not configuration: two runs of the same config start from the
+ * same config but different pasts.
+ *
+ * The turn counter continues from the last restored turn (`history`'s last
+ * entry) so numbering stays monotonic across sessions. If it restarted at zero,
+ * `/replay 3` would be ambiguous the moment a second session began — two turns
+ * would share the number three.
+ *
+ * The parameter is optional and defaults to `[]`, so every existing caller keeps
+ * the exact behaviour it had before history existed (turn 0, empty history). This
+ * module is re-exported wholesale by `src/tui/index.ts`, so widening the
+ * signature any other way would be a breaking change to the public API.
+ */
+export function createInitialState(config: MultiClawConfig, history: TurnView[] = []): TuiState {
   const agents = seedAgents(config)
   return {
     phase: "idle",
     name: config.name,
-    turn: 0,
+    turn: history[history.length - 1]?.turn ?? 0,
     stages: [],
     leaderIds: leaderAgentIds(config),
     agents,
     focusId: Object.keys(agents)[0],
     autoFollow: true,
     scroll: 0,
-    history: [],
+    history,
     verbose: false,
   }
 }
@@ -512,6 +529,24 @@ function mapShown(state: TuiState, fn: (turn: TurnView) => TurnView): TuiState {
 }
 
 /**
+ * The turns worth keeping: those already in `history`, plus the turn on screen
+ * once it has ended.
+ *
+ * The live turn joins the set only when its `phase` is `complete`. While it is
+ * still `running` it is half a turn — the requirement is known but the outcome
+ * is not — and a record captured mid-flight would be written to disk as a turn
+ * that never finishes. The two places that persist turns (the on-disk history
+ * and the leader's conversation context) must agree on which turns exist, so
+ * they both derive from here rather than each rebuilding the set.
+ *
+ * `snapshot` is module-private, which is why this helper lives in `state.ts`
+ * rather than beside the file-writing code in `history.ts`.
+ */
+export function recordedTurns(state: TuiState): TurnView[] {
+  return [...state.history, ...(state.phase === "complete" ? [snapshot(state)] : [])]
+}
+
+/**
  * The turns behind this one, as dialogue the leader can read back.
  *
  * Core has no notion of a session — an orchestrator is built per turn — so the
@@ -519,9 +554,9 @@ function mapShown(state: TuiState, fn: (turn: TurnView) => TurnView): TuiState {
  * answer arrives at the leader as a requirement with nothing to answer: turn one
  * asks "which database?", turn two's requirement is the word "Postgres".
  *
- * Derived rather than tracked separately: `history` plus the turn on screen
- * *are* the finished turns, and a second copy is one more thing that could
- * disagree with what the panes show.
+ * Derived rather than tracked separately: the recorded turns *are* the finished
+ * turns, and a second copy is one more thing that could disagree with what the
+ * panes show.
  *
  * Only turns that ended are carried, which makes the call site's timing
  * irrelevant: whether this is read before or after `turn:start` moves the turn
@@ -529,7 +564,7 @@ function mapShown(state: TuiState, fn: (turn: TurnView) => TurnView): TuiState {
  */
 export function conversationTurns(state: TuiState): TurnRecord[] {
   const turns: TurnRecord[] = []
-  for (const turn of [...state.history, snapshot(state)]) {
+  for (const turn of recordedTurns(state)) {
     // A cancelled turn never emits `orchestration:complete`, so it stays
     // "running" — and half a turn is not context. Turn 0 is the seeded roster:
     // a requirement nobody asked for is not part of the conversation either.
@@ -554,10 +589,17 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
       // rebuilt rather than spread from `initialState` so no module-level object
       // is ever shared into live state.
       const ids = Object.keys(action.agents)
-      // Turn 0 is the seeded roster, not a turn anyone asked for, so there is
-      // nothing to remember until a requirement has actually been run.
+      // Remember the turn being replaced — but only if a turn is actually on
+      // screen. `requirement` is the honest test for that: it is written by
+      // `turn:start` alongside `turn`, so within a session the two agree, while
+      // an idle console (fresh, or freshly seeded from disk) has a requirement
+      // for nothing. Testing `turn > 0` instead would treat a history-seeded
+      // console (turn N, nothing running) as if a turn were in flight and push
+      // the empty initial state into history as a phantom "interrupted" record.
       const history =
-        state.turn > 0 ? [...state.history, snapshot(state)].slice(-MAX_HISTORY) : state.history
+        state.requirement !== undefined
+          ? [...state.history, snapshot(state)].slice(-MAX_HISTORY)
+          : state.history
       return {
         phase: "running",
         name: state.name,

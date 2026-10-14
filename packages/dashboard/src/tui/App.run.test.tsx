@@ -1,3 +1,5 @@
+import * as fs from "node:fs"
+import * as path from "node:path"
 import type { MultiClawConfig } from "@multiclawcli/core"
 import { agents, runtimeRegistry } from "@multiclawcli/core"
 import { beforeAll, beforeEach, describe, expect, it } from "vitest"
@@ -1028,4 +1030,31 @@ describe("App · the prompt line", () => {
   it("deletes the character before the caret", async () => {
     expect(await submit(["abc", "\u001b[D", "\u001b[D", "\u007f"])).toBe("bc")
   })
+})
+
+/**
+ * A clean workspace before every test.
+ *
+ * T9 makes the console persist finished turns under `config.workDir`, and every
+ * config above points at a fixed `/tmp` path. Without this, a turn written by
+ * one test — or by a previous *run* of the suite — would be restored into the
+ * next render, so `turn 2` would come back as `turn 7` and the suite would fail
+ * on its second run. Wiping the console directory restores the isolation the
+ * tests had before anything was written to disk.
+ */
+beforeEach(() => {
+  for (const { workDir } of [
+    CONFIG,
+    REPLY_CONFIG,
+    SLOW_CONFIG,
+    WORKSPACE_CONFIG,
+    ASK_CONFIG,
+    LONG_CONFIG,
+    COST_CONFIG,
+    RETRY_OK_CONFIG,
+    RETRY_FAIL_CONFIG,
+    PROMPT_CONFIG,
+  ]) {
+    fs.rmSync(path.join(workDir, ".multiclaw", "console"), { recursive: true, force: true })
+  }
 })

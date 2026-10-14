@@ -23,13 +23,16 @@ import {
 } from "./components/panels"
 import { CommandMenu, Prompt } from "./components/prompt"
 import { formatCost, formatDuration } from "./format"
+import { loadHistory, saveHistory } from "./history"
 import { computeLayout } from "./layout"
 import {
   conversationTurns,
   createInitialState,
   leaderAgentIds,
+  MAX_HISTORY,
   plannedAgents,
   progress,
+  recordedTurns,
   seedAgents,
   tuiReducer,
   turnElapsed,
@@ -153,7 +156,13 @@ export function App({ config, onTurnStart }: AppProps) {
   const { exit } = useApp()
   const { columns, rows } = useWindowSize()
 
-  const [state, dispatch] = useReducer(tuiReducer, config, createInitialState)
+  // Open with whatever the last session left on disk. Read synchronously in the
+  // lazy initialiser so the first frame already shows the restored history — an
+  // async load would race the user's first turn and force an "history still
+  // loading" state that nothing else needs.
+  const [state, dispatch] = useReducer(tuiReducer, config, (c) =>
+    createInitialState(c, loadHistory(c.workDir))
+  )
   // `startTurn` is not rebuilt when state changes, so it reads the turn on screen
   // through a ref. The conversation it hands the leader has to be the one the
   // panes are showing, not the one from whichever render created the callback.
@@ -207,6 +216,35 @@ export function App({ config, onTurnStart }: AppProps) {
     const timer = setInterval(() => setCaretOn((on) => !on), BLINK_INTERVAL_MS)
     return () => clearInterval(timer)
   }, [running, line.text])
+
+  // Write finished turns back to disk so the next session can pick them up.
+  //
+  // The deps are the only two fields that can change `recordedTurns`: `turn:start`
+  // swaps `history`, and `orchestration:complete` flips `phase` to `complete`.
+  // Every other event spreads `state` and leaves both references untouched.
+  // Depending on `state` itself would re-run this on every spinner tick (110ms)
+  // and `JSON.stringify` a history of up to ~1.6MB each time — a frame-rate bug,
+  // not a nicety. The turn on screen is read through the existing `stateRef`, so
+  // the effect always sees the current state despite the narrow dep list.
+  const lastSaved = useRef<string | undefined>(undefined)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the effect reads state through `stateRef`, so the linter cannot see that `state.history` and `state.phase` are its real inputs; they are exactly the fields whose change can alter the recorded set, and listing `state` itself would re-stringify the whole history on every event.
+  useEffect(() => {
+    const turns = recordedTurns(stateRef.current).slice(-MAX_HISTORY)
+    // A workspace that never ran a turn should not sprout an empty file.
+    if (turns.length === 0) return
+    const json = JSON.stringify(turns)
+    // A single turn fires this effect twice: once when `turn:start` pushes the
+    // previous turn into `history`, and again when `orchestration:complete` ends
+    // it. On the first pass the new turn is still `running` and so is not yet in
+    // `recordedTurns`; the two payloads are byte-identical and the second write
+    // is skipped. On startup the first pass rewrites exactly what was just read
+    // (`lastSaved` starts undefined) — one bounded write, accepted.
+    if (json === lastSaved.current) return
+    lastSaved.current = json
+    void saveHistory(config.workDir, turns).catch((err: Error) =>
+      setNotice(`history not saved: ${err.message}`)
+    )
+  }, [state.history, state.phase])
 
   const startTurn = useCallback(
     async (requirement: string, opts?: { resume?: MultiClawConfig["resume"] }) => {
