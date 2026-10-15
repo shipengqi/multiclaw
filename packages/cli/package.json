@@ -43,7 +43,7 @@
     "jiti": "^2.7.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0",
     "vitest": "^4.1.11"
