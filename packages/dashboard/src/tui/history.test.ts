@@ -92,6 +92,25 @@ describe("loadHistory", () => {
     expect(loadHistory(workDir)).toEqual([good])
   })
 
+  // The collection being the right type is not enough: the panes walk its
+  // *elements*. `progress()` reads `a.status` off every `agents` value, and
+  // `railCellWidths` reads `agent.name` off every `stage.agents` element — a
+  // `null` element throws in both. Each is dropped with a good turn beside it, so
+  // the drop is attributable to the element, not the collection.
+  it("drops an entry whose `agents` value is not an object", () => {
+    const good = turn(1)
+    writeRaw([good, { ...good, turn: 2, agents: { a: null } }])
+
+    expect(loadHistory(workDir)).toEqual([good])
+  })
+
+  it("drops an entry whose `stages` element is not an object", () => {
+    const good = turn(1)
+    writeRaw([good, { ...good, turn: 3, stages: [null] }])
+
+    expect(loadHistory(workDir)).toEqual([good])
+  })
+
   it("keeps only the last MAX_HISTORY entries", () => {
     writeRaw(Array.from({ length: MAX_HISTORY + 5 }, (_, i) => turn(i + 1)))
 

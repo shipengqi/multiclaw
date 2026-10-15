@@ -13,26 +13,36 @@ export function historyPath(workDir: string): string {
   return path.join(workDir, ".multiclaw", CONSOLE_DIR, HISTORY_FILE)
 }
 
+/** True for a non-null object — the shape every element the panes walk must have. */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
 /**
  * Is this a turn the panes can actually render?
  *
- * Not exhaustive — the file is written by this program and, at most, hand-edited
- * by a user who is on their own if they get it wrong. But it must reject
- * anything that would throw while rendering: the panes dereference `agents`
- * unconditionally (`progress()` runs `Object.values(turn.agents)`) and read
- * `stages` and `leaderIds` as lists, so a record that carries only `turn` and
- * `phase` is not a turn. A single bad entry costs that one turn, not the whole
- * file.
+ * It validates the shapes the panes *walk*, not every field. The top level, and
+ * the elements of the two collections they iterate, are checked because a `null`
+ * element throws: `progress()` runs `Object.values(turn.agents)` and reads
+ * `a.status`, and `railCellWidths` iterates `stage.agents` and reads
+ * `agent.name`. Leaf fields are trusted — this file is written by this program
+ * with an atomic write, and a field-by-field schema of `TurnView` would be a
+ * second definition of the type that could drift from the real one. An empty
+ * object is safe (`a.status` is `undefined`, `SETTLED.has(undefined)` is false,
+ * and `agent?.logs ?` guards the log read), so the elements are required to be
+ * objects, not to carry fields. A single bad entry costs that one turn, not the
+ * whole file.
  */
 function isTurnView(value: unknown): value is TurnView {
-  if (typeof value !== "object" || value === null) return false
+  if (!isObject(value)) return false
   const turn = value as Partial<TurnView>
   return (
     typeof turn.turn === "number" &&
     typeof turn.phase === "string" &&
-    typeof turn.agents === "object" &&
-    turn.agents !== null &&
+    isObject(turn.agents) &&
+    Object.values(turn.agents).every(isObject) &&
     Array.isArray(turn.stages) &&
+    turn.stages.every(isObject) &&
     Array.isArray(turn.leaderIds)
   )
 }

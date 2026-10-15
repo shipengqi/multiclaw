@@ -1115,10 +1115,13 @@ describe("App · replaying and forking finished turns", () => {
   }
 
   it("replays the last finished turn by default", async () => {
-    await drive(["first task", "\r", "second task", "\r"], 2, ["/replay", "\r"])
+    const frame = await drive(["first task", "\r", "second task", "\r"], 2, ["/replay", "\r"])
 
     // Three turns ran; the third re-ran the second's requirement verbatim.
     expect(prompts).toEqual(["first task", "second task", "second task"])
+    // And the console says so. The notice has to be set *after* `startTurn`,
+    // whose first line clears it — reverse the two and the frame loses this.
+    expect(frame).toContain("replaying turn 2")
   })
 
   it("replays the turn named by number", async () => {
@@ -1191,18 +1194,30 @@ describe("App · the command palette window", () => {
   // that has to follow the selection. Before this, the window was pinned to the
   // top `MAX_MENU_ROWS` rows and the highlight was clamped inside it, so the
   // eighth command could not be reached with the arrow keys at all.
-  it("follows the selection past the first window", async () => {
-    const down = "\u001b[B"
-    const frame = stripAnsi(
+  const down = "\u001b[B"
+  // `/` opens the palette on every command; seven `↓` moves onto the eighth,
+  // which is `/fork` and sits below the first window.
+  const toFork = ["/", ...Array.from({ length: 7 }, () => down)]
+
+  it("follows the selection past the first window, and runs the highlighted command", async () => {
+    const highlighted = stripAnsi(
+      await driveFrame(<App config={REPLAY_CONFIG} />, { keys: toFork, settleMs: 0 })
+    )
+    expect(highlighted).toContain("› /fork")
+
+    // The highlight is only half the contract — `enter` running the *highlighted*
+    // command is the half a highlight-only assertion cannot see. `/replay` sits
+    // just above `/fork`, on the other side of the window edge, so an absolute
+    // index applied to the windowed array would run `/replay` here. The two
+    // "nothing to …" notices are what tell the outcomes apart.
+    const ran = stripAnsi(
       await driveFrame(<App config={REPLAY_CONFIG} />, {
-        // `/` opens the palette on every command; seven `↓` moves onto the
-        // eighth, which is `/fork` and sits below the first window.
-        keys: ["/", ...Array.from({ length: 7 }, () => down)],
-        settleMs: 0,
+        keys: [...toFork, "\r"],
+        settleMs: 200,
       })
     )
-
-    expect(frame).toContain("› /fork")
+    expect(ran).toContain("nothing to fork yet")
+    expect(ran).not.toContain("nothing to replay yet")
   })
 })
 
