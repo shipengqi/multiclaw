@@ -1,8 +1,9 @@
 import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 import type { MultiClawConfig } from "@multiclawcli/core"
 import { agents, runtimeRegistry } from "@multiclawcli/core"
-import { beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { App } from "./App"
 import { stripAnsi } from "./state"
 import { driveFrame } from "./test-helpers"
@@ -1186,6 +1187,78 @@ describe("App · completing an agent id", () => {
     )
 
     expect(frame).toContain("focused leader")
+  })
+})
+
+describe("App · exporting and searching finished turns", () => {
+  let exportWorkDir: string
+
+  beforeEach(() => {
+    exportWorkDir = fs.mkdtempSync(path.join(os.tmpdir(), "multiclaw-export-search-"))
+  })
+
+  afterEach(() => {
+    fs.rmSync(exportWorkDir, { recursive: true, force: true })
+  })
+
+  function exportConfig(): MultiClawConfig {
+    return { ...REPLAY_CONFIG, workDir: exportWorkDir }
+  }
+
+  /** Drive a turn in the isolated export workspace, then run a console command. */
+  async function drive(keys: string[], readyAt: number, thenKeys: string[] = []): Promise<string> {
+    let completes = 0
+    let resolveReady: () => void = () => {}
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve
+    })
+
+    const frame = await driveFrame(
+      <App
+        config={exportConfig()}
+        onTurnStart={(bus) => {
+          bus.subscribe((event) => {
+            if (event.type !== "orchestration:complete") return
+            completes += 1
+            if (completes === readyAt) resolveReady()
+          })
+        }}
+      />,
+      { keys, ready, thenKeys, settleMs: 500, timeoutMs: 8000 }
+    )
+    return stripAnsi(frame)
+  }
+
+  it("exports the last finished turn by default", async () => {
+    await driveFrame(<App config={exportConfig()} />, {
+      keys: ["export me", "\r"],
+      ready: new Promise<void>((resolve) => {
+        const done = setInterval(() => {
+          if (fs.existsSync(path.join(exportWorkDir, ".multiclaw", "console", "history.json"))) {
+            clearInterval(done)
+            resolve()
+          }
+        }, 20)
+      }),
+      thenKeys: ["/export", "\r"],
+      settleMs: 300,
+    })
+
+    const exported = path.join(exportWorkDir, ".multiclaw", "console", "exports", "turn-1.md")
+    expect(fs.readFileSync(exported, "utf-8")).toContain("export me")
+  })
+
+  it("searches the focused stream without adding a naked key", async () => {
+    const frame = await drive(["first task", "\r"], 1, ["/search finished", "\r"])
+
+    expect(frame).toContain("searched for finished")
+  })
+
+  it("jumps back to the latest stream output through /latest", async () => {
+    const frame = await drive(["first task", "\r"], 1, ["\u001b[A", "/latest", "\r"])
+
+    expect(frame).toContain("showing latest output")
+    expect(followLine(frame)).toContain("▼")
   })
 })
 

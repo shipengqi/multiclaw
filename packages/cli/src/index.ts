@@ -33,6 +33,7 @@ program
   .description("Run an orchestration headlessly")
   .option("--config <path>", "Config file path (default: auto-discover ./multiclaw.config.ts)")
   .option("--no-leader", "Batch mode only: skip routing and run the full team")
+  .option("--dry-run", "Preview the routed plan without running the pipeline")
   .option(
     "--resume [path]",
     "Resume a previous run, continuing agent sessions (default: the latest)"

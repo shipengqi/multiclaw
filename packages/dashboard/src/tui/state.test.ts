@@ -990,6 +990,31 @@ describe("visibleLog", () => {
     expect(visibleLog(state, 2, 30).scrolledBack).toBe(0)
     expect(visibleLog(state, 2, 30).following).toBe(true)
   })
+
+  it("searches the newest matching wrapped row", () => {
+    const state = logged("alpha\nbeta\ngamma\nbeta later\nomega")
+    const searched = tuiReducer(state, {
+      type: "stream:search",
+      query: "beta",
+      viewport: 2,
+      width: WIDTH,
+    })
+    expect(searched.scroll).toBe(1)
+    expect(searched.autoFollow).toBe(false)
+    expect(visibleLog(searched, 2, WIDTH).rows).toEqual(["gamma", "beta later"])
+  })
+
+  it("latest returns the stream to the tail and re-arms follow", () => {
+    const scrolled = tuiReducer(logged("1\n2\n3\n4\n5"), {
+      type: "stream:scroll",
+      delta: 2,
+      viewport: 2,
+      width: WIDTH,
+    })
+    const latest = tuiReducer(scrolled, { type: "stream:latest" })
+    expect(latest.scroll).toBe(0)
+    expect(latest.autoFollow).toBe(true)
+  })
 })
 
 describe("stream:clear", () => {

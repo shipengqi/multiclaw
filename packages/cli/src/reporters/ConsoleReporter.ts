@@ -149,6 +149,15 @@ export class ConsoleReporter {
             `  ${color}${icon}${C.reset} ${r.agentName.padEnd(nameWidth)}   ${dur.padStart(7)}`
           )
         }
+        if (e.payload.deliverables && e.payload.deliverables.length > 0) {
+          console.log(`\n  Deliverables:`)
+          for (const file of e.payload.deliverables.slice(0, 5)) {
+            console.log(`  ${S.bullet} ${file.path} (${file.status}, ${file.size} bytes)`)
+          }
+          if (e.payload.deliverables.length > 5) {
+            console.log(`  ${S.bullet} … ${e.payload.deliverables.length - 5} more`)
+          }
+        }
         console.log()
         break
       }

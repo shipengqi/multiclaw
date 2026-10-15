@@ -14,16 +14,52 @@ const state = vi.hoisted(() => ({
   config: undefined as MultiClawConfig | undefined,
   logDir: undefined as string | undefined,
   result: undefined as OrchestratorResult | undefined,
+  constructed: 0,
+  ran: 0,
+  previewed: 0,
 }))
 
 vi.mock("@multiclawcli/core", () => ({
   Orchestrator: class {
-    readonly eventBus = { subscribe: () => () => {} }
+    readonly listeners = new Set<(event: unknown) => void>()
+    readonly eventBus = {
+      subscribe: (fn: (event: unknown) => void) => {
+        this.listeners.add(fn)
+        return () => this.listeners.delete(fn)
+      },
+    }
     constructor(config: MultiClawConfig) {
+      state.constructed += 1
       state.config = config
     }
+    async preview() {
+      state.previewed += 1
+      return {
+        name: state.config?.name ?? "demo",
+        requirement: state.config?.context?.requirement,
+        totalAgents: state.config?.agents.length ?? 0,
+        stages: [
+          {
+            stageIndex: 0,
+            agents: (state.config?.agents ?? []).map((agent) => ({
+              id: agent.id,
+              name: agent.name,
+              model: agent.model,
+            })),
+          },
+        ],
+      }
+    }
     async run(): Promise<OrchestratorResult> {
-      return state.result as OrchestratorResult
+      state.ran += 1
+      const workDir = state.config?.workDir ?? state.workDir
+      fs.mkdirSync(workDir, { recursive: true })
+      fs.writeFileSync(path.join(workDir, "artifact.txt"), "made")
+      const result = state.result as OrchestratorResult
+      for (const listener of this.listeners) {
+        listener({ type: "orchestration:complete", payload: result })
+      }
+      return result
     }
   },
 }))
@@ -32,7 +68,7 @@ vi.mock("../loader/loadConfig", () => ({
   loadConfig: async (_path?: string, requirement?: string): Promise<MultiClawConfig> => ({
     name: "demo",
     workDir: state.workDir,
-    agents: [],
+    agents: [{ id: "dev", name: "Developer", model: "fast", systemPrompt: "", taskPrompt: "" }],
     context: requirement !== undefined ? { requirement } : {},
   }),
 }))
@@ -51,9 +87,23 @@ vi.mock("../reporters/FileLogWriter", () => ({
   FileLogWriter: class {
     constructor(logDir: string) {
       state.logDir = logDir
+      fs.mkdirSync(logDir, { recursive: true })
     }
-    attach() {
-      return () => {}
+    attach(eventBus: { subscribe: (fn: (event: unknown) => void) => () => void }) {
+      return eventBus.subscribe((event: unknown) => {
+        if (
+          typeof event === "object" &&
+          event !== null &&
+          "type" in event &&
+          event.type === "orchestration:complete" &&
+          "payload" in event
+        ) {
+          fs.writeFileSync(
+            path.join(state.logDir as string, "report.json"),
+            JSON.stringify(event.payload, null, 2)
+          )
+        }
+      })
     }
     async drain() {}
   },
@@ -68,6 +118,9 @@ beforeEach(() => {
   state.workDir = root
   state.config = undefined
   state.logDir = undefined
+  state.constructed = 0
+  state.ran = 0
+  state.previewed = 0
   state.result = {
     name: "demo",
     success: true,
@@ -111,6 +164,35 @@ const REPORT = {
   startTime: "2026-01-01T00:00:00.000Z",
   endTime: "2026-01-01T00:00:01.000Z",
 }
+
+describe("runCommand · dry run and deliverables", () => {
+  it("previews the routed plan without running the pipeline or creating logs", async () => {
+    await runCommand("ship it", { dryRun: true })
+
+    expect(state.constructed).toBe(1)
+    expect(state.previewed).toBe(1)
+    expect(state.ran).toBe(0)
+    expect(state.logDir).toBeUndefined()
+    expect(fs.existsSync(path.join(state.config?.workDir ?? root, "logs"))).toBe(false)
+    const printed = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .flat()
+      .join("\n")
+    expect(printed).toContain("Dry run")
+    expect(printed).toContain("Requirement: ship it")
+    expect(printed).toContain("Stage 1: dev (fast)")
+  })
+
+  it("records files created by the run in report.json", async () => {
+    await runCommand("make a file", {})
+
+    expect(state.ran).toBe(1)
+    const reportPath = path.join(state.logDir as string, "report.json")
+    const report = JSON.parse(fs.readFileSync(reportPath, "utf-8")) as OrchestratorResult
+    expect(report.deliverables).toEqual([
+      expect.objectContaining({ path: "artifact.txt", status: "created", size: 4 }),
+    ])
+  })
+})
 
 describe("runCommand · resume wiring", () => {
   it("resumes in the original run directory, beside the record it read", async () => {

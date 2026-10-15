@@ -168,6 +168,10 @@ export type TuiAction =
    * the pane's width — a line that wraps to three rows scrolls three rows.
    */
   | { type: "stream:scroll"; delta: number; viewport: number; width: number }
+  /** Jump the focused stream to the newest wrapped row containing `query`. */
+  | { type: "stream:search"; query: string; viewport: number; width: number }
+  /** Return the focused stream to the tail and re-arm live follow. */
+  | { type: "stream:latest" }
   /** Drop the focused agent's buffered output without touching its status. */
   | { type: "stream:clear" }
   /** Open a finished turn for reading, by its turn number. */
@@ -654,6 +658,33 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         const next = Math.min(Math.max(0, turn.scroll + action.delta), maxScroll)
         return next === turn.scroll ? turn : { ...turn, scroll: next }
       })
+
+    case "stream:search":
+      return mapShown(state, (turn) => {
+        const agent = turn.focusId ? turn.agents[turn.focusId] : undefined
+        if (!agent?.logs || action.query === "") return turn
+        const rows = wrapLog(agent.logs, action.width)
+        const needle = action.query.toLowerCase()
+        let index = -1
+        for (let i = rows.length - 1; i >= 0; i--) {
+          if (rows[i].toLowerCase().includes(needle)) {
+            index = i
+            break
+          }
+        }
+        if (index === -1) return turn
+        const height = Math.max(1, action.viewport)
+        const maxScroll = Math.max(0, rows.length - height)
+        const scroll = Math.min(Math.max(0, rows.length - 1 - index), maxScroll)
+        return scroll === turn.scroll && !turn.autoFollow
+          ? turn
+          : { ...turn, scroll, autoFollow: false }
+      })
+
+    case "stream:latest":
+      return mapShown(state, (turn) =>
+        turn.scroll === 0 && turn.autoFollow ? turn : { ...turn, scroll: 0, autoFollow: true }
+      )
 
     case "stream:clear":
       return mapShown(state, (turn) => {

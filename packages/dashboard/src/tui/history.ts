@@ -8,6 +8,9 @@ export const CONSOLE_DIR = "console"
 /** The finished-turn record the console keeps across sessions. */
 export const HISTORY_FILE = "history.json"
 
+/** Where exported turn markdown files are written by default. */
+export const EXPORT_DIR = "exports"
+
 /** Where the console keeps its turn history for a workspace. */
 export function historyPath(workDir: string): string {
   return path.join(workDir, ".multiclaw", CONSOLE_DIR, HISTORY_FILE)
@@ -86,4 +89,36 @@ export async function saveHistory(workDir: string, turns: readonly TurnView[]): 
   const tmp = `${target}.tmp`
   await fs.promises.writeFile(tmp, JSON.stringify(turns), "utf-8")
   await fs.promises.rename(tmp, target)
+}
+
+export function exportPath(workDir: string, turn: number): string {
+  return path.join(workDir, ".multiclaw", CONSOLE_DIR, EXPORT_DIR, `turn-${turn}.md`)
+}
+
+export async function exportTurn(turn: TurnView, filePath: string): Promise<void> {
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
+  await fs.promises.writeFile(filePath, formatTurnMarkdown(turn), "utf-8")
+}
+
+export function formatTurnMarkdown(turn: TurnView): string {
+  const lines: string[] = [`# Turn ${turn.turn}`, ""]
+  if (turn.requirement) lines.push("## Requirement", "", turn.requirement, "")
+  if (turn.reply) {
+    lines.push("## Reply", "", `_${turn.reply.mode}_`, "", turn.reply.message, "")
+  } else {
+    lines.push("## Result", "", `Status: ${turn.success ? "success" : "failed"}`, "")
+  }
+  const agents = Object.values(turn.agents)
+  if (agents.length > 0) {
+    lines.push("## Agents", "")
+    for (const agent of agents) {
+      lines.push(`- ${agent.id}: ${agent.name} — ${agent.status}`)
+    }
+    lines.push("")
+    lines.push("## Logs", "")
+    for (const agent of agents) {
+      lines.push(`### ${agent.id}: ${agent.name}`, "", "```", agent.logs ?? "", "```", "")
+    }
+  }
+  return `${lines.join("\n").trimEnd()}\n`
 }

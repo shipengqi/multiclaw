@@ -34,7 +34,7 @@ import {
 } from "./components/panels"
 import { CommandMenu, Prompt } from "./components/prompt"
 import { formatCost, formatDuration } from "./format"
-import { loadHistory, saveHistory } from "./history"
+import { exportPath, exportTurn, loadHistory, saveHistory } from "./history"
 import { computeLayout } from "./layout"
 import {
   conversationTurns,
@@ -88,18 +88,28 @@ const EMPTY_LINE: Line = { text: "", cursor: 0 }
  * same sentence. On success the requirement is returned alongside the record, so
  * neither caller has to re-prove it is set.
  */
-function pickTurn(
+function pickRecordedTurn(
   state: ReturnType<typeof tuiReducer>,
   raw: string | undefined,
   whenEmpty: string
-): { record: TurnView; requirement: string } | { error: string } {
+): { record: TurnView } | { error: string } {
   const turns = recordedTurns(state)
   if (turns.length === 0) return { error: whenEmpty }
   const target =
     raw === undefined ? turns[turns.length - 1] : turns.find((t) => String(t.turn) === raw)
   if (!target) return { error: `no turn ${raw}` }
-  if (!target.requirement) return { error: `turn ${target.turn} has no requirement` }
-  return { record: target, requirement: target.requirement }
+  return { record: target }
+}
+
+function pickTurn(
+  state: ReturnType<typeof tuiReducer>,
+  raw: string | undefined,
+  whenEmpty: string
+): { record: TurnView; requirement: string } | { error: string } {
+  const target = pickRecordedTurn(state, raw, whenEmpty)
+  if ("error" in target) return target
+  if (!target.record.requirement) return { error: `turn ${target.record.turn} has no requirement` }
+  return { record: target.record, requirement: target.record.requirement }
 }
 
 function StatusLine({
@@ -353,6 +363,69 @@ export function App({ config, onTurnStart }: AppProps) {
     void startTurn(next)
   }, [running, queue, startTurn])
 
+  const query = menuQuery(line.text)
+  const matches = useMemo(
+    () => (query === undefined ? [] : matchCommands(query, running)),
+    [query, running]
+  )
+
+  // Newest first: "what did I just ask" is the question a history list answers.
+  const historyTurns = useMemo(() => [...state.history].reverse(), [state.history])
+  const historyIndex =
+    historyTurns.length === 0 ? 0 : Math.min(historyCursor, historyTurns.length - 1)
+
+  // What the panes are showing: the live turn, or a finished one opened for
+  // reading. Everything downstream takes this rather than `state`, so a past
+  // turn renders through exactly the same components.
+  const shown = state.view ?? state
+
+  // The palette shows one of two lists, never both: the command names while the
+  // command is still being typed, or — once a space commits to arguments — the
+  // agents a completer command's first argument could name. `menuQuery` closes
+  // on a space and `argQuery` opens there, so the two are mutually exclusive.
+  const arg = argQuery(line.text)
+  const argRows: PaletteRow[] = arg
+    ? completeAgents(arg.partial, Object.keys(shown.agents)).map((id) => ({
+        key: id,
+        label: id,
+        // The static role, not the per-turn task title: while completing, the
+        // user is asking "which agent is this", not "what is it doing now".
+        description: shown.agents[id]?.description ?? shown.agents[id]?.name ?? id,
+      }))
+    : []
+  const allRows: PaletteRow[] = arg ? argRows : paletteRows(matches)
+  // One cursor serves both lists; the key it resets on is whichever list is open.
+  const paletteKey = arg ? `${arg.command.name} ${arg.partial}` : query
+  const paletteTotal = allRows.length
+  // A new list is a new highlight, and carrying the old one over would land on a
+  // row the user never looked at. Derived rather than reset in an effect, so no
+  // frame is ever rendered with a stale index.
+  const menuIndex = menuCursor.query === paletteKey ? menuCursor.index : 0
+  const selected = paletteTotal === 0 ? 0 : Math.min(menuIndex, paletteTotal - 1)
+
+  // The command palette is allowed mid-run too, which is the only place
+  // `/cancel` is offered. Opening it is a deliberate act (the user typed `/`),
+  // so spending the arrows on it is fair — scrolling the stream is still one
+  // keystroke away.
+  const menuOpen = !helpOpen && !historyOpen && query !== undefined && matches.length > 0
+  // The argument palette opens where the command palette closed, and only when
+  // there is something to offer — an empty list is not a palette.
+  const argOpen = !helpOpen && !historyOpen && arg !== undefined && argRows.length > 0
+  const paletteOpen = menuOpen || argOpen
+
+  const layout = computeLayout({
+    columns,
+    rows,
+    turn: state.turn,
+    overlay: helpOpen || historyOpen,
+    menuRows: paletteOpen ? paletteTotal : 0,
+    queueRows: queue.length,
+    notice: notice !== undefined,
+    viewing: state.view !== undefined,
+    hasRail: shown.leaderIds.length > 0 || shown.stages.length > 0,
+    railCells: railCellWidths(shown),
+  })
+
   const runCommand = useCallback(
     (name: string, args: string[]) => {
       setLine(EMPTY_LINE)
@@ -490,6 +563,39 @@ export function App({ config, onTurnStart }: AppProps) {
           setNotice(`editing turn ${target.record.turn} — enter to run`)
           return
         }
+        case "export": {
+          const target = pickRecordedTurn(state, args[0], "nothing to export yet")
+          if ("error" in target) {
+            setNotice(target.error)
+            return
+          }
+          const file = args[1]
+            ? path.resolve(config.workDir, args[1])
+            : exportPath(config.workDir, target.record.turn)
+          void exportTurn(target.record, file)
+            .then(() => setNotice(`exported turn ${target.record.turn} to ${file}`))
+            .catch((err: Error) => setNotice(`export failed: ${err.message}`))
+          return
+        }
+        case "search": {
+          const text = args.join(" ")
+          if (!text) {
+            setNotice("usage: /search <text>")
+            return
+          }
+          dispatch({
+            type: "stream:search",
+            query: text,
+            viewport: layout.logViewport,
+            width: layout.streamWidth,
+          })
+          setNotice(`searched for ${text}`)
+          return
+        }
+        case "latest":
+          dispatch({ type: "stream:latest" })
+          setNotice("showing latest output")
+          return
         case "cancel": {
           if (!abortRef.current) {
             setNotice("nothing to cancel")
@@ -516,7 +622,7 @@ export function App({ config, onTurnStart }: AppProps) {
           setNotice(`unknown command: /${name}`)
       }
     },
-    [config, exit, queue.length, running, state, startTurn]
+    [config, exit, layout.logViewport, layout.streamWidth, queue.length, running, state, startTurn]
   )
 
   const submit = useCallback(() => {
@@ -570,69 +676,6 @@ export function App({ config, onTurnStart }: AppProps) {
   const moveTo = useCallback((cursor: number) => {
     setLine((l) => ({ ...l, cursor }))
   }, [])
-
-  const query = menuQuery(line.text)
-  const matches = useMemo(
-    () => (query === undefined ? [] : matchCommands(query, running)),
-    [query, running]
-  )
-
-  // Newest first: "what did I just ask" is the question a history list answers.
-  const historyTurns = useMemo(() => [...state.history].reverse(), [state.history])
-  const historyIndex =
-    historyTurns.length === 0 ? 0 : Math.min(historyCursor, historyTurns.length - 1)
-
-  // What the panes are showing: the live turn, or a finished one opened for
-  // reading. Everything downstream takes this rather than `state`, so a past
-  // turn renders through exactly the same components.
-  const shown = state.view ?? state
-
-  // The palette shows one of two lists, never both: the command names while the
-  // command is still being typed, or — once a space commits to arguments — the
-  // agents a completer command's first argument could name. `menuQuery` closes
-  // on a space and `argQuery` opens there, so the two are mutually exclusive.
-  const arg = argQuery(line.text)
-  const argRows: PaletteRow[] = arg
-    ? completeAgents(arg.partial, Object.keys(shown.agents)).map((id) => ({
-        key: id,
-        label: id,
-        // The static role, not the per-turn task title: while completing, the
-        // user is asking "which agent is this", not "what is it doing now".
-        description: shown.agents[id]?.description ?? shown.agents[id]?.name ?? id,
-      }))
-    : []
-  const allRows: PaletteRow[] = arg ? argRows : paletteRows(matches)
-  // One cursor serves both lists; the key it resets on is whichever list is open.
-  const paletteKey = arg ? `${arg.command.name} ${arg.partial}` : query
-  const paletteTotal = allRows.length
-  // A new list is a new highlight, and carrying the old one over would land on a
-  // row the user never looked at. Derived rather than reset in an effect, so no
-  // frame is ever rendered with a stale index.
-  const menuIndex = menuCursor.query === paletteKey ? menuCursor.index : 0
-  const selected = paletteTotal === 0 ? 0 : Math.min(menuIndex, paletteTotal - 1)
-
-  // The command palette is allowed mid-run too, which is the only place
-  // `/cancel` is offered. Opening it is a deliberate act (the user typed `/`),
-  // so spending the arrows on it is fair — scrolling the stream is still one
-  // keystroke away.
-  const menuOpen = !helpOpen && !historyOpen && query !== undefined && matches.length > 0
-  // The argument palette opens where the command palette closed, and only when
-  // there is something to offer — an empty list is not a palette.
-  const argOpen = !helpOpen && !historyOpen && arg !== undefined && argRows.length > 0
-  const paletteOpen = menuOpen || argOpen
-
-  const layout = computeLayout({
-    columns,
-    rows,
-    turn: state.turn,
-    overlay: helpOpen || historyOpen,
-    menuRows: paletteOpen ? paletteTotal : 0,
-    queueRows: queue.length,
-    notice: notice !== undefined,
-    viewing: state.view !== undefined,
-    hasRail: shown.leaderIds.length > 0 || shown.stages.length > 0,
-    railCells: railCellWidths(shown),
-  })
 
   // The palette draws at most `layout.menuRows` rows, so the window has to
   // follow the selection: `listWindowStart` keeps the highlighted row on screen

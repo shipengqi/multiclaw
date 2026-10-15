@@ -120,6 +120,48 @@ describe("Orchestrator.run", () => {
     expect(result.success).toBe(true)
   })
 
+  it("previews the routed stages without running the pipeline", async () => {
+    const ran: string[] = []
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      leader: agent("leader"),
+      agents: [agent("a"), agent("b", { dependsOn: ["a"] })],
+      context: { requirement: "ship it" },
+    }
+    handler = async (task) => {
+      ran.push(task.agentId)
+      if (task.agentId === "leader")
+        return { output: '{"mode":"run","run":["a","b"]}', exitCode: 0 }
+      return { output: `out:${task.agentId}`, exitCode: 0 }
+    }
+
+    const preview = await new Orchestrator(config).preview()
+
+    expect(ran).toEqual(["leader"])
+    expect(preview).toMatchObject({ name: "test", requirement: "ship it", totalAgents: 2 })
+    expect(preview.stages.map((s) => s.agents.map((a) => a.id))).toEqual([["a"], ["b"]])
+  })
+
+  it("previews a leader reply as words instead of a pipeline", async () => {
+    handler = async () => ({ output: '{"mode":"ask","message":"Which target?"}', exitCode: 0 })
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      leader: agent("leader"),
+      agents: [agent("a")],
+    }
+
+    const preview = await new Orchestrator(config).preview()
+
+    expect(preview).toEqual({
+      name: "test",
+      totalAgents: 0,
+      stages: [],
+      reply: { mode: "ask", message: "Which target?" },
+    })
+  })
+
   it("stops the pipeline on failure and marks later agents as skipped", async () => {
     handler = async (task) => {
       if (task.agentId === "a") throw new Error("boom")
@@ -149,13 +191,18 @@ describe("Orchestrator.run", () => {
     expect(result.agentResults.find((r) => r.agentId === "b")?.status).toBe("success")
   })
 
-  it("caps parallelism at maxConcurrency", async () => {
+  it("caps parallelism at maxConcurrency and refills freed slots", async () => {
     let concurrent = 0
     let peak = 0
+    const started: string[] = []
+    const finished: string[] = []
+    const delays: Record<string, number> = { a: 50, b: 5, c: 5, d: 5 }
     handler = async (task) => {
       concurrent += 1
       peak = Math.max(peak, concurrent)
-      await new Promise((r) => setTimeout(r, 10))
+      started.push(task.agentId)
+      await new Promise((r) => setTimeout(r, delays[task.agentId] ?? 5))
+      finished.push(task.agentId)
       concurrent -= 1
       return { output: `out:${task.agentId}`, exitCode: 0 }
     }
@@ -164,8 +211,9 @@ describe("Orchestrator.run", () => {
       maxConcurrency: 2,
     })
 
-    expect(result.agentResults).toHaveLength(4)
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["a", "b", "c", "d"])
     expect(peak).toBeLessThanOrEqual(2)
+    expect(started.indexOf("c")).toBeLessThan(finished.indexOf("a"))
   })
 
   it("applies the architect task plan to later agents", async () => {

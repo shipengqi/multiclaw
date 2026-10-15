@@ -1,5 +1,6 @@
+import * as fs from "node:fs"
 import * as path from "node:path"
-import { Orchestrator as OrchestratorImpl } from "@multiclawcli/core"
+import { Orchestrator as OrchestratorImpl, type OrchestratorResult } from "@multiclawcli/core"
 import { assertRuntimesAvailable } from "../lib"
 import { loadConfig } from "../loader/loadConfig"
 import { ConsoleReporter } from "../reporters/ConsoleReporter"
@@ -15,6 +16,7 @@ export interface RunOptions {
    * not part of the domain.
    */
   resume?: string | true
+  dryRun?: boolean
 }
 
 /** Conventional exit code for a process stopped by SIGINT. */
@@ -52,9 +54,21 @@ export async function runCommand(
     config.workDir = path.join(config.workDir, ".multiclaw", "runs", `run-${stamp}`)
   }
 
+  if (options.dryRun) {
+    const preview = await new OrchestratorImpl(config).preview()
+    printDryRun(preview, config.workDir)
+    process.exitCode = 0
+    return
+  }
+
   await assertRuntimesAvailable(config)
 
+  const before = snapshotFiles(config.workDir)
   const orchestrator = new OrchestratorImpl(config)
+  orchestrator.eventBus.subscribe((event) => {
+    if (event.type !== "orchestration:complete") return
+    event.payload.deliverables = collectDeliverables(config.workDir, before)
+  })
 
   new ConsoleReporter().attach(orchestrator.eventBus)
 
@@ -81,5 +95,75 @@ export async function runCommand(
     process.exitCode = result.cancelled ? EXIT_CANCELLED : result.success ? 0 : 1
   } finally {
     process.off("SIGINT", onSigint)
+  }
+}
+
+function printDryRun(
+  preview: Awaited<ReturnType<InstanceType<typeof OrchestratorImpl>["preview"]>>,
+  workDir: string
+): void {
+  console.log("Dry run — no pipeline agents will execute.")
+  console.log(`Project: ${preview.name}`)
+  console.log(`Work dir: ${workDir}`)
+  if (preview.requirement) console.log(`Requirement: ${preview.requirement}`)
+  if (preview.reply) {
+    console.log(`${preview.reply.mode === "ask" ? "Question" : "Reply"}: ${preview.reply.message}`)
+    return
+  }
+  console.log(`Agents: ${preview.totalAgents}`)
+  for (const stage of preview.stages) {
+    const agents = stage.agents.map(
+      (agent) => `${agent.id}${agent.model ? ` (${agent.model})` : ""}`
+    )
+    console.log(`Stage ${stage.stageIndex + 1}: ${agents.join(", ") || "—"}`)
+  }
+}
+
+interface FileSnapshot {
+  mtimeMs: number
+  size: number
+}
+
+function snapshotFiles(root: string): Map<string, FileSnapshot> {
+  const snapshot = new Map<string, FileSnapshot>()
+  walkFiles(root, (_absolute, relative, stat) => {
+    snapshot.set(relative, { mtimeMs: stat.mtimeMs, size: stat.size })
+  })
+  return snapshot
+}
+
+function collectDeliverables(
+  root: string,
+  before: Map<string, FileSnapshot>
+): NonNullable<OrchestratorResult["deliverables"]> {
+  const deliverables: NonNullable<OrchestratorResult["deliverables"]> = []
+  walkFiles(root, (_absolute, relative, stat) => {
+    const previous = before.get(relative)
+    if (previous && previous.mtimeMs === stat.mtimeMs && previous.size === stat.size) return
+    deliverables.push({
+      path: relative,
+      status: previous ? "modified" : "created",
+      size: stat.size,
+      modifiedAt: stat.mtime.toISOString(),
+    })
+  })
+  return deliverables.sort((a, b) => a.path.localeCompare(b.path)).slice(0, 20)
+}
+
+function walkFiles(
+  root: string,
+  visit: (absolute: string, relative: string, stat: fs.Stats) => void
+): void {
+  if (!fs.existsSync(root)) return
+  const stack = [root]
+  while (stack.length > 0) {
+    const dir = stack.pop() as string
+    for (const name of fs.readdirSync(dir)) {
+      if (name === ".multiclaw") continue
+      const absolute = path.join(dir, name)
+      const stat = fs.statSync(absolute)
+      if (stat.isDirectory()) stack.push(absolute)
+      else if (stat.isFile()) visit(absolute, path.relative(root, absolute), stat)
+    }
   }
 }

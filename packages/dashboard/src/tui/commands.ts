@@ -66,6 +66,23 @@ export const COMMANDS: readonly CommandSpec[] = [
     availability: "always",
   },
   {
+    name: "export",
+    args: "[turn] [path]",
+    description: "Export a finished turn as Markdown",
+    availability: "always",
+  },
+  {
+    name: "search",
+    args: "<text>",
+    description: "Search the focused stream",
+    availability: "always",
+  },
+  {
+    name: "latest",
+    description: "Jump the stream to latest output",
+    availability: "always",
+  },
+  {
     name: "cancel",
     description: "Cancel the running turn and its queue",
     availability: "running",

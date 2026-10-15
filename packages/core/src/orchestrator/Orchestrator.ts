@@ -3,7 +3,7 @@ import * as path from "node:path"
 import { EventBus } from "../event/EventBus"
 import { resolveModel } from "../providers/resolve"
 import type { AgentDefinition, AgentResult, TaskPlan } from "../types/agent"
-import type { MultiClawConfig, OrchestratorResult } from "../types/config"
+import type { MultiClawConfig, OrchestrationPreview, OrchestratorResult } from "../types/config"
 import type { StageInfo } from "../types/event"
 import type { LeaderMessage } from "../types/leader"
 import { renderConversation } from "../utils/conversation"
@@ -44,6 +44,31 @@ export class Orchestrator {
     this.runner = new AgentRunner(this.eventBus, this.contextManager, this.workDir, config)
   }
 
+  async preview(options: { signal?: AbortSignal } = {}): Promise<OrchestrationPreview> {
+    this.clearStaleTaskPlan()
+    const resolution = await this.resolveTurn(options.signal)
+    if (resolution.kind === "message") {
+      return {
+        name: this.config.name,
+        totalAgents: 0,
+        stages: [],
+        reply: { mode: resolution.mode, message: resolution.message },
+        ...this.requirementField(),
+      }
+    }
+
+    const agents = resolution.agents
+    this.contextManager.set("pipelineAgents", agents.map((a) => `${a.id}: ${a.name}`).join("\n"))
+    const stages = this.buildStagesOrFallback(agents, "Could not order the configured agents")
+    const stageInfos = this.stageInfos(stages)
+    return {
+      name: this.config.name,
+      totalAgents: agents.length,
+      stages: stageInfos,
+      ...this.requirementField(),
+    }
+  }
+
   async run(options: { signal?: AbortSignal } = {}): Promise<OrchestratorResult> {
     const startTime = new Date()
     this.clearStaleTaskPlan()
@@ -63,26 +88,7 @@ export class Orchestrator {
     this.contextManager.set("pipelineAgents", agents.map((a) => `${a.id}: ${a.name}`).join("\n"))
 
     let stages = this.buildStagesOrFallback(agents, "Could not order the configured agents")
-
-    // The model an agent will *actually* run with, resolved the same way the
-    // runner resolves it. The old lookup read only `model` / `models[runtime]`,
-    // so a tier-only or defaults-only agent reported `undefined` here while it
-    // really ran a concrete model — the TUI's pipeline bar then showed no model.
-    const getModel = (agent: AgentDefinition): string | undefined =>
-      resolveModel(agent, this.config)
-
-    const toStageInfos = (list: AgentDefinition[][]): StageInfo[] =>
-      list.map((stage, i) => ({
-        stageIndex: i,
-        agents: stage.map((a) => ({
-          id: a.id,
-          name: a.name,
-          icon: a.icon,
-          model: getModel(a),
-          description: a.description,
-          taskTitle: a.taskTitle,
-        })),
-      }))
+    const toStageInfos = (list: AgentDefinition[][]): StageInfo[] => this.stageInfos(list)
 
     this.eventBus.emit({
       type: "orchestration:start",
@@ -215,6 +221,26 @@ export class Orchestrator {
       payload: result,
     })
     return result
+  }
+
+  private stageInfos(stages: AgentDefinition[][]): StageInfo[] {
+    // The model an agent will *actually* run with, resolved the same way the
+    // runner resolves it. A tier-only or defaults-only agent would otherwise
+    // report `undefined` here while it really runs a concrete model.
+    const getModel = (agent: AgentDefinition): string | undefined =>
+      resolveModel(agent, this.config)
+
+    return stages.map((stage, i) => ({
+      stageIndex: i,
+      agents: stage.map((a) => ({
+        id: a.id,
+        name: a.name,
+        icon: a.icon,
+        model: getModel(a),
+        description: a.description,
+        taskTitle: a.taskTitle,
+      })),
+    }))
   }
 
   /**
@@ -375,11 +401,21 @@ export class Orchestrator {
     if (!maxConcurrency || agents.length <= maxConcurrency) {
       return Promise.all(agents.map((a) => this.runner.run(a, signal)))
     }
-    const results: AgentResult[] = []
-    for (let i = 0; i < agents.length; i += maxConcurrency) {
-      const batch = agents.slice(i, i + maxConcurrency)
-      results.push(...(await Promise.all(batch.map((a) => this.runner.run(a, signal)))))
-    }
+
+    // `maxConcurrency` is a cap, not a batch size. A fixed `Promise.all` chunk
+    // waits for the slowest member of the chunk before launching the next one,
+    // leaving empty slots idle. Keep the stage semantics and declaration-order
+    // result shape, but refill each slot as soon as its current agent settles.
+    const results = new Array<AgentResult>(agents.length)
+    let next = 0
+    const workers = Array.from({ length: Math.min(maxConcurrency, agents.length) }, async () => {
+      while (next < agents.length) {
+        const index = next
+        next += 1
+        results[index] = await this.runner.run(agents[index], signal)
+      }
+    })
+    await Promise.all(workers)
     return results
   }
 

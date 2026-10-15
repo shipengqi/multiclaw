@@ -177,6 +177,23 @@ describe("ConsoleReporter", () => {
     expect(out()).toContain("3.0s")
   })
 
+  it("prints a bounded deliverable list when the run reports files", () => {
+    reporter().emit(
+      event("orchestration:complete", {
+        success: true,
+        totalDuration: 3000,
+        agentResults: [],
+        deliverables: [
+          { path: "dist/app.js", status: "created", size: 12, modifiedAt: "t" },
+          { path: "README.md", status: "modified", size: 34, modifiedAt: "t" },
+        ],
+      })
+    )
+    expect(out()).toContain("Deliverables:")
+    expect(out()).toContain("dist/app.js (created, 12 bytes)")
+    expect(out()).toContain("README.md (modified, 34 bytes)")
+  })
+
   it("flags a failed orchestration", () => {
     reporter().emit(
       event("orchestration:complete", {

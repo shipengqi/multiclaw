@@ -61,6 +61,23 @@ export interface MultiClawConfig {
   }
 }
 
+export interface OrchestrationPreview {
+  name: string
+  requirement?: string
+  totalAgents: number
+  stages: import("./event").StageInfo[]
+  /** Present when the leader answered or asked instead of choosing a pipeline. */
+  reply?: LeaderMessage
+}
+
+export interface DeliverableSummary {
+  /** Path relative to the run work directory. */
+  path: string
+  status: "created" | "modified"
+  size: number
+  modifiedAt: string
+}
+
 export interface OrchestratorResult {
   name: string
   success: boolean
@@ -99,4 +116,6 @@ export interface OrchestratorResult {
    * requirement it is continuing.
    */
   requirement?: string
+  /** Files created or modified by this run, when the caller collected them. */
+  deliverables?: DeliverableSummary[]
 }

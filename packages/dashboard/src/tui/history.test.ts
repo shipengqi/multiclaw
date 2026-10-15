@@ -2,7 +2,17 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { CONSOLE_DIR, HISTORY_FILE, historyPath, loadHistory, saveHistory } from "./history"
+import {
+  CONSOLE_DIR,
+  EXPORT_DIR,
+  exportPath,
+  exportTurn,
+  formatTurnMarkdown,
+  HISTORY_FILE,
+  historyPath,
+  loadHistory,
+  saveHistory,
+} from "./history"
 import { MAX_HISTORY, type TurnView } from "./state"
 
 /** A minimal well-formed turn, enough for a round-trip to be meaningful. */
@@ -119,6 +129,34 @@ describe("loadHistory", () => {
     expect(loaded).toHaveLength(MAX_HISTORY)
     expect(loaded[0].turn).toBe(6)
     expect(loaded[MAX_HISTORY - 1].turn).toBe(MAX_HISTORY + 5)
+  })
+})
+
+describe("exportTurn", () => {
+  it("formats requirement, agent statuses, and logs as markdown", () => {
+    const markdown = formatTurnMarkdown(
+      turn(3, {
+        agents: {
+          dev: { id: "dev", name: "Developer", status: "success", logs: "built it" },
+        },
+        success: true,
+      })
+    )
+
+    expect(markdown).toContain("# Turn 3")
+    expect(markdown).toContain("## Requirement")
+    expect(markdown).toContain("req 3")
+    expect(markdown).toContain("- dev: Developer — success")
+    expect(markdown).toContain("built it")
+  })
+
+  it("writes to the default export directory", async () => {
+    const target = exportPath(workDir, 4)
+
+    await exportTurn(turn(4), target)
+
+    expect(target).toBe(path.join(workDir, ".multiclaw", CONSOLE_DIR, EXPORT_DIR, "turn-4.md"))
+    expect(fs.readFileSync(target, "utf-8")).toContain("# Turn 4")
   })
 })
 
