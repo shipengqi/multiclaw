@@ -6,6 +6,7 @@ export default defineConfig({
     environment: "node",
     clearMocks: true,
     restoreMocks: true,
+    fsModuleCachePath: "node_modules/.vitest-cache-dashboard",
     // Ink styles its output through chalk, which disables colour when the
     // stream is not a real TTY. The render tests assert on styled frames
     // (e.g. the inverse-video caret), so colour has to stay on.

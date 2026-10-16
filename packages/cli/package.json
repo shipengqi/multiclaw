@@ -27,14 +27,14 @@
     "url": "https://github.com/shipengqi/multiclaw/issues"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsc -p tsconfig.json --emitDeclarationOnly --outDir dist --composite false --incremental false",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "^0.89.1",
+    "@agentclientprotocol/claude-agent-acp": "^0.90.0",
     "@agentclientprotocol/codex-acp": "^2.2.2",
     "@inquirer/prompts": "^8.7.3",
     "@multiclawcli/core": "workspace:*",
@@ -45,7 +45,7 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "tsx": "^4.7.0",
-    "typescript": "^5.4.0",
-    "vitest": "^4.1.11"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.4"
   }
 }

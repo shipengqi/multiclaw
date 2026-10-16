@@ -6,6 +6,7 @@ export default defineConfig({
     environment: "node",
     clearMocks: true,
     restoreMocks: true,
+    fsModuleCachePath: "node_modules/.vitest-cache-cli",
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary"],

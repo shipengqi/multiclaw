@@ -5,5 +5,5 @@
     "composite": false,
     "incremental": false
   },
-  "include": ["src"]
+  "include": ["src/index.ts"]
 }

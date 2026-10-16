@@ -11,4 +11,7 @@ allowBuilds:
 # (peer: vite ^8.0.0) sitting next to vite@5 installs "successfully" and then
 # explodes much later as a confusing ERR_PACKAGE_PATH_NOT_EXPORTED in
 # `vite build`. Better to fail here, with the range printed.
+minimumReleaseAgeExclude:
+  - tsup@9.0.0
+
 strictPeerDependencies: true
