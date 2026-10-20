@@ -1,6 +1,10 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { Orchestrator as OrchestratorImpl, type OrchestratorResult } from "@multiclawcli/core"
+import {
+  describeResumePlan,
+  Orchestrator as OrchestratorImpl,
+  type OrchestratorResult,
+} from "@multiclawcli/core"
 import { assertRuntimesAvailable } from "../lib"
 import { loadConfig } from "../loader/loadConfig"
 import { ConsoleReporter } from "../reporters/ConsoleReporter"
@@ -49,7 +53,18 @@ export async function runCommand(
     // Never reuse `logs/`: the original report.json lives there and the resumed
     // run must not overwrite the record it was derived from.
     config.logDir = path.join(runDir, `logs-resume-${stamp}`)
-    console.log(`\x1b[2mResuming ${runDir} (${resume.agents.length} agents)\x1b[0m`)
+    // A resumed run is a different pipeline from the one that was recorded:
+    // resuming a cancelled run leaves out the agents whose stage never started
+    // (an agent that was cancelled *does* have a result, and so is resumed
+    // again), and an agent only keeps its session when the report carried one.
+    // Spelling that out is cheaper than the user guessing why the retry behaved
+    // differently from the run it continues.
+    const plan = describeResumePlan({
+      agents: resume.agents,
+      sessions: resume.sessions,
+      team: config.agents,
+    })
+    console.log(`\x1b[2mResuming ${runDir} (${resume.agents.length} agents) — ${plan}\x1b[0m`)
   } else {
     config.workDir = path.join(config.workDir, ".multiclaw", "runs", `run-${stamp}`)
   }
@@ -111,6 +126,7 @@ function printDryRun(
     return
   }
   console.log(`Agents: ${preview.totalAgents}`)
+  if (preview.selectionReason) console.log(`Why: ${preview.selectionReason}`)
   for (const stage of preview.stages) {
     const agents = stage.agents.map(
       (agent) => `${agent.id}${agent.model ? ` (${agent.model})` : ""}`

@@ -16,7 +16,7 @@ The console hands you the turns that came before this one. A requirement is ofte
 Output ONLY a single JSON object on its own line — no prose, no markdown fences:
 {"mode": "reply", "message": "your answer"}
 {"mode": "ask", "message": "your question"}
-{"mode": "run", "run": ["agent-id-1", "agent-id-2"]}`
+{"mode": "run", "reason": "one sentence on why this set", "run": ["agent-id-1", "agent-id-2"]}`
 
 const TASK = `## Project
 {{projectName}}
@@ -32,7 +32,7 @@ Read the codebase to understand the current state, then decide how to handle the
 Output a single JSON object — exactly one of:
 {"mode": "reply", "message": "your answer"}
 {"mode": "ask", "message": "your question"}
-{"mode": "run", "run": ["agent-id", ...]}
+{"mode": "run", "reason": "one sentence on why this set", "run": ["agent-id", ...]}
 Agent IDs must come from the Available Agents list above.`
 
 export function leader(overrides?: Overrides): AgentDefinition {

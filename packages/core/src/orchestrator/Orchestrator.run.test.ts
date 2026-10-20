@@ -82,6 +82,13 @@ describe("Orchestrator.run", () => {
     expect(complete?.payload).toEqual(result)
   })
 
+  it("omits selectionReason entirely when the leader gave none", async () => {
+    const { result, events } = await runOrch([agent("a")])
+    expect("selectionReason" in result).toBe(false)
+    const start = events.find((e) => e.type === "orchestration:start")
+    expect(start && "selectionReason" in start.payload).toBe(false)
+  })
+
   it("launches each agent with the command/args its provider resolves to", async () => {
     // Regression: an agent that pins `provider` with no literal `command` must be
     // launched as that provider's bridge — `claude` → `claude-agent-acp` (args
@@ -141,6 +148,40 @@ describe("Orchestrator.run", () => {
     expect(ran).toEqual(["leader"])
     expect(preview).toMatchObject({ name: "test", requirement: "ship it", totalAgents: 2 })
     expect(preview.stages.map((s) => s.agents.map((a) => a.id))).toEqual([["a"], ["b"]])
+  })
+
+  it("carries the leader's reason through preview, the start event, and the result", async () => {
+    handler = async (task) =>
+      task.agentId === "leader"
+        ? {
+            output: '{"mode":"run","reason":"only a docs change","run":["a"]}',
+            exitCode: 0,
+          }
+        : { output: `out:${task.agentId}`, exitCode: 0 }
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      leader: agent("leader"),
+      agents: [agent("a"), agent("b")],
+      context: { requirement: "fix the typo" },
+    }
+
+    const preview = await new Orchestrator(config).preview()
+    expect(preview.selectionReason).toBe("only a docs change")
+
+    const orch = new Orchestrator(config)
+    const starts: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => {
+      if (e.type === "orchestration:start") starts.push(e)
+    })
+    const result = await orch.run()
+
+    // The reason is orchestration metadata: it must survive on both the live
+    // event (so a console can show it while the team runs) and the result (so a
+    // report can explain the run afterwards).
+    expect(starts).toHaveLength(1)
+    expect(starts[0].payload).toMatchObject({ selectionReason: "only a docs change" })
+    expect(result.selectionReason).toBe("only a docs change")
   })
 
   it("previews a leader reply as words instead of a pipeline", async () => {

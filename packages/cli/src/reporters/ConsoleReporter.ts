@@ -55,6 +55,11 @@ export class ConsoleReporter {
         console.log(
           `${C.cyan}${S.bullet} Agents: ${e.payload.totalAgents}  Stages: ${e.payload.stages.length}${C.reset}\n`
         )
+        // The leader's own explanation for the agent set. Printed up front,
+        // while the user is still wondering why the team looks the way it does.
+        if (e.payload.selectionReason) {
+          console.log(`${C.dim}${S.bullet} Why: ${e.payload.selectionReason}${C.reset}\n`)
+        }
         break
       }
       case "orchestration:stages": {

@@ -4,7 +4,11 @@ import { buildDoctorReport, type DoctorReport, formatDoctorReport } from "./doct
 
 const ESC = String.fromCharCode(27)
 
-function detected(present: string[], missing: string[]) {
+function detected(
+  present: string[],
+  missing: string[],
+  source: Record<string, "path" | "bundled"> = {}
+) {
   return [
     ...present.map((id) => ({
       id,
@@ -12,6 +16,8 @@ function detected(present: string[], missing: string[]) {
       command: id,
       status: "present" as const,
       version: "1.0.0",
+      ...(source[id] ? { source: source[id] } : {}),
+      ...(source[id] === "bundled" ? { resolvedPath: `/opt/multiclaw/${id}/bin.js` } : {}),
     })),
     ...missing.map((id) => ({
       id,
@@ -77,6 +83,40 @@ describe("buildDoctorReport", () => {
     expect(report.config?.agentsWithMissingProvider).toEqual([])
     expect(report.config?.defaultsProviderOk).toBe(true)
   })
+
+  it("warns when an agent configures tools for a provider that cannot enforce them", () => {
+    const config: MultiClawConfig = {
+      name: "demo",
+      workDir: "/tmp",
+      agents: [
+        agent("safe", { provider: "claude", tools: ["Read"] }),
+        agent("open", { provider: "codex", tools: ["Read"] }),
+      ],
+    }
+    const report = buildDoctorReport(detected(["claude", "codex"], ["opencode", "cursor"]), config)
+    expect(report.config?.agentsWithUnsupportedTools).toEqual(["open"])
+  })
+
+  it("does not warn for providers without tool support when the agent did not request tools", () => {
+    const config: MultiClawConfig = {
+      name: "demo",
+      workDir: "/tmp",
+      agents: [agent("open", { provider: "codex" })],
+    }
+    const report = buildDoctorReport(detected(["codex"], ["opencode", "claude", "cursor"]), config)
+    expect(report.config?.agentsWithUnsupportedTools).toEqual([])
+  })
+
+  it("carries where a present provider resolved from", () => {
+    const report = buildDoctorReport(
+      detected(["claude", "opencode"], ["codex", "cursor"], { claude: "bundled" })
+    )
+    const claude = report.providers.find((p) => p.id === "claude")
+    expect(claude?.source).toBe("bundled")
+    expect(claude?.resolvedPath).toBe("/opt/multiclaw/claude/bin.js")
+    const opencode = report.providers.find((p) => p.id === "opencode")
+    expect(opencode?.source).toBeUndefined()
+  })
 })
 
 describe("formatDoctorReport", () => {
@@ -99,5 +139,35 @@ describe("formatDoctorReport", () => {
     const report = buildDoctorReport(detected([], ["opencode", "claude", "codex", "cursor"]))
     const out = formatDoctorReport(report, false)
     expect(out).toContain("install:")
+  })
+
+  it("prints a warning for configured tool allowlists that cannot be enforced", () => {
+    const config: MultiClawConfig = {
+      name: "demo",
+      workDir: "/tmp",
+      agents: [agent("open", { provider: "codex", tools: ["Read"] })],
+    }
+    const report = buildDoctorReport(detected(["codex"], ["opencode", "claude", "cursor"]), config)
+    const out = formatDoctorReport(report, false)
+    expect(out).toContain("cannot enforce tool allowlists")
+    expect(out).toContain("open")
+  })
+
+  // "present" via a bundled bridge says nothing about what the user installed,
+  // so the report names the file multiclaw will actually spawn.
+  it("names the bridge a bundled provider resolves through", () => {
+    const report = buildDoctorReport(
+      detected(["claude"], ["opencode", "codex", "cursor"], { claude: "bundled" })
+    )
+    const out = formatDoctorReport(report, false)
+    expect(out).toContain("source")
+    expect(out).toContain("bundled")
+    expect(out).toContain("bundled bridge: /opt/multiclaw/claude/bin.js")
+  })
+
+  it("prints no bridge line for a provider that resolved on PATH", () => {
+    const report = buildDoctorReport(detected(["opencode"], ["claude", "codex", "cursor"]))
+    const out = formatDoctorReport(report, false)
+    expect(out).not.toContain("bundled bridge:")
   })
 })

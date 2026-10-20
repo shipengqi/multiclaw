@@ -20,7 +20,7 @@ import { buildStages } from "./StageBuilder"
  * leader answered in words, so the turn ends there.
  */
 type Resolution =
-  | { kind: "run"; agents: AgentDefinition[] }
+  | { kind: "run"; agents: AgentDefinition[]; reason?: string }
   | { kind: "message"; mode: LeaderMessage["mode"]; message: string }
 
 export class Orchestrator {
@@ -65,6 +65,7 @@ export class Orchestrator {
       name: this.config.name,
       totalAgents: agents.length,
       stages: stageInfos,
+      ...this.reasonField(resolution.reason),
       ...this.requirementField(),
     }
   }
@@ -98,6 +99,7 @@ export class Orchestrator {
         requirement: this.config.context?.requirement,
         totalAgents: agents.length,
         stages: toStageInfos(stages),
+        ...this.reasonField(resolution.reason),
       },
     })
 
@@ -212,6 +214,7 @@ export class Orchestrator {
       endTime: endTime.toISOString(),
       ...(cancelled ? { cancelled: true } : {}),
       ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
+      ...this.reasonField(resolution.reason),
       ...this.requirementField(),
     }
 
@@ -319,7 +322,7 @@ export class Orchestrator {
       if (decision.mode !== "run") {
         return { kind: "message", mode: decision.mode, message: decision.message }
       }
-      return { kind: "run", agents: this.selectAgents(decision.run) }
+      return { kind: "run", agents: this.selectAgents(decision.run), reason: decision.reason }
     }
 
     // No plan at all. The leader answered in prose, and that prose *is* the
@@ -488,6 +491,16 @@ export class Orchestrator {
   private requirementField(): { requirement?: string } {
     const requirement = this.config.context?.requirement
     return requirement !== undefined ? { requirement } : {}
+  }
+
+  /**
+   * The `selectionReason` field, present only when the leader explained itself.
+   *
+   * Omitted rather than sent as `undefined`/`""` so a run without an
+   * explanation stays byte-identical to one from before the field existed.
+   */
+  private reasonField(reason: string | undefined): { selectionReason?: string } {
+    return reason ? { selectionReason: reason } : {}
   }
 
   /**

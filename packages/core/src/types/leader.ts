@@ -9,7 +9,19 @@
 export type LeaderMode = "run" | "reply" | "ask"
 
 export type LeaderDecision =
-  | { mode: "run"; run: string[] }
+  | {
+      mode: "run"
+      run: string[]
+      /**
+       * Why these agents, in the leader's own words.
+       *
+       * Optional because the field was added after the decision shape was: a
+       * model that omits it still gets its plan honoured. It exists so a user
+       * can ask "why did this run only two agents?" and get an answer from the
+       * run itself rather than from a re-run of the leader.
+       */
+      reason?: string
+    }
   | { mode: "reply" | "ask"; message: string }
 
 /**

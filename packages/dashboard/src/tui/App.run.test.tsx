@@ -122,7 +122,11 @@ describe("App · a full turn", () => {
       describe: alwaysAvailable(RUNTIME),
       async execute(task) {
         if (task.agentId === "leader") {
-          return { output: '{"mode":"run","run":["architect","dev"]}', exitCode: 0 }
+          return {
+            output:
+              '{"mode":"run","run":["architect","dev"],"reason":"needs design before implementation"}',
+            exitCode: 0,
+          }
         }
         task.onEvent?.({
           runId: "run-1",
@@ -156,6 +160,10 @@ describe("App · a full turn", () => {
 
   it("reports completion in the footer", async () => {
     expect(await runTurn()).toContain("✓ done")
+  })
+
+  it("shows the leader reason above the panes", async () => {
+    expect(await runTurn()).toContain("reason: needs design before implementation")
   })
 
   // Regression: the body sat in a `flexDirection="row"` wrapper, so the row that
@@ -941,6 +949,11 @@ describe("App · /retry re-runs a failed agent", () => {
     // Turn two ran exactly the failed agent — not the leader, not architect.
     expect(runs).toEqual(["leader", "architect", "dev", "dev"])
     expect(frame).toContain("turn 2")
+    // The retry is a different pipeline from the one that failed, and the
+    // notice says how: `dev` reported no session to continue, and its
+    // dependency on `architect` is dropped along with the rest of the pipeline.
+    expect(frame).toContain("dev starts fresh")
+    expect(frame).toContain("runs without architect")
   })
 })
 

@@ -19,50 +19,58 @@ const state = vi.hoisted(() => ({
   previewed: 0,
 }))
 
-vi.mock("@multiclawcli/core", () => ({
-  Orchestrator: class {
-    readonly listeners = new Set<(event: unknown) => void>()
-    readonly eventBus = {
-      subscribe: (fn: (event: unknown) => void) => {
-        this.listeners.add(fn)
-        return () => this.listeners.delete(fn)
-      },
-    }
-    constructor(config: MultiClawConfig) {
-      state.constructed += 1
-      state.config = config
-    }
-    async preview() {
-      state.previewed += 1
-      return {
-        name: state.config?.name ?? "demo",
-        requirement: state.config?.context?.requirement,
-        totalAgents: state.config?.agents.length ?? 0,
-        stages: [
-          {
-            stageIndex: 0,
-            agents: (state.config?.agents ?? []).map((agent) => ({
-              id: agent.id,
-              name: agent.name,
-              model: agent.model,
-            })),
-          },
-        ],
+// Only the orchestrator is swapped out; everything else in core — the resume
+// plan description included — stays real, so the tests below exercise the same
+// helpers the command ships with.
+vi.mock("@multiclawcli/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multiclawcli/core")>()
+  return {
+    ...actual,
+    Orchestrator: class {
+      readonly listeners = new Set<(event: unknown) => void>()
+      readonly eventBus = {
+        subscribe: (fn: (event: unknown) => void) => {
+          this.listeners.add(fn)
+          return () => this.listeners.delete(fn)
+        },
       }
-    }
-    async run(): Promise<OrchestratorResult> {
-      state.ran += 1
-      const workDir = state.config?.workDir ?? state.workDir
-      fs.mkdirSync(workDir, { recursive: true })
-      fs.writeFileSync(path.join(workDir, "artifact.txt"), "made")
-      const result = state.result as OrchestratorResult
-      for (const listener of this.listeners) {
-        listener({ type: "orchestration:complete", payload: result })
+      constructor(config: MultiClawConfig) {
+        state.constructed += 1
+        state.config = config
       }
-      return result
-    }
-  },
-}))
+      async preview() {
+        state.previewed += 1
+        return {
+          name: state.config?.name ?? "demo",
+          requirement: state.config?.context?.requirement,
+          totalAgents: state.config?.agents.length ?? 0,
+          selectionReason: "small routed change",
+          stages: [
+            {
+              stageIndex: 0,
+              agents: (state.config?.agents ?? []).map((agent) => ({
+                id: agent.id,
+                name: agent.name,
+                model: agent.model,
+              })),
+            },
+          ],
+        }
+      }
+      async run(): Promise<OrchestratorResult> {
+        state.ran += 1
+        const workDir = state.config?.workDir ?? state.workDir
+        fs.mkdirSync(workDir, { recursive: true })
+        fs.writeFileSync(path.join(workDir, "artifact.txt"), "made")
+        const result = state.result as OrchestratorResult
+        for (const listener of this.listeners) {
+          listener({ type: "orchestration:complete", payload: result })
+        }
+        return result
+      }
+    },
+  }
+})
 
 vi.mock("../loader/loadConfig", () => ({
   loadConfig: async (_path?: string, requirement?: string): Promise<MultiClawConfig> => ({
@@ -165,6 +173,11 @@ const REPORT = {
   endTime: "2026-01-01T00:00:01.000Z",
 }
 
+/** Everything the command printed, joined — `console.log` is mocked per test. */
+function consoleLines(): string {
+  return (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n")
+}
+
 describe("runCommand · dry run and deliverables", () => {
   it("previews the routed plan without running the pipeline or creating logs", async () => {
     await runCommand("ship it", { dryRun: true })
@@ -174,11 +187,10 @@ describe("runCommand · dry run and deliverables", () => {
     expect(state.ran).toBe(0)
     expect(state.logDir).toBeUndefined()
     expect(fs.existsSync(path.join(state.config?.workDir ?? root, "logs"))).toBe(false)
-    const printed = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls
-      .flat()
-      .join("\n")
+    const printed = consoleLines()
     expect(printed).toContain("Dry run")
     expect(printed).toContain("Requirement: ship it")
+    expect(printed).toContain("Why: small routed change")
     expect(printed).toContain("Stage 1: dev (fast)")
   })
 
@@ -212,6 +224,23 @@ describe("runCommand · resume wiring", () => {
     expect(fs.readFileSync(reportPath, "utf-8")).toBe(original)
     // And the resumed logs land in a sibling directory, not `logs/`.
     expect(state.logDir?.startsWith(path.join(runDir, "logs-resume-"))).toBe(true)
+    // The resumed run is a different pipeline from the recorded one, so the
+    // banner spells out what this one actually does: this agent reported no
+    // session, so it starts from scratch rather than picking up where the
+    // failed run left off.
+    expect(consoleLines()).toContain("dev starts fresh")
+  })
+
+  it("says which agents continue a session when the report carried one", async () => {
+    writeRun("2026-01-02T00-00-00", {
+      ...REPORT,
+      agentResults: [{ ...REPORT.agentResults[0], status: "success", sessionId: "s-42" }],
+    })
+
+    await runCommand(undefined, { resume: true })
+
+    expect(state.config?.resume).toEqual({ agents: ["dev"], sessions: { dev: "s-42" } })
+    expect(consoleLines()).toContain("dev continues its session")
   })
 
   it("starts a fresh run-<stamp> directory when not resuming", async () => {

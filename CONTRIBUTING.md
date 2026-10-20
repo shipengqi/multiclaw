@@ -100,6 +100,10 @@ A change is ready to merge when **all** of the following hold:
   registry — reuse it instead of hand-rolling stubs.
 - Coverage thresholds are a **baseline lock**, not a target. They exist to stop coverage from sliding
   backwards; raise them as untested areas gain coverage.
+- Mocks cannot cover real ACP bridge behaviour (permission negotiation, `_meta` namespace adherence,
+  session resume). Those checks are manual and live in
+  [`docs/provider-verification.md`](docs/provider-verification.md) — run it when touching runtime,
+  provider, bridge, or resume code.
 
 ## Commits
 

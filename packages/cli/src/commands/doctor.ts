@@ -3,9 +3,12 @@ import {
   detectProviders,
   type ModelSelectionMode,
   type MultiClawConfig,
+  type ProviderSource,
   type ProviderStatus,
   presentProviders,
+  resolveCommand,
   resolveProvider,
+  specForCommand,
   specForProvider,
 } from "@multiclawcli/core"
 import { loadConfig } from "../loader/loadConfig"
@@ -15,6 +18,8 @@ export interface DoctorProviderRow {
   label: string
   status: ProviderStatus
   command: string
+  source?: ProviderSource
+  resolvedPath?: string
   version?: string
   modelCount: number
   modelSelection: ModelSelectionMode
@@ -30,6 +35,7 @@ export interface DoctorReport {
     defaultsProvider?: string
     defaultsProviderOk: boolean
     agentsWithMissingProvider: string[]
+    agentsWithUnsupportedTools: string[]
   }
   runnable: boolean
 }
@@ -48,6 +54,8 @@ export function buildDoctorReport(
       label: d.label,
       status: d.status,
       command: d.command,
+      source: d.source,
+      resolvedPath: d.resolvedPath,
       version: d.version,
       modelCount: spec?.models.length ?? 0,
       modelSelection: spec?.modelSelection ?? "none",
@@ -69,12 +77,21 @@ export function buildDoctorReport(
       .map((a) => ({ id: a.id, intended: resolveProvider(a, config) }))
       .filter((a) => !present.includes(a.intended))
       .map((a) => a.id)
+    const agentsWithUnsupportedTools = agents
+      .map((a) => {
+        const command = resolveCommand(a, config)
+        const spec = specForCommand(command) ?? specForProvider(resolveProvider(a, config))
+        return { id: a.id, spec, tools: a.tools }
+      })
+      .filter((a) => a.spec && !a.spec.tools && a.tools !== undefined)
+      .map((a) => a.id)
 
     configReport = {
       name: config.name,
       defaultsProvider,
       defaultsProviderOk,
       agentsWithMissingProvider,
+      agentsWithUnsupportedTools,
     }
   }
 
@@ -115,16 +132,25 @@ export function formatDoctorReport(report: DoctorReport, useColor = true): strin
   lines.push("")
 
   // Provider table.
-  lines.push(`${cell("provider", 12)}${cell("status", 10)}${cell("version", 14)}models  auth`)
+  lines.push(
+    `${cell("provider", 12)}${cell("status", 10)}${cell("version", 14)}${cell("source", 9)}models  auth`
+  )
   for (const p of report.providers) {
     const mark = p.status === "present" ? "✓ present" : "✗ missing"
     const markCode = p.status === "present" ? GREEN : RED
     const version = p.version ?? (p.status === "present" ? "" : "—")
+    const source = p.source ?? "—"
+    const sourceCode = p.source === "bundled" ? YELLOW : undefined
     const models = p.modelSelection === "none" ? "n/a" : String(p.modelCount)
     const auth = p.authHint ? c(DIM, p.authHint) : ""
     lines.push(
-      `${cell(p.label, 12)}${cell(mark, 10, markCode)}${cell(version, 14)}${cell(models, 7)}${auth}`
+      `${cell(p.label, 12)}${cell(mark, 10, markCode)}${cell(version, 14)}${cell(source, 9, sourceCode)}${cell(models, 7)}${auth}`
     )
+    // A bundled bridge is how a provider can be "present" on a machine that
+    // never installed it — so say which file multiclaw will actually spawn.
+    if (p.status === "present" && p.source === "bundled" && p.resolvedPath) {
+      lines.push(c(DIM, `    bundled bridge: ${p.resolvedPath}`))
+    }
     if (p.status === "missing" && p.installHint) {
       lines.push(c(YELLOW, `  install: ${p.installHint}`))
     }
@@ -151,6 +177,14 @@ export function formatDoctorReport(report: DoctorReport, useColor = true): strin
       )
     } else {
       lines.push(c(GREEN, "  all agents resolve to an installed provider ✓"))
+    }
+    if (report.config.agentsWithUnsupportedTools.length > 0) {
+      lines.push(
+        c(
+          YELLOW,
+          `  ${report.config.agentsWithUnsupportedTools.length} agent(s) use a provider that cannot enforce tool allowlists: ${report.config.agentsWithUnsupportedTools.join(", ")}`
+        )
+      )
     }
   }
 

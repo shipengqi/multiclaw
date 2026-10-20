@@ -41,8 +41,9 @@ function fakeChild(stdout: string) {
 beforeEach(() => {
   resolveMock.mockReset()
   spawnMock.mockReset()
-  // Default: every known binary resolves on PATH.
-  resolveMock.mockImplementation((cmd: string) => `/usr/local/bin/${cmd}`)
+  // Default: every known binary resolves on PATH, which is the bare command —
+  // an absolute path means the bundled bridge answered instead.
+  resolveMock.mockImplementation((cmd: string) => cmd)
   spawnMock.mockImplementation((cmd: string) =>
     fakeChild(String(cmd).includes("cursor") ? "cursor-agent 0.4.2" : "1.0.0")
   )
@@ -56,6 +57,31 @@ describe("detectProviders", () => {
     // cursor has `confirm` and is treated as missing without withVersion.
     expect(ids).toEqual(expect.arrayContaining(["opencode", "claude", "codex"]))
     expect(ids).not.toContain("cursor")
+  })
+
+  it("marks a provider that resolved on PATH as path-sourced", async () => {
+    const found = await detectProviders()
+    const claude = found.find((p) => p.id === "claude")
+    expect(claude?.source).toBe("path")
+    expect(claude?.resolvedPath).toBeUndefined()
+  })
+
+  // A bundled bridge is the case where "present" says nothing about what the
+  // user installed: multiclaw supplied the executable itself, and the user
+  // needs to be able to see which file it will actually spawn.
+  it("marks a provider multiclaw's own bridge supplied as bundled, with its path", async () => {
+    resolveMock.mockImplementation((cmd: string) =>
+      cmd === "claude-agent-acp"
+        ? "/opt/multiclaw/node_modules/@agentclientprotocol/claude-agent-acp/bin.js"
+        : cmd
+    )
+    const found = await detectProviders()
+    const claude = found.find((p) => p.id === "claude")
+    expect(claude?.status).toBe("present")
+    expect(claude?.source).toBe("bundled")
+    expect(claude?.resolvedPath).toContain("claude-agent-acp")
+    // Others are unaffected.
+    expect(found.find((p) => p.id === "opencode")?.source).toBe("path")
   })
 
   it("reports the install hint for a missing provider", async () => {

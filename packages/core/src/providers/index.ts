@@ -20,6 +20,7 @@ export {
 export {
   type DetectedProvider,
   detectProviders,
+  type ProviderSource,
   type ProviderStatus,
   presentProviders,
 } from "./detect"

@@ -39,7 +39,10 @@ function asDecision(value: unknown): LeaderDecision | undefined {
   if (mode === "run" || mode === undefined) {
     const run = record.run
     if (!Array.isArray(run) || !run.every((id) => typeof id === "string")) return undefined
-    return { mode: "run", run }
+    // Absent or non-string is "no reason given", not a malformed plan: the
+    // field is an explanation, and losing it must not lose the run.
+    const reason = typeof record.reason === "string" ? record.reason.trim() : ""
+    return reason ? { mode: "run", run, reason } : { mode: "run", run }
   }
 
   return undefined

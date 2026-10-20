@@ -103,6 +103,8 @@ export interface TurnView {
    * print a cost that was never measured.
    */
   totalCostUsd?: number
+  /** Short explanation the leader gave for choosing the current pipeline. */
+  reason?: string
   warning?: string
   /**
    * Set when the turn ended in words rather than a pipeline: the leader answered
@@ -330,6 +332,7 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
         phase: "running",
         name: event.payload.name,
         requirement: event.payload.requirement ?? state.requirement,
+        reason: event.payload.selectionReason,
         stages: event.payload.stages,
         agents: mergeStageAgents(state.agents, event.payload.stages),
       }
@@ -507,6 +510,7 @@ function snapshot(state: TuiState): TurnView {
     success: state.success,
     totalDuration: state.totalDuration,
     totalCostUsd: state.totalCostUsd,
+    reason: state.reason,
     warning: state.warning,
     reply: state.reply,
   }
@@ -617,9 +621,11 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         autoFollow: true,
         scroll: 0,
         history,
-        // A new requirement replaces the previous answer; leaving it up would
-        // make the old reply look like the response to the new request. Reading
-        // a past turn ends for the same reason — the panes belong to the run.
+        // A new requirement also replaces the previous leader metadata; leaving
+        // it up would make the old answer or routing reason look like the
+        // response to the new request. Reading a past turn ends for the same
+        // reason — the panes belong to the run.
+        reason: undefined,
         reply: undefined,
         view: undefined,
         // A console setting, carried across turns rather than reset with them.

@@ -16,7 +16,14 @@ export type MultiClawEvent =
   | {
       type: "orchestration:start"
       timestamp: string
-      payload: { name: string; requirement?: string; totalAgents: number; stages: StageInfo[] }
+      payload: {
+        name: string
+        requirement?: string
+        totalAgents: number
+        stages: StageInfo[]
+        /** The leader's explanation for the agent set, when it gave one. */
+        selectionReason?: string
+      }
     }
   | {
       /**

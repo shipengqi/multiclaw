@@ -65,4 +65,26 @@ describe("parseLeaderDecision", () => {
   it("accepts an empty run list — the caller decides that it means nothing to do", () => {
     expect(parseLeaderDecision('{"mode":"run","run":[]}')).toEqual({ mode: "run", run: [] })
   })
+
+  it("carries the leader's reason for the agent set", () => {
+    expect(parseLeaderDecision('{"mode":"run","reason":"  small fix  ","run":["a"]}')).toEqual({
+      mode: "run",
+      run: ["a"],
+      reason: "small fix",
+    })
+  })
+
+  it("omits the reason rather than failing the plan when it is unusable", () => {
+    // The reason is an explanation, not a constraint: losing it must not lose
+    // the run the leader asked for.
+    expect(parseLeaderDecision('{"mode":"run","run":["a"]}')).toEqual({ mode: "run", run: ["a"] })
+    expect(parseLeaderDecision('{"mode":"run","reason":"   ","run":["a"]}')).toEqual({
+      mode: "run",
+      run: ["a"],
+    })
+    expect(parseLeaderDecision('{"mode":"run","reason":42,"run":["a"]}')).toEqual({
+      mode: "run",
+      run: ["a"],
+    })
+  })
 })

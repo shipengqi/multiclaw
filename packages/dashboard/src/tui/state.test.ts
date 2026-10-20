@@ -130,6 +130,7 @@ describe("reduceEvent", () => {
       payload: {
         name: "demo",
         requirement: "build it",
+        selectionReason: "implementation needs design first",
         totalAgents: 2,
         stages: [stage(0, ["architect"]), stage(1, ["dev", "qa"])],
       },
@@ -138,6 +139,7 @@ describe("reduceEvent", () => {
     expect(state.phase).toBe("running")
     expect(state.name).toBe("demo")
     expect(state.requirement).toBe("build it")
+    expect(state.reason).toBe("implementation needs design first")
     expect(state.stages).toHaveLength(2)
     expect(Object.keys(state.agents).sort()).toEqual(["architect", "dev", "qa"])
     expect(state.agents.architect.status).toBe("pending")
@@ -152,6 +154,20 @@ describe("reduceEvent", () => {
       payload: { name: "demo", totalAgents: 0, stages: [] },
     })
     expect(state.requirement).toBe("earlier")
+  })
+
+  it("clears the leader reason when a new turn starts", () => {
+    const state = tuiReducer(
+      { ...initialState, reason: "old route", requirement: "old" },
+      {
+        type: "turn:start",
+        requirement: "new",
+        agents: {},
+        leaderIds: [],
+        startedAt: T0,
+      }
+    )
+    expect(state.reason).toBeUndefined()
   })
 
   it("merges stage agents into a preflight agent instead of resetting it", () => {

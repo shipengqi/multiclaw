@@ -68,6 +68,8 @@ export interface OrchestrationPreview {
   stages: import("./event").StageInfo[]
   /** Present when the leader answered or asked instead of choosing a pipeline. */
   reply?: LeaderMessage
+  /** The leader's explanation for the agent set, when it gave one. */
+  selectionReason?: string
 }
 
 export interface DeliverableSummary {
@@ -100,6 +102,14 @@ export interface OrchestratorResult {
    * an empty `agentResults`.
    */
   reply?: LeaderMessage
+  /**
+   * The leader's explanation for the agent set it selected, when it gave one.
+   *
+   * This is orchestration metadata, not agent state: it answers "why did this
+   * turn run these agents?" without asking the leader again. Absent for a
+   * resumed run, a leader-less run, and any leader that omitted the field.
+   */
+  selectionReason?: string
   /**
    * Sum of the per-agent costs that were actually reported, in USD.
    *

@@ -1,6 +1,6 @@
 import * as path from "node:path"
 import type { EventBus, MultiClawConfig, MultiClawEvent } from "@multiclawcli/core"
-import { isAbortError, Orchestrator } from "@multiclawcli/core"
+import { describeResumePlan, isAbortError, Orchestrator } from "@multiclawcli/core"
 import { Box, type Key, Text, useApp, useInput, useWindowSize } from "ink"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import {
@@ -533,6 +533,20 @@ export function App({ config, onTurnStart }: AppProps) {
               ...(Object.keys(sessions).length > 0 ? { sessions } : {}),
             },
           })
+          // Set after `startTurn`, which clears the notice synchronously — the
+          // same batching `/replay` works around. A retry re-runs a *different*
+          // pipeline from the one that failed: only the failed agents run, an
+          // agent keeps its session only when it reported one, and a
+          // dependency outside the retry set is dropped along with it. Saying
+          // so keeps a second failure from reading as the agent repeating its
+          // first mistake.
+          setNotice(
+            `retrying ${ids.join(", ")} — ${describeResumePlan({
+              agents: ids,
+              sessions,
+              team: config.agents,
+            })}`
+          )
           return
         }
         case "replay": {
@@ -948,6 +962,12 @@ export function App({ config, onTurnStart }: AppProps) {
         <Box marginTop={1} height={layout.railRows} overflow="hidden" flexShrink={0}>
           <PipelineRail turn={shown} spinner={spinner} />
         </Box>
+      ) : null}
+
+      {shown.reason ? (
+        <Text dimColor wrap="truncate-end">
+          {`  reason: ${shown.reason}`}
+        </Text>
       ) : null}
 
       {/* A column box so the body row stretches to the pane width. Ink's Box
