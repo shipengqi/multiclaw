@@ -4,7 +4,7 @@
   "type": "module",
   "exports": {
     "./tui": {
-      "types": "./dist/tui.d.ts",
+      "types": "./dist/tui/index.d.ts",
       "default": "./dist/tui.js"
     }
   },
@@ -22,7 +22,7 @@
     "url": "https://github.com/shipengqi/multiclaw/issues"
   },
   "scripts": {
-    "build": "tsup && tsc -p tsconfig.json --emitDeclarationOnly --outDir dist --composite false --incremental false",
+    "build": "tsup && tsc -p tsconfig.build.json --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
