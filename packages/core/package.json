@@ -33,8 +33,8 @@
     "vitest": "^5.0.4"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "^0.93.0",
+    "@agentclientprotocol/claude-agent-acp": "^0.95.0",
     "@agentclientprotocol/codex-acp": "^2.2.2",
-    "@agentclientprotocol/sdk": "^2.0.1"
+    "@agentclientprotocol/sdk": "^2.0.2"
   }
 }
