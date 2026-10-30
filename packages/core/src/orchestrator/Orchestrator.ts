@@ -3,13 +3,20 @@ import * as path from "node:path"
 import { EventBus } from "../event/EventBus"
 import { resolveModel } from "../providers/resolve"
 import type { AgentDefinition, AgentResult, TaskPlan } from "../types/agent"
-import type { MultiClawConfig, OrchestrationPreview, OrchestratorResult } from "../types/config"
+import type {
+  AcceptanceResult,
+  MultiClawConfig,
+  OrchestrationPreview,
+  OrchestratorResult,
+  ReviewVerdict,
+} from "../types/config"
 import type { StageInfo } from "../types/event"
 import type { LeaderMessage } from "../types/leader"
 import { renderConversation } from "../utils/conversation"
 import { parseLeaderDecision } from "../utils/leaderDecision"
 import { renderUpstreamOutputs } from "../utils/upstream"
 import { AgentRunner } from "./AgentRunner"
+import type { AgentSessionManager } from "./AgentSessionManager"
 import { ContextManager } from "./ContextManager"
 import { buildStages } from "./StageBuilder"
 
@@ -22,6 +29,7 @@ import { buildStages } from "./StageBuilder"
 type Resolution =
   | { kind: "run"; agents: AgentDefinition[]; reason?: string }
   | { kind: "message"; mode: LeaderMessage["mode"]; message: string }
+  | { kind: "cancelled" }
 
 export class Orchestrator {
   readonly eventBus = new EventBus()
@@ -29,7 +37,10 @@ export class Orchestrator {
   private runner: AgentRunner
   private workDir: string
 
-  constructor(private config: MultiClawConfig) {
+  constructor(
+    private config: MultiClawConfig,
+    sessions?: AgentSessionManager
+  ) {
     this.workDir = path.resolve(config.workDir)
     fs.mkdirSync(this.workDir, { recursive: true })
     this.contextManager = new ContextManager(config.context)
@@ -41,12 +52,23 @@ export class Orchestrator {
     // placeholder, and a context key that was never set leaves the literal
     // `{{upstreamOutputs}}` in the prompt for the model to read.
     this.contextManager.set("upstreamOutputs", "")
-    this.runner = new AgentRunner(this.eventBus, this.contextManager, this.workDir, config)
+    this.runner = new AgentRunner(
+      this.eventBus,
+      this.contextManager,
+      this.workDir,
+      config,
+      sessions
+    )
   }
 
   async preview(options: { signal?: AbortSignal } = {}): Promise<OrchestrationPreview> {
+    const policyError = this.reviewPolicyError()
+    if (policyError) throw new Error(policyError)
     this.clearStaleTaskPlan()
     const resolution = await this.resolveTurn(options.signal)
+    if (resolution.kind === "cancelled" || options.signal?.aborted) {
+      return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
+    }
     if (resolution.kind === "message") {
       return {
         name: this.config.name,
@@ -60,10 +82,12 @@ export class Orchestrator {
     const agents = resolution.agents
     this.contextManager.set("pipelineAgents", agents.map((a) => `${a.id}: ${a.name}`).join("\n"))
     const stages = this.buildStagesOrFallback(agents, "Could not order the configured agents")
+    const reviewer = this.config.agents.find((agent) => agent.id === this.config.review?.reviewer)
+    if (reviewer && agents.length) stages.push([reviewer])
     const stageInfos = this.stageInfos(stages)
     return {
       name: this.config.name,
-      totalAgents: agents.length,
+      totalAgents: agents.length + (reviewer && agents.length ? 1 : 0),
       stages: stageInfos,
       ...this.reasonField(resolution.reason),
       ...this.requirementField(),
@@ -72,8 +96,24 @@ export class Orchestrator {
 
   async run(options: { signal?: AbortSignal } = {}): Promise<OrchestratorResult> {
     const startTime = new Date()
+    if (options.signal?.aborted) return this.finishCancelled(startTime)
+    const policyError = this.reviewPolicyError()
+    if (policyError) {
+      this.warn(policyError)
+      const result = this.finishEmpty(startTime, {
+        status: "failed",
+        reviewer: this.config.review?.reviewer ?? "",
+        repairRounds: 0,
+        reviews: [],
+        reason: policyError,
+      })
+      return result
+    }
     this.clearStaleTaskPlan()
     const resolution = await this.resolveTurn(options.signal)
+    if (resolution.kind === "cancelled" || options.signal?.aborted) {
+      return this.finishCancelled(startTime)
+    }
 
     if (resolution.kind === "message") {
       return this.finishWithMessage(resolution.mode, resolution.message, startTime)
@@ -84,7 +124,19 @@ export class Orchestrator {
     // A leader can only *subtract* from the configured team, so an empty result
     // means it named nothing we recognise. Falling through would run zero stages
     // and report success — a green "done" for a turn in which nobody worked.
-    if (agents.length === 0) return this.finishEmpty(startTime)
+    if (agents.length === 0)
+      return this.finishEmpty(
+        startTime,
+        this.config.review
+          ? {
+              status: "failed",
+              reviewer: this.config.review.reviewer,
+              repairRounds: 0,
+              reviews: [],
+              reason: "No worker was selected for the review-gated task.",
+            }
+          : undefined
+      )
 
     this.contextManager.set("pipelineAgents", agents.map((a) => `${a.id}: ${a.name}`).join("\n"))
 
@@ -96,7 +148,7 @@ export class Orchestrator {
       timestamp: new Date().toISOString(),
       payload: {
         name: this.config.name,
-        requirement: this.config.context?.requirement,
+        requirement: this.contextManager.get("requirement"),
         totalAgents: agents.length,
         stages: toStageInfos(stages),
         ...this.reasonField(resolution.reason),
@@ -111,8 +163,14 @@ export class Orchestrator {
     // point: a preset can put a product-manager first and the architect second,
     // and the old `i === 0` test silently skipped the plan for every such team.
     let planApplied = false
+    const executedIds = new Set<string>()
 
     for (let i = 0; i < stages.length; i++) {
+      if (options.signal?.aborted) {
+        cancelled = true
+        allSuccess = false
+        break
+      }
       const stage = stages[i]
 
       this.eventBus.emit({
@@ -123,6 +181,7 @@ export class Orchestrator {
 
       const stageResults = await this.runStage(stage, options.signal)
       results.push(...stageResults)
+      for (const result of stageResults) executedIds.add(result.agentId)
 
       // Hand the next stage what this one produced. Only what succeeded: a
       // failed agent's partial output is not a conclusion a downstream agent
@@ -143,7 +202,7 @@ export class Orchestrator {
       // (not `failed`), and `cancelled` is still not a `success`, so leaving
       // `allSuccess` alone here would report a cancelled run as a success and
       // make the CLI exit 0 on Ctrl-C.
-      if (options.signal?.aborted) {
+      if (options.signal?.aborted || stageResults.some((r) => r.status === "cancelled")) {
         cancelled = true
         allSuccess = false
         break
@@ -156,14 +215,25 @@ export class Orchestrator {
       if (
         !planApplied &&
         stage.some((a) => this.isPlanner(a)) &&
-        stageResults.some((r) => r.status === "success")
+        stageResults.some(
+          (r) =>
+            r.status === "success" && stage.some((a) => a.id === r.agentId && this.isPlanner(a))
+        )
       ) {
         planApplied = true
-        await this.applyTaskPlan(agents)
-        stages = this.buildStagesOrFallback(
-          agents,
+        await this.applyTaskPlan(agents, executedIds)
+        const remaining = agents
+          .filter((a) => !executedIds.has(a.id))
+          .map((a) => ({
+            ...a,
+            dependsOn: a.dependsOn?.filter((dep) => !executedIds.has(dep)),
+          }))
+        const rebuilt = this.buildStagesOrFallback(
+          remaining,
           "The task plan's dependencies could not be satisfied"
         )
+        // Completed stages are immutable history; their dependencies are satisfied.
+        stages = [...stages.slice(0, i + 1), ...rebuilt]
         // The plan regrouped the team, and the console drew the pre-plan
         // grouping from the `orchestration:start` above. Publishing the new
         // stages is what keeps what is on screen matching what actually runs.
@@ -201,6 +271,20 @@ export class Orchestrator {
       }
     }
 
+    let acceptance: AcceptanceResult | undefined
+    if (this.config.review) {
+      acceptance = await this.reviewDelivery(
+        agents,
+        results,
+        stages,
+        allSuccess,
+        cancelled,
+        options.signal
+      )
+      cancelled ||= acceptance.status === "cancelled"
+      allSuccess = allSuccess && acceptance.status === "approved"
+    }
+
     const endTime = new Date()
     // Only agents that reported a cost contribute; when none did, the field is
     // absent rather than 0 — "no data" is not the same as "free".
@@ -208,6 +292,7 @@ export class Orchestrator {
     const result: OrchestratorResult = {
       name: this.config.name,
       success: allSuccess,
+      ...(acceptance ? { acceptance } : {}),
       totalDuration: endTime.getTime() - startTime.getTime(),
       agentResults: results,
       startTime: startTime.toISOString(),
@@ -224,6 +309,152 @@ export class Orchestrator {
       payload: result,
     })
     return result
+  }
+
+  private reviewPolicyError(): string | undefined {
+    const policy = this.config.review
+    if (!policy) return undefined
+    const ids = this.config.agents.map((agent) => agent.id)
+    if (new Set(ids).size !== ids.length) return "Review policy requires unique agent ids."
+    if (!ids.includes(policy.reviewer) || policy.reviewer === this.config.leader?.id) {
+      return "Review policy must name a configured non-leader reviewer."
+    }
+    if (
+      !Array.isArray(policy.repairAgents) ||
+      !policy.repairAgents.length ||
+      new Set(policy.repairAgents).size !== policy.repairAgents.length ||
+      policy.repairAgents.some(
+        (id) => !ids.includes(id) || id === policy.reviewer || id === this.config.leader?.id
+      )
+    ) {
+      return "Review policy must name unique configured repair workers, excluding the reviewer and leader."
+    }
+    const limit = policy.maxRepairRounds ?? 1
+    if (!Number.isInteger(limit) || limit < 0 || limit > 5) {
+      return "Review policy maxRepairRounds must be an integer from 0 to 5."
+    }
+    return undefined
+  }
+
+  private async reviewDelivery(
+    agents: AgentDefinition[],
+    results: AgentResult[],
+    stages: AgentDefinition[][],
+    executionSuccess: boolean,
+    cancelled: boolean,
+    signal?: AbortSignal
+  ): Promise<AcceptanceResult> {
+    const policy = this.config.review
+    if (!policy) throw new Error("Delivery review requires a configured policy.")
+    const acceptance: AcceptanceResult = {
+      status: "failed",
+      reviewer: policy.reviewer,
+      repairRounds: 0,
+      reviews: [],
+    }
+    if (cancelled || signal?.aborted) return { ...acceptance, status: "cancelled" }
+    if (!executionSuccess)
+      return { ...acceptance, reason: "Pipeline execution failed; delivery was not reviewed." }
+    const reviewer = this.config.agents.find((agent) => agent.id === policy.reviewer)
+    if (!reviewer) return { ...acceptance, reason: "Configured reviewer is unavailable." }
+    const repairs = agents.filter((agent) => policy.repairAgents.includes(agent.id))
+    const repairIds = new Set(repairs.map((agent) => agent.id))
+    const repairStages = this.buildStagesOrFallback(
+      repairs.map((agent) => ({
+        ...agent,
+        dependsOn: agent.dependsOn?.filter((id) => repairIds.has(id)),
+      })),
+      "Could not order repair workers"
+    ).flatMap((stage) => stage.map((agent) => [agent]))
+    let stageIndex = stages.length
+    const execute = async (stage: AgentDefinition[], instruction: string): Promise<boolean> => {
+      if (signal?.aborted) {
+        acceptance.status = "cancelled"
+        return false
+      }
+      stages.push(stage)
+      this.eventBus.emit({
+        type: "orchestration:stages",
+        timestamp: new Date().toISOString(),
+        payload: {
+          totalAgents: new Set(stages.flat().map((agent) => agent.id)).size,
+          stages: this.stageInfos(stages),
+        },
+      })
+      const index = stageIndex++
+      this.eventBus.emit({
+        type: "stage:start",
+        timestamp: new Date().toISOString(),
+        payload: { stageIndex: index, agentIds: stage.map((agent) => agent.id) },
+      })
+      // Repairs run sequentially to avoid overlapping edits in the shared workspace.
+      for (const agent of stage) {
+        if (signal?.aborted) {
+          acceptance.status = "cancelled"
+          return false
+        }
+        const result = await this.runner.run(
+          agent,
+          signal,
+          `${instruction}\n\n## Latest worker outputs\n${this.contextManager.get("upstreamOutputs") ?? ""}`
+        )
+        results.push(result)
+        // Repeated agents replace their earlier upstream output, not their audit results.
+        const latest = new Map<string, AgentResult>()
+        for (const item of results) latest.set(item.agentId, item)
+        this.contextManager.set(
+          "upstreamOutputs",
+          renderUpstreamOutputs(
+            [...latest.values()]
+              .filter((item) => item.status === "success" && item.agentId !== policy.reviewer)
+              .map((item) => ({ agentId: item.agentId, name: item.agentName, output: item.output }))
+          )
+        )
+        if (result.status !== "success" || signal?.aborted) {
+          acceptance.status =
+            result.status === "cancelled" || signal?.aborted ? "cancelled" : "failed"
+          acceptance.reason = result.error ?? `${agent.name} did not complete.`
+          return false
+        }
+      }
+      this.eventBus.emit({
+        type: "stage:complete",
+        timestamp: new Date().toISOString(),
+        payload: { stageIndex: index },
+      })
+      return true
+    }
+    while (true) {
+      if (
+        !(await execute(
+          [reviewer],
+          `## Delivery acceptance review\nInspect the current workspace against the complete task and verify the changes. Do not repair files. Return ONLY a JSON object with this exact contract:\n{"verdict":"approved"|"changes_required","summary":"non-empty explanation","issues":["actionable unresolved issue"]}\nApproval requires an empty issues array; changes_required requires at least one issue. A successful process exit is not approval.`
+        ))
+      )
+        return acceptance
+      const verdict = parseReviewVerdict(results[results.length - 1].output)
+      if (!verdict) {
+        acceptance.reason = "Reviewer returned an invalid delivery verdict; acceptance is blocked."
+        this.warn(acceptance.reason)
+        return acceptance
+      }
+      acceptance.reviews.push(verdict)
+      if (verdict.verdict === "approved") return { ...acceptance, status: "approved" }
+      acceptance.status = "changes_required"
+      if (acceptance.repairRounds >= (policy.maxRepairRounds ?? 1) || !repairs.length) {
+        acceptance.reason = !repairs.length
+          ? "No configured repair worker was selected for this task."
+          : "Repair budget exhausted."
+        return acceptance
+      }
+      acceptance.repairRounds++
+      this.warn(
+        `Delivery requires changes — repair pass ${acceptance.repairRounds}/${policy.maxRepairRounds ?? 1}.`
+      )
+      const instruction = `## Repair requested by delivery review\n${JSON.stringify(verdict)}\nAddress these findings within your assigned scope, preserve the complete task requirements, and report what you changed and verified.`
+      for (const stage of repairStages) if (!(await execute(stage, instruction))) return acceptance
+      acceptance.status = "failed"
+    }
   }
 
   private stageInfos(stages: AgentDefinition[][]): StageInfo[] {
@@ -260,7 +491,7 @@ export class Orchestrator {
       return buildStages(agents)
     } catch (err) {
       this.warn(`${context} (${errorMessage(err)}) — running the agents in declaration order.`)
-      return [agents]
+      return agents.map((agent) => [agent])
     }
   }
 
@@ -287,6 +518,7 @@ export class Orchestrator {
    * job, and that is what `message` records.
    */
   private async resolveTurn(signal?: AbortSignal): Promise<Resolution> {
+    if (signal?.aborted) return { kind: "cancelled" }
     // A resume/retry already knows who runs: re-deciding with the leader would
     // re-route the turn and could pick a different team than the one being
     // resumed. Reusing `selectAgents` keeps the unknown-id warning, the
@@ -306,10 +538,13 @@ export class Orchestrator {
 
     this.contextManager.set(
       "availableAgents",
-      this.config.agents.map((a) => `${a.id}: ${a.name}`).join("\n")
+      this.configuredAgents()
+        .map((a) => `${a.id}: ${a.name}`)
+        .join("\n")
     )
 
     const result = await this.runner.run(this.config.leader, signal)
+    if (signal?.aborted || result.status === "cancelled") return { kind: "cancelled" }
     if (result.status !== "success") {
       // The leader is infrastructure, not the task. Losing it is worth saying out
       // loud, but the requirement itself may still be perfectly runnable.
@@ -322,6 +557,7 @@ export class Orchestrator {
       if (decision.mode !== "run") {
         return { kind: "message", mode: decision.mode, message: decision.message }
       }
+      if (decision.requirement) this.contextManager.set("requirement", decision.requirement)
       return { kind: "run", agents: this.selectAgents(decision.run), reason: decision.reason }
     }
 
@@ -351,9 +587,16 @@ export class Orchestrator {
     // config. The key is added only when it existed — spreading a missing
     // `dependsOn` back as `undefined` would invent the key on agents that never
     // had one.
-    return this.config.agents.map((a) =>
-      a.dependsOn ? { ...a, dependsOn: [...a.dependsOn] } : { ...a }
-    )
+    return this.config.agents
+      .filter((a) => a.id !== this.config.review?.reviewer)
+      .map((a) =>
+        a.dependsOn
+          ? {
+              ...a,
+              dependsOn: a.dependsOn.filter((id) => id !== this.config.review?.reviewer),
+            }
+          : { ...a }
+      )
   }
 
   /**
@@ -368,7 +611,7 @@ export class Orchestrator {
    * reader looking in the wrong place.
    */
   private selectAgents(run: string[], namedBy = "The leader"): AgentDefinition[] {
-    const runSet = new Set(run)
+    const runSet = new Set(run.filter((id) => id !== this.config.review?.reviewer))
     const known = new Set(this.config.agents.map((a) => a.id))
 
     // The caller is told to pick from the configured list, but a model (or a
@@ -383,7 +626,9 @@ export class Orchestrator {
 
     const skippedIds = new Set(this.config.agents.filter((a) => !runSet.has(a.id)).map((a) => a.id))
 
-    for (const agent of this.config.agents.filter((a) => skippedIds.has(a.id))) {
+    for (const agent of this.config.agents.filter(
+      (a) => skippedIds.has(a.id) && a.id !== this.config.review?.reviewer
+    )) {
       this.eventBus.emit({
         type: "agent:skipped",
         timestamp: new Date().toISOString(),
@@ -392,34 +637,39 @@ export class Orchestrator {
     }
 
     return this.config.agents
-      .filter((a) => runSet.has(a.id))
+      .filter((a) => runSet.has(a.id) && a.id !== this.config.review?.reviewer)
       .map((a) => ({
         ...a,
-        dependsOn: a.dependsOn?.filter((dep) => !skippedIds.has(dep)),
+        dependsOn: a.dependsOn?.filter(
+          (dep) => !skippedIds.has(dep) && dep !== this.config.review?.reviewer
+        ),
       }))
   }
 
   private async runStage(agents: AgentDefinition[], signal?: AbortSignal): Promise<AgentResult[]> {
     const { maxConcurrency } = this.config
-    if (!maxConcurrency || agents.length <= maxConcurrency) {
-      return Promise.all(agents.map((a) => this.runner.run(a, signal)))
-    }
 
     // `maxConcurrency` is a cap, not a batch size. A fixed `Promise.all` chunk
     // waits for the slowest member of the chunk before launching the next one,
     // leaving empty slots idle. Keep the stage semantics and declaration-order
     // result shape, but refill each slot as soon as its current agent settles.
-    const results = new Array<AgentResult>(agents.length)
+    const results = new Map<number, AgentResult>()
     let next = 0
-    const workers = Array.from({ length: Math.min(maxConcurrency, agents.length) }, async () => {
-      while (next < agents.length) {
-        const index = next
-        next += 1
-        results[index] = await this.runner.run(agents[index], signal)
+    let cancelled = false
+    const workers = Array.from(
+      { length: Math.min(maxConcurrency || agents.length, agents.length) },
+      async () => {
+        while (next < agents.length && !signal?.aborted && !cancelled) {
+          const index = next
+          next += 1
+          const result = await this.runner.run(agents[index], signal)
+          results.set(index, result)
+          if (result.status === "cancelled") cancelled = true
+        }
       }
-    })
+    )
     await Promise.all(workers)
-    return results
+    return [...results.entries()].sort(([a], [b]) => a - b).map(([, result]) => result)
   }
 
   /**
@@ -433,13 +683,16 @@ export class Orchestrator {
     return agent.role === "planner" || agent.id === "architect"
   }
 
-  private async applyTaskPlan(agents: AgentDefinition[]): Promise<void> {
+  private async applyTaskPlan(
+    agents: AgentDefinition[],
+    executedIds: ReadonlySet<string>
+  ): Promise<void> {
     const taskPlanPath = path.join(this.workDir, "task-plan.json")
     if (!fs.existsSync(taskPlanPath)) return
 
-    let taskPlan: TaskPlan
+    let taskPlan: unknown
     try {
-      taskPlan = JSON.parse(fs.readFileSync(taskPlanPath, "utf-8")) as TaskPlan
+      taskPlan = JSON.parse(fs.readFileSync(taskPlanPath, "utf-8"))
     } catch (err) {
       // The architect produced a task-plan.json but we cannot read it. Running
       // the original agent set is a reasonable degradation — but it must not be
@@ -450,17 +703,53 @@ export class Orchestrator {
       return
     }
 
-    if (!Array.isArray(taskPlan.tasks)) {
+    if (
+      typeof taskPlan !== "object" ||
+      taskPlan === null ||
+      !("tasks" in taskPlan) ||
+      !Array.isArray(taskPlan.tasks)
+    ) {
       this.warn("task-plan.json has no `tasks` array — ignoring it.")
       return
     }
 
-    const taskMap = new Map(taskPlan.tasks.map((t) => [t.id, t]))
+    const taskMap = new Map<string, Partial<TaskPlan["tasks"][number]>>()
     const selected = new Set(agents.map((a) => a.id))
+    for (const [index, entry] of taskPlan.tasks.entries()) {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        this.warn(`task-plan.json contains a malformed task at index ${index} — ignoring it.`)
+        continue
+      }
+      const task = entry as Record<string, unknown>
+      if (
+        typeof task.id !== "string" ||
+        !task.id.trim() ||
+        (task.title !== undefined && typeof task.title !== "string") ||
+        (task.scope !== undefined && typeof task.scope !== "string") ||
+        (task.dependsOn !== undefined &&
+          (!Array.isArray(task.dependsOn) ||
+            !task.dependsOn.every((dep) => typeof dep === "string"))) ||
+        (task.plan !== undefined &&
+          (!Array.isArray(task.plan) || !task.plan.every((step) => typeof step === "string")))
+      ) {
+        this.warn(`task-plan.json contains a malformed task at index ${index} — ignoring it.`)
+        continue
+      }
+      if (!selected.has(task.id)) {
+        this.warn(
+          `The task plan names "${task.id}", which is not in this run — ignoring that task.`
+        )
+        continue
+      }
+      if (taskMap.has(task.id)) {
+        this.warn(`The task plan contains a duplicate task for "${task.id}" — ignoring that task.`)
+        continue
+      }
+      taskMap.set(task.id, task as Partial<TaskPlan["tasks"][number]>)
+    }
     for (const agent of agents) {
       const task = taskMap.get(agent.id)
       if (task) {
-        agent.taskTitle = task.title
         // The plan is written by a model and can name a dependency the leader did
         // not select. Keeping it would make `buildStages` throw on a dependency
         // that is not in the set, so drop it here and say so.
@@ -472,6 +761,8 @@ export class Orchestrator {
             )
           }
         }
+        if (executedIds.has(agent.id)) continue
+        agent.taskTitle = task.title
         agent.dependsOn = dependsOn
         agent.agentScope = task.scope
         if (task.plan?.length) {
@@ -489,7 +780,7 @@ export class Orchestrator {
    * and a requirement that never reaches the report cannot be resumed.
    */
   private requirementField(): { requirement?: string } {
-    const requirement = this.config.context?.requirement
+    const requirement = this.contextManager.get("requirement")
     return requirement !== undefined ? { requirement } : {}
   }
 
@@ -543,6 +834,26 @@ export class Orchestrator {
     })
   }
 
+  private finishCancelled(startTime: Date): OrchestratorResult {
+    const endTime = new Date()
+    const result: OrchestratorResult = {
+      name: this.config.name,
+      success: false,
+      cancelled: true,
+      totalDuration: endTime.getTime() - startTime.getTime(),
+      agentResults: [],
+      startTime: startTime.toISOString(),
+      endTime: endTime.toISOString(),
+      ...this.requirementField(),
+    }
+    this.eventBus.emit({
+      type: "orchestration:complete",
+      timestamp: endTime.toISOString(),
+      payload: result,
+    })
+    return result
+  }
+
   /**
    * Close out a turn that scheduled no agents.
    *
@@ -550,18 +861,20 @@ export class Orchestrator {
    * only honest outcome is to say that none was done. Running the whole team
    * instead would contradict the leader's explicit choice.
    */
-  private finishEmpty(startTime: Date): OrchestratorResult {
+  private finishEmpty(startTime: Date, acceptance?: AcceptanceResult): OrchestratorResult {
     const usedLeader = this.config.leader !== undefined && this.config.useLeader !== false
-    this.warn(
-      usedLeader
-        ? "The leader selected none of the configured agents — nothing to run."
-        : "The config lists no agents — nothing to run."
-    )
+    if (!acceptance?.reason)
+      this.warn(
+        usedLeader
+          ? "The leader selected none of the configured agents — nothing to run."
+          : "The config lists no agents — nothing to run."
+      )
 
     const endTime = new Date()
     const result: OrchestratorResult = {
       name: this.config.name,
       success: false,
+      ...(acceptance ? { acceptance } : {}),
       totalDuration: endTime.getTime() - startTime.getTime(),
       agentResults: [],
       startTime: startTime.toISOString(),
@@ -575,6 +888,40 @@ export class Orchestrator {
       payload: result,
     })
     return result
+  }
+}
+
+function parseReviewVerdict(output: string): ReviewVerdict | undefined {
+  let text = output.trim()
+  // ACP streams tool narration and the final answer together. Accept one terminal
+  // fenced verdict, not arbitrary prose or multiple competing JSON blocks.
+  if (text.includes("```")) {
+    const blocks = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n```/g)]
+    if (blocks.length !== 1 || !text.endsWith(blocks[0][0])) return undefined
+    const prefix = text.slice(0, blocks[0].index)
+    if (prefix.includes("```") || /"verdict"\s*:/.test(prefix)) return undefined
+    text = blocks[0][1]
+  }
+  try {
+    const value: unknown = JSON.parse(text)
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
+    const item = value as Record<string, unknown>
+    if (
+      (item.verdict !== "approved" && item.verdict !== "changes_required") ||
+      typeof item.summary !== "string" ||
+      !item.summary.trim() ||
+      !Array.isArray(item.issues) ||
+      !item.issues.every((issue) => typeof issue === "string" && issue.trim())
+    )
+      return undefined
+    if ((item.verdict === "approved") !== (item.issues.length === 0)) return undefined
+    return {
+      verdict: item.verdict,
+      summary: item.summary.trim(),
+      issues: item.issues.map((issue: string) => issue.trim()),
+    }
+  } catch {
+    return undefined
   }
 }
 

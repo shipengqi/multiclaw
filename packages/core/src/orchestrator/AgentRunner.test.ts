@@ -7,9 +7,10 @@ import { KILL_ESCALATION_MS, runtimeRegistry } from "../runtime"
 import { fakeRuntime, makeAgent } from "../testing/helpers"
 import type { MultiClawConfig } from "../types/config"
 import type { MultiClawEvent } from "../types/event"
-import type { AgentOutput, AgentTask } from "../types/runtime"
+import type { AgentOutput, AgentTask, RuntimeSessionOptions } from "../types/runtime"
 import { PermanentError } from "../utils/errors"
 import { AgentRunner } from "./AgentRunner"
+import { AgentSessionManager } from "./AgentSessionManager"
 import { ContextManager } from "./ContextManager"
 
 const RUNTIME = "test-agent-runner"
@@ -46,6 +47,81 @@ const makeRunner = (overrides: Partial<MultiClawConfig> = {}) =>
   new AgentRunner(bus, context, workDir, { name: "test", workDir, agents: [], ...overrides })
 
 describe("AgentRunner.run", () => {
+  it("passes caller-owned human permission policy to the runtime", async () => {
+    const onRequest = vi.fn(async () => "allow-once")
+    handler = async (task) => {
+      expect(task.permissionMode).toBe("ask")
+      expect(task.onPermission).toBe(onRequest)
+      return { output: "done", exitCode: 0 }
+    }
+    const result = await makeRunner({ permissions: { mode: "ask", onRequest } }).run(
+      makeAgent({ id: "a", runtime: RUNTIME })
+    )
+    expect(result.status).toBe("success")
+  })
+
+  it("passes caller-owned structured question handlers to the runtime", async () => {
+    const onRequest = vi.fn(async () => ({ action: "decline" as const }))
+    handler = async (task) => {
+      expect(task.onQuestion).toBe(onRequest)
+      return { output: "done", exitCode: 0 }
+    }
+    const result = await makeRunner({ questions: { onRequest } }).run(
+      makeAgent({ id: "a", runtime: RUNTIME })
+    )
+    expect(result.status).toBe("success")
+  })
+
+  it("reuses caller-owned sessions across runners without retaining the old event bus", async () => {
+    const manager = new AgentSessionManager()
+    const name = "test-runner-live-session"
+    let options!: RuntimeSessionOptions
+    const prompt = vi.fn(async (text: string) => {
+      options.onWarning?.(text)
+      return { output: text, exitCode: 0, sessionId: "live-1" }
+    })
+    const close = vi.fn(async () => {})
+    const openSession = vi.fn(async (input: RuntimeSessionOptions) => {
+      options = input
+      return {
+        sessionId: "live-1",
+        state: "idle" as const,
+        capabilities: { continuation: true, supplement: false },
+        prompt,
+        close,
+        cancelTurn: async () => {},
+      }
+    })
+    const execute = vi.fn(async () => ({ output: "cold", exitCode: 0 }))
+    runtimeRegistry.register({ ...fakeRuntime(name, execute), openSession })
+    const config = { name: "test", workDir, agents: [] }
+    const first = new AgentRunner(bus, context, workDir, config, manager)
+    expect(
+      (await first.run(makeAgent({ id: "a", runtime: name, taskPrompt: "first" }))).sessionId
+    ).toBe("live-1")
+    const nextBus = new EventBus()
+    const nextEvents: MultiClawEvent[] = []
+    nextBus.subscribe((event) => nextEvents.push(event))
+    const second = new AgentRunner(nextBus, context, workDir, config, manager)
+    expect(
+      (await second.run(makeAgent({ id: "a", runtime: name, taskPrompt: "second" }))).output
+    ).toBe("second")
+    expect(openSession).toHaveBeenCalledTimes(1)
+    expect(execute).not.toHaveBeenCalled()
+    expect(
+      events
+        .filter((event) => event.type === "orchestration:warning")
+        .map((event) => event.payload.message)
+    ).toEqual(["[a] first"])
+    expect(
+      nextEvents
+        .filter((event) => event.type === "orchestration:warning")
+        .map((event) => event.payload.message)
+    ).toEqual(["[a] second"])
+    await manager.close()
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
   it("reports a successful run with the runtime output", async () => {
     handler = async () => ({ output: "hello world", exitCode: 0 })
     const result = await makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME }))
@@ -61,6 +137,118 @@ describe("AgentRunner.run", () => {
       expect.arrayContaining(["agent:start", "agent:complete"])
     )
   })
+
+  it.each(["max_turns", "error", "timeout", "cancelled"])(
+    "does not report an incomplete runtime turn (%s) as success",
+    async (stopReason) => {
+      handler = async () => ({ output: "partial evidence", exitCode: 0, stopReason })
+      const result = await makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME }))
+      expect(result.status).toBe(stopReason === "cancelled" ? "cancelled" : "failed")
+      expect(result.output).toBe("partial evidence")
+      expect(result.error).toContain(stopReason)
+      expect(events.some((e) => e.type === "agent:complete")).toBe(false)
+    }
+  )
+
+  it("does not report a nonzero runtime exit as success", async () => {
+    handler = async () => ({ output: "partial evidence", exitCode: 7 })
+    const result = await makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME }))
+    expect(result.status).toBe("failed")
+    expect(result.error).toContain("7")
+    expect(result.output).toBe("partial evidence")
+  })
+
+  it("waits for a session runtime's cleanup acknowledgement after cancellation", async () => {
+    const controller = new AbortController()
+    let release!: () => void
+    let started!: () => void
+    const running = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const name = "test-session-cleanup-barrier"
+    runtimeRegistry.register({
+      ...fakeRuntime(name, async (task) => {
+        started()
+        await new Promise<void>((resolve) => {
+          release = resolve
+          expect(task.signal).toBeDefined()
+        })
+        throw Object.assign(new Error("cancelled after cleanup"), { name: "AbortError" })
+      }),
+      openSession: async () => {
+        throw new Error("execute is the compatibility entry")
+      },
+    })
+    let finished = false
+    const promise = makeRunner()
+      .run(makeAgent({ id: "a", runtime: name }), controller.signal)
+      .then((result) => {
+        finished = true
+        return result
+      })
+    await running
+    controller.abort()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(finished).toBe(false)
+    expect(events.some((event) => event.type === "agent:failed")).toBe(false)
+    release()
+    expect((await promise).status).toBe("cancelled")
+  })
+
+  it.each(["abort", "cleanup failure"])(
+    "waits for session cleanup after the outer timeout before reporting %s",
+    async (outcome) => {
+      vi.useFakeTimers()
+      let release!: () => void
+      let started!: () => void
+      let runtimeSignal: AbortSignal | undefined
+      const running = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      const name = `test-session-timeout-cleanup-${outcome}`
+      runtimeRegistry.register({
+        ...fakeRuntime(name, async (task) => {
+          runtimeSignal = task.signal
+          started()
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          if (outcome === "cleanup failure") throw new Error("process cleanup failed")
+          throw Object.assign(new Error("aborted after cleanup"), { name: "AbortError" })
+        }),
+        openSession: async () => {
+          throw new Error("execute is the compatibility entry")
+        },
+      })
+      let finished = false
+      const promise = makeRunner()
+        .run(makeAgent({ id: "a", runtime: name, timeout: 100, retries: 1 }))
+        .then((result) => {
+          finished = true
+          return result
+        })
+      await running
+      const outerBudget = 2 * (100 + KILL_ESCALATION_MS) + 2000
+      await vi.advanceTimersByTimeAsync(outerBudget)
+      expect(runtimeSignal?.aborted).toBe(true)
+      expect(finished).toBe(false)
+      expect(
+        events.some((event) => event.type === "agent:failed" || event.type === "agent:complete")
+      ).toBe(false)
+      release()
+      const result = await promise
+      expect(result.status).toBe("failed")
+      expect(result.error).toBe(
+        outcome === "cleanup failure"
+          ? "process cleanup failed"
+          : `[a] timed out (${outerBudget / 1000}s)`
+      )
+      expect(result.attempts).toBe(1)
+      expect(events.filter((event) => event.type === "agent:failed")).toHaveLength(1)
+      expect(events.some((event) => event.type === "agent:retrying")).toBe(false)
+    }
+  )
 
   it("reports a failed run with the error message", async () => {
     handler = async () => {
@@ -219,6 +407,49 @@ describe("AgentRunner.run", () => {
     expect(calls).toBe(2)
     expect(result.status).toBe("success")
     expect(result.attempts).toBe(2)
+  })
+
+  it.each(["context", "config"])(
+    "prefixes the complete requirement for custom workers from %s",
+    async (source) => {
+      let seen: AgentTask | undefined
+      handler = async (task) => {
+        seen = task
+        return { output: "ok", exitCode: 0 }
+      }
+      if (source === "context") context.set("requirement", "Build the whole application")
+      await makeRunner({
+        context: {
+          requirement: source === "config" ? "Build the whole application" : "stale requirement",
+        },
+      }).run(
+        makeAgent({
+          id: "a",
+          runtime: RUNTIME,
+          taskPrompt: "Implement {{agentScope}}",
+          agentScope: "checkout",
+        })
+      )
+      expect(seen?.prompt).toBe(
+        "## Current task\nBuild the whole application\n\nImplement checkout"
+      )
+    }
+  )
+
+  it("preserves leader prompts identified by configured id", async () => {
+    let seen: AgentTask | undefined
+    handler = async (task) => {
+      seen = task
+      return { output: "ok", exitCode: 0 }
+    }
+    context.set("requirement", "Build the application")
+    const agent = makeAgent({
+      id: "a",
+      runtime: RUNTIME,
+      taskPrompt: "Exact leader JSON prompt",
+    })
+    await makeRunner({ leader: agent }).run(agent)
+    expect(seen?.prompt).toBe("Exact leader JSON prompt")
   })
 
   it("renders the task prompt with context and per-agent scope", async () => {

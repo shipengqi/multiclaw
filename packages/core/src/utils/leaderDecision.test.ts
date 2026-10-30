@@ -15,6 +15,26 @@ describe("parseLeaderDecision", () => {
     expect(parseLeaderDecision('{"run":["a"]}')).toEqual({ mode: "run", run: ["a"] })
   })
 
+  it("reads and trims an effective run requirement", () => {
+    expect(
+      parseLeaderDecision(
+        '{"mode":"run","run":["a"],"requirement":"  Build the app with Postgres  "}'
+      )
+    ).toEqual({
+      mode: "run",
+      run: ["a"],
+      requirement: "Build the app with Postgres",
+    })
+  })
+
+  it("rejects a supplied requirement that is empty or not a string", () => {
+    for (const requirement of ["", "   ", 42, null]) {
+      expect(
+        parseLeaderDecision(JSON.stringify({ mode: "run", run: ["a"], requirement }))
+      ).toBeUndefined()
+    }
+  })
+
   it("reads a reply and an ask", () => {
     expect(parseLeaderDecision('{"mode":"reply","message":"hello"}')).toEqual({
       mode: "reply",

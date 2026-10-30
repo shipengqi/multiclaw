@@ -1,7 +1,8 @@
+import type { RuntimePermissionRequest, RuntimeQuestionRequest } from "@multiclawcli/core"
 import { Box, Text } from "ink"
 import { COMMANDS } from "../commands"
-import { formatDuration, padRight, truncate } from "../format"
-import { progress, type TurnView } from "../state"
+import { formatDuration, padRight, truncate, wrapLine } from "../format"
+import { progress, stripAnsi, type TurnView } from "../state"
 import { COLOR, GLYPH, STATUS } from "../theme"
 
 interface HelpGroup {
@@ -25,7 +26,7 @@ export const HELP_GROUPS: readonly HelpGroup[] = [
     title: "prompt",
     rows: [
       ["enter", "Run the requirement"],
-      ["enter (busy)", "Queue it to run next"],
+      ["enter (busy)", "Queue only; /approve tools, /respond questions"],
       ["esc", "Clear the line, close an overlay"],
       ["← → home end", "Move the caret"],
     ],
@@ -45,7 +46,7 @@ export const HELP_GROUPS: readonly HelpGroup[] = [
     rows: [
       ["/", "Command menu"],
       ["?", "This help"],
-      ["ctrl+c", "Cancel the turn and its queue · again to quit"],
+      ["ctrl+c", "Cancel turn and queue · idle exits after cleanup"],
       ["/<command>", `All ${COMMANDS.length} commands — type / to browse`],
     ],
   },
@@ -127,6 +128,132 @@ export function HelpOverlay({ width, maxRows }: { width: number; maxRows: number
   )
 }
 
+export function PermissionOverlay({
+  request,
+  shortId,
+  queued,
+  width,
+  maxRows,
+}: {
+  request: RuntimePermissionRequest
+  shortId: string
+  queued: number
+  width: number
+  maxRows: number
+}) {
+  const clean = (value: string) => stripAnsi(value).replace(/\p{Cc}/gu, " ")
+  const input =
+    request.input === undefined ? "(no input)" : (JSON.stringify(request.input) ?? "(no input)")
+  const inputRows = Math.max(1, Math.min(3, maxRows - request.options.length - 7))
+  return (
+    <Box flexDirection="column" flexShrink={0} paddingLeft={2} width={width}>
+      <Text bold color={COLOR.warn} wrap="truncate-end">
+        {`PERMISSION ${shortId} · ${queued} pending · ${clean(request.agentId)}`}
+      </Text>
+      <Text wrap="truncate-end">{clean(request.title)}</Text>
+      <Text dimColor wrap="truncate-end">
+        {`request ${clean(request.requestId)} · ${clean(request.toolName ?? request.kind ?? request.toolCallId)}`}
+      </Text>
+      <Text color={COLOR.accent} wrap="truncate-end">
+        {`/approve ${shortId} <number> · /deny ${shortId}`}
+      </Text>
+      <Text dimColor wrap="truncate-end">
+        Ordinary text queues a follow-up; it never grants permission.
+      </Text>
+      <Box height={inputRows} overflow="hidden" flexShrink={0}>
+        <Text>{`input: ${clean(input)}`}</Text>
+      </Box>
+      {request.options.map((option, index) => (
+        <Text key={option.optionId} wrap="truncate-end">
+          {`${index + 1}. ${clean(option.name)} (${option.kind})`}
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
+export function questionLines(request: RuntimeQuestionRequest, width: number): string[] {
+  const lines = [request.message, `request ${request.requestId}`]
+  for (const [key, field] of Object.entries(request.requestedSchema.properties ?? {})) {
+    const schema = field as Record<string, unknown>
+    const items = schema.items as Record<string, unknown> | undefined
+    const choices = (schema.oneOf ?? schema.enum ?? items?.anyOf ?? items?.enum) as
+      | Array<string | { const: string; title?: string; description?: string }>
+      | undefined
+    lines.push(
+      `${key}${request.requestedSchema.required?.includes(key) ? " *" : ""}: ${typeof schema.title === "string" ? schema.title : key} (${field.type})`
+    )
+    if (typeof schema.description === "string") lines.push(schema.description)
+    const limits = [
+      "minimum",
+      "maximum",
+      "exclusiveMinimum",
+      "exclusiveMaximum",
+      "minLength",
+      "maxLength",
+      "minItems",
+      "maxItems",
+      "uniqueItems",
+    ]
+      .filter((limit) => schema[limit] !== undefined && schema[limit] !== null)
+      .map((limit) => `${limit}=${schema[limit]}`)
+    if (limits.length) lines.push(limits.join(" · "))
+    for (const choice of choices ?? []) {
+      lines.push(
+        typeof choice === "string"
+          ? JSON.stringify(choice)
+          : `${JSON.stringify(choice.const)} — ${choice.title ?? choice.const}${choice.description ? `: ${choice.description}` : ""}`
+      )
+    }
+  }
+  return lines.flatMap((line) =>
+    wrapLine(stripAnsi(line).replace(/\p{Cc}/gu, " "), Math.max(1, width - 2))
+  )
+}
+
+export function QuestionOverlay({
+  request,
+  shortId,
+  queued,
+  width,
+  maxRows,
+  offset,
+}: {
+  request: RuntimeQuestionRequest
+  shortId: string
+  queued: number
+  width: number
+  maxRows: number
+  offset: number
+}) {
+  const lines = questionLines(request, width)
+  const capacity = Math.max(1, maxRows - 4)
+  const start = Math.min(offset, Math.max(0, lines.length - capacity))
+  const visible = lines.slice(start, start + capacity)
+  return (
+    <Box flexDirection="column" flexShrink={0} paddingLeft={2} width={width}>
+      <Text bold color={COLOR.warn} wrap="truncate-end">
+        {`QUESTION ${shortId} · ${queued} pending · ${stripAnsi(request.agentId)}`}
+      </Text>
+      <Text color={COLOR.accent} wrap="truncate-end">{`/respond ${shortId} <JSON object>`}</Text>
+      <Text
+        dimColor
+        wrap="truncate-end"
+      >{`/skip ${shortId} declines · /dismiss ${shortId} cancels`}</Text>
+      {visible.map((line, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: immutable text rows are identified by their absolute form offset.
+        <Text key={`${start + index}-${line}`} wrap="truncate-end">
+          {line}
+        </Text>
+      ))}
+      <Text
+        dimColor
+        wrap="truncate-end"
+      >{`↑↓ / pgup pgdn form · ${start + 1}–${start + visible.length}/${lines.length} · ordinary text queues`}</Text>
+    </Box>
+  )
+}
+
 /**
  * How a finished turn ended, in the same words the footer uses.
  *
@@ -140,6 +267,19 @@ function outcome(turn: TurnView): { text: string; color: string } {
       : { text: `${STATUS.success.glyph} answered`, color: COLOR.ok }
   }
   if (turn.phase !== "complete") return { text: "interrupted", color: COLOR.warn }
+  if (turn.acceptance) {
+    switch (turn.acceptance.status) {
+      case "approved":
+        return { text: `${STATUS.success.glyph} approved`, color: COLOR.ok }
+      case "changes_required":
+        return { text: `${GLYPH.warn} changes required`, color: COLOR.warn }
+      case "failed":
+        return { text: `${STATUS.failed.glyph} acceptance failed`, color: COLOR.error }
+      case "cancelled":
+        return { text: `${STATUS.cancelled.glyph} acceptance cancelled`, color: COLOR.warn }
+    }
+  }
+  if (turn.cancelled) return { text: `${STATUS.cancelled.glyph} cancelled`, color: COLOR.warn }
   return turn.success
     ? { text: `${STATUS.success.glyph} done`, color: COLOR.ok }
     : { text: `${STATUS.failed.glyph} failed`, color: COLOR.error }

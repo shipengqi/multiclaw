@@ -118,7 +118,7 @@ export class ConsoleReporter {
         break
       }
       case "orchestration:complete": {
-        const { success, totalDuration, agentResults, reply } = e.payload
+        const { success, totalDuration, agentResults, reply, acceptance } = e.payload
         // A turn that ran no pipeline has no table worth printing — the leader's
         // words are the whole result, so they go above the summary box.
         if (reply) {
@@ -131,14 +131,33 @@ export class ConsoleReporter {
           ? reply.mode === "ask"
             ? `${S.warn} Needs your input`
             : `${S.ok} Answered`
-          : e.payload.cancelled
-            ? `${S.skip} Cancelled`
-            : success
-              ? `${S.ok} All done`
-              : `${S.warn} Done (with failures)`
+          : acceptance
+            ? acceptance.status === "approved"
+              ? `${S.ok} Approved`
+              : acceptance.status === "changes_required"
+                ? `${S.warn} Changes required`
+                : acceptance.status === "cancelled"
+                  ? `${S.skip} Acceptance cancelled`
+                  : `${S.fail} Acceptance failed`
+            : e.payload.cancelled
+              ? `${S.skip} Cancelled`
+              : success
+                ? `${S.ok} All done`
+                : `${S.warn} Done (with failures)`
         console.log(`\n${C.bold}${C.purple}${edge[0]}${line}${edge[3]}`)
         console.log(`${edge[1]}  ${title.padEnd(48)}${edge[1]}`)
         console.log(`${edge[2]}${line}${edge[4]}${C.reset}`)
+        if (acceptance) {
+          console.log(
+            `  Reviewer: ${acceptance.reviewer}  Repair rounds: ${acceptance.repairRounds}`
+          )
+          if (acceptance.reason) console.log(`  ${acceptance.reason}`)
+          const review = acceptance.reviews[acceptance.reviews.length - 1]
+          if (review) {
+            console.log(`  ${review.summary}`)
+            for (const issue of review.issues) console.log(`  ${S.bullet} ${issue}`)
+          }
+        }
         const nameWidth = Math.max(8, ...agentResults.map((r) => r.agentName.length))
         const totalStr = `${(totalDuration / 1000).toFixed(1)}s`
         // The total cost is printed only when the run reported one: a provider

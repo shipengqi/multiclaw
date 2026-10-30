@@ -22,7 +22,7 @@ import {
   tuiReducer,
 } from "./state"
 import { DEMO, renderFrame } from "./test-helpers"
-import { GLYPH } from "./theme"
+import { GLYPH, STATUS } from "./theme"
 
 const TS = "2026-01-01T00:00:00.000Z"
 /** Four seconds after the turn began, so every live clock reads 4.2s. */
@@ -175,6 +175,68 @@ describe("PipelineRail", () => {
     expect(stripAnsi(await renderFrame(<PipelineRail turn={midRun()} spinner="⠹" />))).toContain(
       "⠹"
     )
+  })
+
+  it("freezes mixed worker and review stage chips while repeated agents run again", async () => {
+    const stages = [
+      {
+        stageIndex: 0,
+        agents: [
+          { id: "dev", name: "Dev" },
+          { id: "other", name: "Other" },
+        ],
+      },
+      { stageIndex: 1, agents: [{ id: "qa", name: "QA" }] },
+    ]
+    let state = reduceEvent(initialState, {
+      type: "orchestration:start",
+      timestamp: TS,
+      payload: { name: "demo", totalAgents: 3, stages },
+    })
+    for (const [id, status] of [
+      ["dev", "success"],
+      ["other", "failed"],
+      ["qa", "success"],
+    ] as const) {
+      state = reduceEvent(state, {
+        type: status === "failed" ? "agent:failed" : "agent:complete",
+        timestamp: TS,
+        payload: result(id, { status }),
+      })
+    }
+    for (const stageIndex of [0, 1]) {
+      state = reduceEvent(state, { type: "stage:complete", timestamp: TS, payload: { stageIndex } })
+    }
+    state = reduceEvent(state, {
+      type: "orchestration:stages",
+      timestamp: TS,
+      payload: {
+        totalAgents: 3,
+        stages: [
+          ...stages,
+          {
+            stageIndex: 2,
+            agents: [
+              { id: "dev", name: "Dev" },
+              { id: "qa", name: "QA" },
+            ],
+          },
+        ],
+      },
+    })
+    for (const agentId of ["dev", "qa"]) {
+      state = reduceEvent(state, {
+        type: "agent:start",
+        timestamp: TS,
+        payload: { agentId, agentName: agentId },
+      })
+    }
+    const frame = stripAnsi(await renderFrame(<PipelineRail turn={state} spinner="R" />))
+    expect(frame).toContain(`${STATUS.success.glyph} dev`)
+    expect(frame).toContain(`${STATUS.failed.glyph} Other`)
+    expect(frame).toContain(`${STATUS.success.glyph} qa`)
+    expect(frame).toContain("R dev")
+    expect(frame).toContain("R qa")
   })
 
   it("renders nothing when there is no pipeline to draw", async () => {

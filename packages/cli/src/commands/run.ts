@@ -13,6 +13,7 @@ import { readReport, resolveRunDir, resumeOptionsFromReport } from "./resume"
 
 export interface RunOptions {
   config?: string
+  leader?: boolean
   noLeader?: boolean
   /**
    * `true` for a bare `--resume` (latest run), or a path to a specific run.
@@ -32,7 +33,7 @@ export async function runCommand(
 ): Promise<void> {
   const config = await loadConfig(options.config, requirementArg)
 
-  if (options.noLeader) {
+  if (options.leader === false || options.noLeader) {
     config.useLeader = false
   }
 

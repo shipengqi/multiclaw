@@ -1,4 +1,4 @@
-import type { EventBus, MultiClawConfig } from "@multiclawcli/core"
+import { AgentSessionManager, type EventBus, type MultiClawConfig } from "@multiclawcli/core"
 import { render } from "ink"
 import { createElement } from "react"
 import { App } from "./App"
@@ -10,7 +10,7 @@ export * from "./state"
 export interface TuiOptions {
   config: MultiClawConfig
   /** Attach per-turn reporters (e.g. a file log writer) here. */
-  onTurnStart?: (eventBus: EventBus, logDir: string) => void
+  onTurnStart?: (eventBus: EventBus, logDir: string) => void | (() => void | Promise<void>)
 }
 
 /**
@@ -31,11 +31,23 @@ export async function startTui(options: TuiOptions): Promise<void> {
   process.stdout.write("\x1b[?1049h\x1b[?25l")
   process.on("exit", restore)
 
+  const sessions = new AgentSessionManager()
+  let cleanup: (() => Promise<void>) | undefined
+  const onCleanupReady = (callback: () => Promise<void>) => {
+    cleanup = callback
+  }
   try {
-    const app = render(createElement(App, options), { exitOnCtrlC: false })
+    const app = render(createElement(App, { ...options, sessions, onCleanupReady }), {
+      exitOnCtrlC: false,
+    })
     await app.waitUntilExit()
   } finally {
-    process.off("exit", restore)
-    restore()
+    try {
+      if (cleanup) await cleanup()
+      else await sessions.close()
+    } finally {
+      process.off("exit", restore)
+      restore()
+    }
   }
 }

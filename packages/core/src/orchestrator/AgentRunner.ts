@@ -5,13 +5,14 @@ import { resolveArgs, resolveCommand, resolveModel } from "../providers/resolve"
 import { KILL_ESCALATION_MS, runtimeRegistry } from "../runtime"
 import type { AgentDefinition, AgentResult } from "../types/agent"
 import type { MultiClawConfig } from "../types/config"
-import type { AgentOutput } from "../types/runtime"
-import { isAbortError } from "../utils/abort"
+import type { AgentOutput, AgentTask } from "../types/runtime"
+import { abortError, isAbortError } from "../utils/abort"
 import { isPermanent } from "../utils/errors"
 import { renderPrompt } from "../utils/prompt"
 import { DEFAULT_RETRY_DELAY_MS, retryBudgetMs, withRetry } from "../utils/retry"
 import { withTimeout } from "../utils/timeout"
 import { summarizeToolInput, summarizeToolOutput } from "../utils/toolSummary"
+import type { AgentSessionManager } from "./AgentSessionManager"
 import type { ContextManager } from "./ContextManager"
 
 /** The `kind` a chunk of agent output carries on the `agent:output` event. */
@@ -22,10 +23,15 @@ export class AgentRunner {
     private eventBus: EventBus,
     private contextManager: ContextManager,
     private globalWorkDir: string,
-    private config: MultiClawConfig
+    private config: MultiClawConfig,
+    private sessionManager?: AgentSessionManager
   ) {}
 
-  async run(agent: AgentDefinition, signal?: AbortSignal): Promise<AgentResult> {
+  async run(
+    agent: AgentDefinition,
+    signal?: AbortSignal,
+    instruction?: string
+  ): Promise<AgentResult> {
     const startTime = new Date()
     const model = resolveModel(agent, this.config)
 
@@ -63,19 +69,17 @@ export class AgentRunner {
       const timeout = agent.timeout ?? 600_000
       const tools = agent.tools ?? ["Read", "Write", "Bash"]
 
-      // Two timers, two jobs. The inner timer (handed to `execute` as `timeout`)
-      // bounds a *single* attempt; the outer one bounds the *whole* agent —
-      // every attempt plus the backoff between them. A single attempt can
-      // overrun its `timeout` by `KILL_ESCALATION_MS` (a child that ignores
-      // SIGTERM is not reaped until the SIGKILL grace elapses), so the
-      // per-attempt term is `timeout + KILL_ESCALATION_MS`, not `timeout` —
-      // otherwise the outer timer could win the race and kill an attempt that
-      // would have succeeded.
+      // The inner timeout bounds one attempt; the outer deadline covers every
+      // attempt and its backoff. Include the SIGKILL grace so legacy runtimes
+      // get their full attempt budget. Session runtimes can also spend time in
+      // startup and teardown: the outer deadline aborts them, but waits for
+      // their cleanup acknowledgement before publishing a final agent event.
       const completed = await withTimeout(
         (innerSignal) =>
           withRetry(
             async (attempt) => {
               attempts = attempt
+              if (signal?.aborted) throw abortError()
               const agentContext: Record<string, string> = {
                 ...this.contextManager.snapshot(),
                 // Every built-in task template references both. The leader only
@@ -87,15 +91,27 @@ export class AgentRunner {
                 agentPlan:
                   agent.agentPlan ?? "No step-by-step plan was provided — use your judgement.",
               }
-              const prompt = await renderPrompt(agent.taskPrompt, agentContext, this.globalWorkDir)
-              return await runtime.execute({
+              let prompt = await renderPrompt(agent.taskPrompt, agentContext, this.globalWorkDir)
+              const requirement =
+                this.contextManager.get("requirement") ?? this.config.context?.requirement
+              if (agent.id !== this.config.leader?.id && requirement !== undefined) {
+                prompt = `## Current task\n${requirement}\n\n${prompt}`
+              }
+              if (instruction) prompt += `\n\n${instruction}`
+              const task: AgentTask = {
                 agentId: agent.id,
                 systemPrompt: agent.systemPrompt,
                 prompt,
                 tools,
+                permissionMode: this.config.permissions?.mode,
+                onPermission: this.config.permissions?.onRequest,
+                onQuestion: this.config.questions?.onRequest,
                 workDir,
                 timeout,
-                signal: innerSignal,
+                signal:
+                  runtime.openSession && signal
+                    ? AbortSignal.any([innerSignal, signal])
+                    : innerSignal,
                 model,
                 // Only the caller knows which session to continue; absent means a
                 // fresh one. It must stay `undefined` rather than `""` — the ACP
@@ -151,7 +167,10 @@ export class AgentRunner {
                     )
                   }
                 },
-              })
+              }
+              return await (this.sessionManager
+                ? this.sessionManager.execute(runtime, task)
+                : runtime.execute(task))
             },
             retries,
             (attempt, err) => {
@@ -168,7 +187,7 @@ export class AgentRunner {
               })
             },
             DEFAULT_RETRY_DELAY_MS,
-            innerSignal,
+            runtime.openSession && signal ? AbortSignal.any([innerSignal, signal]) : innerSignal,
             // A permanent failure (a missing binary, an unsupported capability)
             // will fail the same way on every attempt, so let the loop fail fast
             // instead of burning the whole backoff budget on a doomed run.
@@ -176,7 +195,10 @@ export class AgentRunner {
           ),
         retryBudgetMs(timeout + KILL_ESCALATION_MS, retries),
         agent.name,
-        signal
+        // Session runtimes acknowledge cancellation only after process cleanup.
+        // Neither caller cancellation nor the outer timeout may race that barrier.
+        runtime.openSession ? undefined : signal,
+        { waitForCleanup: !!runtime.openSession }
       )
 
       output = completed.output
@@ -186,12 +208,19 @@ export class AgentRunner {
       // continues. Captured on the success path only: a failed turn has no
       // `AgentOutput`, and a dead turn's session is not one worth loading.
       const sessionId = completed.sessionId
+      const incomplete = completed.stopReason !== undefined && completed.stopReason !== "success"
+      const cancelled = completed.stopReason === "cancelled"
+      const failed = completed.exitCode !== 0 || incomplete
+      const error = failed
+        ? `Runtime turn did not complete (${completed.stopReason ?? `exit code ${completed.exitCode}`})`
+        : undefined
 
       const endTime = new Date()
       const result: AgentResult = {
         agentId: agent.id,
         agentName: agent.name,
-        status: "success",
+        status: cancelled ? "cancelled" : failed ? "failed" : "success",
+        ...(error ? { error } : {}),
         output,
         duration: endTime.getTime() - startTime.getTime(),
         attempts,
@@ -203,7 +232,7 @@ export class AgentRunner {
         ...(sessionId ? { sessionId } : {}),
       }
       this.eventBus.emit({
-        type: "agent:complete",
+        type: failed ? "agent:failed" : "agent:complete",
         timestamp: new Date().toISOString(),
         payload: result,
       })

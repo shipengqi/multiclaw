@@ -42,7 +42,14 @@ function asDecision(value: unknown): LeaderDecision | undefined {
     // Absent or non-string is "no reason given", not a malformed plan: the
     // field is an explanation, and losing it must not lose the run.
     const reason = typeof record.reason === "string" ? record.reason.trim() : ""
-    return reason ? { mode: "run", run, reason } : { mode: "run", run }
+    const requirement = typeof record.requirement === "string" ? record.requirement.trim() : ""
+    if ("requirement" in record && !requirement) return undefined
+    return {
+      mode: "run",
+      run,
+      ...(reason ? { reason } : {}),
+      ...(requirement ? { requirement } : {}),
+    }
   }
 
   return undefined

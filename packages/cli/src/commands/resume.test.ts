@@ -51,6 +51,26 @@ function report(patch: Partial<OrchestratorResult> = {}): OrchestratorResult {
   }
 }
 
+it("resumes workers once after review and does not load an older failed session", () => {
+  const resumed = resumeOptionsFromReport(
+    report({
+      requirement: "Build API",
+      acceptance: {
+        status: "failed",
+        reviewer: "reviewer",
+        repairRounds: 1,
+        reviews: [],
+      },
+      agentResults: [
+        result("worker", { sessionId: "old" }),
+        result("reviewer", { sessionId: "review" }),
+        result("worker", { status: "failed" }),
+      ],
+    })
+  )
+  expect(resumed.resume).toEqual({ agents: ["worker"], sessions: { reviewer: "review" } })
+})
+
 describe("resolveRunDir", () => {
   it("picks the newest run for `latest`", () => {
     makeRun("2026-01-01T00-00-00")

@@ -121,6 +121,36 @@ describe("App · remembering turns across sessions", () => {
     expect(frame).toContain("1 earlier")
   })
 
+  it.each([
+    ["approved", "approved"],
+    ["changes_required", "changes required"],
+    ["failed", "acceptance failed"],
+    ["cancelled", "acceptance cancelled"],
+  ] as const)("shows acceptance %s in restored history", async (status, label) => {
+    seedHistory([
+      {
+        ...savedTurn(1, "reviewed task"),
+        success: status === "approved",
+        acceptance: { status, reviewer: "qa", repairRounds: 1, reviews: [] },
+      },
+    ])
+    const frame = stripAnsi(
+      await driveFrame(<App config={config()} />, { keys: ["/history", "\r"], settleMs: 200 })
+    )
+    expect(frame).toContain(label)
+    expect(frame).not.toContain("· done")
+    if (status === "changes_required") expect(frame).not.toContain("· failed")
+  })
+
+  it("keeps a cancelled execution distinct from failed history", async () => {
+    seedHistory([{ ...savedTurn(1, "stopped task"), cancelled: true, success: false }])
+    const frame = stripAnsi(
+      await driveFrame(<App config={config()} />, { keys: ["/history", "\r"], settleMs: 200 })
+    )
+    expect(frame).toContain("cancelled")
+    expect(frame).not.toContain("· failed")
+  })
+
   it("writes a finished turn to disk so the next session can restore it", async () => {
     let complete: () => void = () => {}
     const finished = new Promise<void>((resolve) => {

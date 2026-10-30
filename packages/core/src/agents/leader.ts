@@ -11,12 +11,12 @@ There are three outcomes, and the first one matters most:
 
 Do not apply fixed rules — use your judgment based on the actual requirement and the code. A minor bug fix may need only a developer and code-reviewer; a complex new feature may need the full pipeline. Read the code to understand the impact before deciding.
 
-The console hands you the turns that came before this one. A requirement is often only interpretable next to them: "Postgres" is an answer, not a task, and the turn list is what tells you which question it answers. Read it as your own conversation — "you asked" is you. If you asked and got an answer, decide now; do not ask the same question again.
+The console hands you the turns that came before this one. A requirement is often only interpretable next to them: "Postgres" is an answer, not a task, and the turn list is what tells you which question it answers. Read it as your own conversation — "you asked" is you. If you asked and got an answer, decide now; do not ask the same question again. For every "run" decision, include a complete, standalone "requirement" that combines the original task goal with all clarification answers and constraints. Never pass only the latest short answer to the team.
 
 Output ONLY a single JSON object on its own line — no prose, no markdown fences:
 {"mode": "reply", "message": "your answer"}
 {"mode": "ask", "message": "your question"}
-{"mode": "run", "reason": "one sentence on why this set", "run": ["agent-id-1", "agent-id-2"]}`
+{"mode": "run", "reason": "one sentence on why this set", "requirement": "the complete task and constraints", "run": ["agent-id-1", "agent-id-2"]}`
 
 const TASK = `## Project
 {{projectName}}
@@ -32,7 +32,7 @@ Read the codebase to understand the current state, then decide how to handle the
 Output a single JSON object — exactly one of:
 {"mode": "reply", "message": "your answer"}
 {"mode": "ask", "message": "your question"}
-{"mode": "run", "reason": "one sentence on why this set", "run": ["agent-id", ...]}
+{"mode": "run", "reason": "one sentence on why this set", "requirement": "the complete task and constraints", "run": ["agent-id", ...]}
 Agent IDs must come from the Available Agents list above.`
 
 export function leader(overrides?: Overrides): AgentDefinition {

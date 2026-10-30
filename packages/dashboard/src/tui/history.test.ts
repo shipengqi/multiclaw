@@ -55,6 +55,14 @@ describe("historyPath", () => {
   })
 })
 
+describe("saveHistory concurrency", () => {
+  it("serializes rapid writes and keeps the newest turn without temporary-file collisions", async () => {
+    const writes = Array.from({ length: 10 }, (_, index) => saveHistory(workDir, [turn(index + 1)]))
+    await Promise.all(writes)
+    expect(loadHistory(workDir)).toEqual([turn(10)])
+  })
+})
+
 describe("loadHistory", () => {
   it("returns an empty list when the file does not exist", () => {
     expect(loadHistory(workDir)).toEqual([])
@@ -121,6 +129,91 @@ describe("loadHistory", () => {
     expect(loadHistory(workDir)).toEqual([good])
   })
 
+  it("accepts older records and validates optional turn metadata", () => {
+    const older = turn(1)
+    const current = turn(2, { cancelled: true, effectiveRequirement: "resolved request" })
+    writeRaw([
+      older,
+      current,
+      { ...turn(3), cancelled: "false" },
+      { ...turn(4), effectiveRequirement: 42 },
+    ])
+    expect(loadHistory(workDir)).toEqual([older, current])
+  })
+
+  it("round-trips acceptance and rejects malformed acceptance metadata", async () => {
+    const acceptance = {
+      status: "changes_required" as const,
+      reviewer: "qa",
+      repairRounds: 1,
+      reviews: [
+        {
+          verdict: "changes_required" as const,
+          summary: "Fix tests",
+          issues: ["Missing coverage"],
+        },
+      ],
+    }
+    const good = turn(1, { acceptance })
+    await saveHistory(workDir, [good])
+    expect(loadHistory(workDir)).toEqual([good])
+    writeRaw([
+      good,
+      ...[
+        null,
+        {},
+        { ...acceptance, status: "success" },
+        { ...acceptance, reviewer: 1 },
+        { ...acceptance, repairRounds: -1 },
+        { ...acceptance, repairRounds: 0.5 },
+        { ...acceptance, reviews: [null] },
+        { ...acceptance, reviews: [{ verdict: "approved", summary: "ok", issues: [42] }] },
+        { ...acceptance, reason: 42 },
+      ].map((bad, i) => ({ ...turn(i + 2), acceptance: bad })),
+    ])
+    expect(loadHistory(workDir)).toEqual([good])
+  })
+
+  it("round-trips stage outcomes and rejects invalid optional outcomes", async () => {
+    const good = turn(1, {
+      stages: [{ stageIndex: 0, agents: [{ id: "a", name: "a" }], outcome: "success" }],
+    })
+    await saveHistory(workDir, [good])
+    expect(loadHistory(workDir)).toEqual([good])
+    writeRaw([
+      good,
+      turn(2),
+      ...[null, "approved", 42, {}].map((outcome, i) => ({
+        ...turn(i + 3),
+        stages: [{ stageIndex: 0, agents: [], outcome }],
+      })),
+    ])
+    expect(loadHistory(workDir)).toEqual([good, turn(2)])
+  })
+
+  it("round-trips stage member statuses and rejects invalid member maps", async () => {
+    const good = turn(1, {
+      stages: [
+        {
+          stageIndex: 0,
+          agents: [],
+          outcome: "failed",
+          memberStatuses: { a: "success", b: "failed" },
+        },
+      ],
+    })
+    await saveHistory(workDir, [good])
+    expect(loadHistory(workDir)).toEqual([good])
+    writeRaw([
+      good,
+      ...[null, "failed", { a: "approved" }, { a: 42 }].map((memberStatuses, i) => ({
+        ...turn(i + 2),
+        stages: [{ stageIndex: 0, agents: [], memberStatuses }],
+      })),
+    ])
+    expect(loadHistory(workDir)).toEqual([good])
+  })
+
   it("keeps only the last MAX_HISTORY entries", () => {
     writeRaw(Array.from({ length: MAX_HISTORY + 5 }, (_, i) => turn(i + 1)))
 
@@ -148,6 +241,34 @@ describe("exportTurn", () => {
     expect(markdown).toContain("req 3")
     expect(markdown).toContain("- dev: Developer — success")
     expect(markdown).toContain("built it")
+  })
+
+  it.each([
+    ["approved", "approved"],
+    ["changes_required", "changes required"],
+    ["failed", "acceptance failed"],
+    ["cancelled", "acceptance cancelled"],
+  ] as const)("exports acceptance %s explicitly", (status, label) => {
+    const markdown = formatTurnMarkdown(
+      turn(1, {
+        success: status === "approved",
+        acceptance: {
+          status,
+          reviewer: "qa",
+          repairRounds: 1,
+          reason: "Gate result",
+          reviews: [
+            { verdict: "changes_required", summary: "Fix tests", issues: ["Missing tests"] },
+          ],
+        },
+      })
+    )
+    expect(markdown).toContain(`Status: ${label}`)
+    expect(markdown).toContain("Reviewer: qa")
+    expect(markdown).toContain("Repair rounds: 1")
+    expect(markdown).toContain("Gate result")
+    expect(markdown).toContain("Fix tests")
+    expect(markdown).toContain("Missing tests")
   })
 
   it("writes to the default export directory", async () => {

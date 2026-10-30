@@ -1,5 +1,6 @@
 import type { AgentDefinition } from "./agent"
 import type { LeaderMessage } from "./leader"
+import type { RuntimePermissionHandler, RuntimeQuestionHandler } from "./runtime"
 
 /**
  * One finished turn of a session, as dialogue the leader can read back.
@@ -14,6 +15,29 @@ export interface TurnRecord {
   requirement: string
   /** How the turn ended in words, when it ended that way. */
   reply?: LeaderMessage
+}
+
+export interface ReviewPolicy {
+  /** Configured agent reserved for final review, outside the normal pipeline. */
+  reviewer: string
+  /** Configured workers allowed to repair, in dependency order. */
+  repairAgents: string[]
+  /** Maximum repair passes (0–5); defaults to 1. Review runs once more after each pass. */
+  maxRepairRounds?: number
+}
+
+export interface ReviewVerdict {
+  verdict: "approved" | "changes_required"
+  summary: string
+  issues: string[]
+}
+
+export interface AcceptanceResult {
+  status: "approved" | "changes_required" | "failed" | "cancelled"
+  reviewer: string
+  repairRounds: number
+  reviews: ReviewVerdict[]
+  reason?: string
 }
 
 export interface MultiClawConfig {
@@ -50,6 +74,17 @@ export interface MultiClawConfig {
   continueOnError?: boolean
   maxConcurrency?: number
   useLeader?: boolean
+  /** Opt-in delivery gate. Execution success alone does not satisfy this policy. */
+  review?: ReviewPolicy
+  /** Caller-owned live approvals. Ask mode without a handler fails closed. */
+  permissions?: {
+    mode: "auto" | "ask" | "deny"
+    onRequest?: RuntimePermissionHandler
+  }
+  /** Caller-owned structured questions; headless callers cancel explicitly. */
+  questions?: {
+    onRequest: RuntimeQuestionHandler
+  }
   /**
    * Project-level defaults applied to every agent that does not override them.
    * Keeps generated configs readable: one line instead of 12 repeated parameters.
@@ -82,7 +117,10 @@ export interface DeliverableSummary {
 
 export interface OrchestratorResult {
   name: string
+  /** With review enabled, true only when execution and delivery acceptance both succeed. */
   success: boolean
+  /** Present only for a review-gated pipeline, never for a leader reply/ask. */
+  acceptance?: AcceptanceResult
   totalDuration: number
   agentResults: import("./agent").AgentResult[]
   startTime: string

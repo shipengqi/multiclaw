@@ -30,7 +30,10 @@ class FakeChild extends EventEmitter {
   stdin = new PassThrough()
   stdout = new PassThrough()
   stderr = new EventEmitter()
-  kill = vi.fn()
+  kill = vi.fn(() => {
+    queueMicrotask(() => this.emit("close", 0))
+    return true
+  })
 }
 
 interface AgentPromptContext {
@@ -252,11 +255,12 @@ describe("AcpRuntime · cancellation (verification)", () => {
     const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true)
 
     const p = runWith(child, { timeout: 20 })
+    const rejection = expect(p).rejects.toThrow("acp timed out (20ms)")
     await vi.waitFor(() => expect(killSpy).toHaveBeenCalledWith(-424242, "SIGTERM"), {
       timeout: 5_000,
     })
     child.emit("close", null)
-    await expect(p).rejects.toThrow("acp timed out (20ms)")
+    await rejection
     killSpy.mockRestore()
   })
 
@@ -269,9 +273,10 @@ describe("AcpRuntime · cancellation (verification)", () => {
     })
 
     const p = runWith(child, { timeout: 20 })
+    const rejection = expect(p).rejects.toThrow("acp timed out (20ms)")
     await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGTERM"), { timeout: 5_000 })
     child.emit("close", null)
-    await expect(p).rejects.toThrow("acp timed out (20ms)")
+    await rejection
     killSpy.mockRestore()
   })
 

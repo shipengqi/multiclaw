@@ -138,12 +138,31 @@ describe("reduceEvent", () => {
 
     expect(state.phase).toBe("running")
     expect(state.name).toBe("demo")
-    expect(state.requirement).toBe("build it")
+    expect(state.requirement).toBeUndefined()
+    expect(state.effectiveRequirement).toBe("build it")
     expect(state.reason).toBe("implementation needs design first")
     expect(state.stages).toHaveLength(2)
     expect(Object.keys(state.agents).sort()).toEqual(["architect", "dev", "qa"])
     expect(state.agents.architect.status).toBe("pending")
     expect(state.agents.architect.logs).toBe("")
+  })
+
+  it("keeps the raw answer separate from the resolved pipeline requirement", () => {
+    const state = reduceEvent(
+      { ...initialState, requirement: "Postgres" },
+      {
+        type: "orchestration:start",
+        timestamp: TS,
+        payload: {
+          name: "demo",
+          requirement: "Build the app with Postgres",
+          totalAgents: 0,
+          stages: [],
+        },
+      }
+    )
+    expect(state.requirement).toBe("Postgres")
+    expect(state.effectiveRequirement).toBe("Build the app with Postgres")
   })
 
   it("keeps the previous requirement when the event omits one", () => {
@@ -193,6 +212,42 @@ describe("reduceEvent", () => {
     expect(next).toBe(state)
   })
 
+  it.each(["success", "failed", "cancelled", "skipped"] as const)(
+    "freezes completed stage %s despite repeated agent starts and stage-list updates",
+    (status) => {
+      const before = withAgents("a")
+      const settled = { ...before, agents: { ...before.agents, a: { ...before.agents.a, status } } }
+      const completion: MultiClawEvent = {
+        type: "stage:complete",
+        timestamp: TS,
+        payload: { stageIndex: 0 },
+      }
+      const completed = reduceEvent(settled, completion)
+      expect(completed.stages[0].outcome).toBe(status)
+      expect(completed.stages[0].memberStatuses).toEqual({ a: status })
+      expect(settled.stages[0].outcome).toBeUndefined()
+      expect(reduceEvent(completed, completion)).toBe(completed)
+      const updated = reduceEvent(completed, {
+        type: "orchestration:stages",
+        timestamp: TS,
+        payload: { totalAgents: 1, stages: [stage(0, ["a"]), stage(1, ["a"])] },
+      })
+      const restarted = reduceEvent(updated, started("a"))
+      expect(stageStatus(restarted.stages[0], restarted.agents)).toBe(status)
+      expect(restarted.stages[0].memberStatuses).toEqual({ a: status })
+      expect(stageStatus(restarted.stages[1], restarted.agents)).toBe("running")
+      const record = recordedTurns({ ...restarted, phase: "complete", turn: 1 })[0]
+      expect(record.stages[0].outcome).toBe(status)
+    }
+  )
+
+  it("ignores completion for an unknown stage", () => {
+    const state = withAgents("a")
+    expect(
+      reduceEvent(state, { type: "stage:complete", timestamp: TS, payload: { stageIndex: 99 } })
+    ).toBe(state)
+  })
+
   it("creates and focuses an agent on start", () => {
     const state = reduceEvent(initialState, started("architect", { icon: "◆", model: "opus" }))
     expect(state.agents.architect.status).toBe("running")
@@ -216,6 +271,64 @@ describe("reduceEvent", () => {
     })
     expect(state.agents.a.status).toBe("running")
   })
+
+  it("clears stale attempt state and separates output when an agent starts again", () => {
+    const previous = reduceEvent(withAgents("a"), {
+      type: "agent:failed",
+      timestamp: TS,
+      payload: result("a", { status: "failed", error: "old error", output: "old output" }),
+    })
+    const next = reduceEvent(
+      {
+        ...previous,
+        agents: { ...previous.agents, a: { ...previous.agents.a, retry: { attempt: 2, max: 3 } } },
+      },
+      { ...started("a"), timestamp: "2026-01-01T00:00:10.000Z" }
+    )
+    expect(next.agents.a).toMatchObject({ status: "running", startedAt: T0 + 10000 })
+    expect(next.agents.a.error).toBeUndefined()
+    expect(next.agents.a.duration).toBeUndefined()
+    expect(next.agents.a.attempts).toBeUndefined()
+    expect(next.agents.a.retry).toBeUndefined()
+    expect(next.agents.a.logs).toContain("old output")
+    expect(next.agents.a.logs).toContain("[agent restarted]")
+    expect(previous.agents.a.logs).not.toContain("[agent restarted]")
+  })
+
+  it.each(["approved", "changes_required", "failed", "cancelled"] as const)(
+    "records acceptance %s in live state and detached history",
+    (status) => {
+      const acceptance = { status, reviewer: "qa", repairRounds: 1, reviews: [] }
+      const complete = reduceEvent(
+        { ...initialState, turn: 1, requirement: "build it" },
+        {
+          type: "orchestration:complete",
+          timestamp: TS,
+          payload: {
+            name: "demo",
+            success: status === "approved",
+            acceptance,
+            totalDuration: 10,
+            agentResults: [],
+            startTime: TS,
+            endTime: TS,
+          },
+        }
+      )
+      expect(complete.acceptance).toEqual(acceptance)
+      expect(recordedTurns(complete)[0].acceptance).toEqual(acceptance)
+      const next = tuiReducer(complete, {
+        type: "turn:start",
+        requirement: "next",
+        agents: {},
+        leaderIds: [],
+        startedAt: T0,
+      })
+      expect(next.acceptance).toBeUndefined()
+      expect(next.history[0].acceptance).toEqual(acceptance)
+      expect(tuiReducer(next, { type: "view:open", turn: 1 }).view?.acceptance).toEqual(acceptance)
+    }
+  )
 
   it("appends output for a known agent", () => {
     const state = reduceEvent(withAgents("a"), output("a", "hello"))
@@ -246,6 +359,35 @@ describe("reduceEvent", () => {
     })
     expect(state.agents.ghost.status).toBe("failed")
     expect(state.agents.ghost.error).toBe("boom")
+  })
+
+  it("buffers non-streamed failed output and the error once", () => {
+    const event: MultiClawEvent = {
+      type: "agent:failed",
+      timestamp: TS,
+      payload: result("a", { status: "failed", output: "partial answer", error: "boom" }),
+    }
+    const state = reduceEvent(withAgents("a"), event)
+    expect(state.agents.a.logs).toBe("partial answer\n[error] boom\n")
+    expect(reduceEvent(state, event).agents.a.logs).toBe(state.agents.a.logs)
+  })
+
+  it("does not duplicate streamed output or an already buffered error", () => {
+    const state = reduceEvent(reduceEvent(withAgents("a"), output("a", "partial answer\nboom")), {
+      type: "agent:failed",
+      timestamp: TS,
+      payload: result("a", { status: "failed", output: "partial answer", error: "boom" }),
+    })
+    expect(state.agents.a.logs).toBe("partial answer\nboom")
+  })
+
+  it("does not replace a successful agent's streamed output", () => {
+    const state = reduceEvent(reduceEvent(withAgents("a"), output("a", "answer")), {
+      type: "agent:complete",
+      timestamp: TS,
+      payload: result("a", { output: "answer" }),
+    })
+    expect(state.agents.a.logs).toBe("answer")
   })
 
   it("marks an existing agent skipped", () => {
@@ -1208,24 +1350,54 @@ describe("conversationTurns", () => {
     expect(conversationTurns(state)).toEqual([])
   })
 
-  // A cancelled turn never emits `orchestration:complete`, so it stays in
-  // `history` with `phase: "running"`. It is remembered — `/history` should show
-  // it — but it is not context, because half a turn is not a turn.
-  it("keeps a cancelled turn in history but out of the conversation", () => {
-    const cancelled = tuiReducer(createInitialState(config()), {
-      type: "turn:start",
-      requirement: "doomed",
-      agents: seedAgents(config()),
-      leaderIds: ["leader"],
-      startedAt: T0,
+  it("keeps a completed cancelled turn browsable but out of the conversation", () => {
+    const cancelled = reduceEvent(ran(createInitialState(config()), "doomed"), {
+      type: "orchestration:complete",
+      timestamp: TS,
+      payload: {
+        name: "demo",
+        success: false,
+        cancelled: true,
+        requirement: "resolved doomed request",
+        totalDuration: 10,
+        agentResults: [],
+        startTime: TS,
+        endTime: TS,
+      },
     })
+    expect(recordedTurns(cancelled)[0]).toMatchObject({
+      requirement: "doomed",
+      effectiveRequirement: "resolved doomed request",
+      cancelled: true,
+      phase: "complete",
+    })
+    expect(conversationTurns(cancelled)).toEqual([])
 
-    // The next turn pushes the cancelled one into history, still "running".
     const state = ran(cancelled, "second")
-
-    expect(state.history.map((turn) => turn.requirement)).toEqual(["doomed"])
-    expect(state.history[0].phase).toBe("running")
+    expect(state.history[0].cancelled).toBe(true)
+    expect(state.history[0].effectiveRequirement).toBe("resolved doomed request")
+    expect(tuiReducer(state, { type: "view:open", turn: 1 }).view?.cancelled).toBe(true)
+    expect(state.cancelled).toBeUndefined()
+    expect(state.effectiveRequirement).toBeUndefined()
     expect(conversationTurns(state).map((turn) => turn.requirement)).toEqual(["second"])
+  })
+
+  it("records the short raw answer, not the resolved requirement, as dialogue", () => {
+    const done = reduceEvent(ran(createInitialState(config()), "Postgres"), {
+      type: "orchestration:complete",
+      timestamp: TS,
+      payload: {
+        name: "demo",
+        success: true,
+        requirement: "Build the web app with Postgres",
+        totalDuration: 10,
+        agentResults: [],
+        startTime: TS,
+        endTime: TS,
+      },
+    })
+    expect(recordedTurns(done)[0].effectiveRequirement).toBe("Build the web app with Postgres")
+    expect(conversationTurns(done)).toEqual([{ requirement: "Postgres" }])
   })
 })
 

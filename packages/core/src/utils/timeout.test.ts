@@ -59,6 +59,52 @@ describe("withTimeout", () => {
     expect(signal!.aborted).toBe(true)
   })
 
+  it.each(["resolve", "abort", "cleanup failure"])(
+    "waits for factory cleanup after a timeout before reporting %s",
+    async (outcome) => {
+      vi.useFakeTimers()
+      let signal: AbortSignal | undefined
+      let release!: () => void
+      const cleanupError = new Error("process cleanup failed")
+      let settled = false
+      const promise = withTimeout(
+        async (innerSignal) => {
+          signal = innerSignal
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          if (outcome === "cleanup failure") throw cleanupError
+          if (outcome === "abort") {
+            throw Object.assign(new Error("aborted after cleanup"), { name: "AbortError" })
+          }
+          return "late success"
+        },
+        500,
+        "Cleanup",
+        undefined,
+        { waitForCleanup: true }
+      ).then(
+        (value) => {
+          settled = true
+          return value
+        },
+        (error: Error) => {
+          settled = true
+          return error
+        }
+      )
+
+      await vi.advanceTimersByTimeAsync(500)
+      expect(signal?.aborted).toBe(true)
+      expect(settled).toBe(false)
+      release()
+      const error = await promise
+      if (outcome === "cleanup failure") expect(error).toBe(cleanupError)
+      else expect(error).toEqual(new Error("[Cleanup] timed out (0.5s)"))
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+
   it("does not fire the timeout after a fast success", async () => {
     vi.useFakeTimers()
     const promise = withTimeout(async () => "quick", 10_000, "Quick")

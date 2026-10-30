@@ -1,6 +1,21 @@
 import * as path from "node:path"
-import type { EventBus, MultiClawConfig, MultiClawEvent } from "@multiclawcli/core"
-import { describeResumePlan, isAbortError, Orchestrator } from "@multiclawcli/core"
+import type {
+  EventBus,
+  MultiClawConfig,
+  MultiClawEvent,
+  RuntimePermissionHandler,
+  RuntimePermissionRequest,
+  RuntimeQuestionHandler,
+  RuntimeQuestionRequest,
+  RuntimeQuestionResponse,
+} from "@multiclawcli/core"
+import {
+  AgentSessionManager,
+  describeResumePlan,
+  isAbortError,
+  Orchestrator,
+  validateRuntimeQuestionContent,
+} from "@multiclawcli/core"
 import { Box, type Key, Text, useApp, useInput, useWindowSize } from "ink"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import {
@@ -23,7 +38,14 @@ import {
   Rule,
   railCellWidths,
 } from "./components/chrome"
-import { HelpOverlay, HistoryOverlay, listWindowStart } from "./components/overlays"
+import {
+  HelpOverlay,
+  HistoryOverlay,
+  listWindowStart,
+  PermissionOverlay,
+  QuestionOverlay,
+  questionLines,
+} from "./components/overlays"
 import {
   Divider,
   ErrorPanel,
@@ -57,7 +79,11 @@ export interface AppProps {
    * Called once per turn, after that turn's orchestrator exists. The CLI uses it
    * to attach a file log writer without the TUI depending on the CLI package.
    */
-  onTurnStart?: (eventBus: EventBus, logDir: string) => void
+  onTurnStart?: (eventBus: EventBus, logDir: string) => void | (() => void | Promise<void>)
+  /** Caller-owned resources; startTui also closes them on render failures. */
+  sessions?: AgentSessionManager
+  /** Gives the terminal host an awaitable cleanup barrier, including render failures. */
+  onCleanupReady?: (cleanup: () => Promise<void>) => void
 }
 
 /** Agents emit output in many small chunks; batching keeps re-renders bounded. */
@@ -78,6 +104,20 @@ interface Line {
 }
 
 const EMPTY_LINE: Line = { text: "", cursor: 0 }
+
+type PendingInteraction =
+  | {
+      kind: "permission"
+      request: RuntimePermissionRequest
+      shortId: string
+      settle: (optionId?: string) => void
+    }
+  | {
+      kind: "question"
+      request: RuntimeQuestionRequest
+      shortId: string
+      settle: (response?: RuntimeQuestionResponse) => void
+    }
 
 /**
  * The turn `/replay` or `/fork` should act on, or the reason there is none.
@@ -147,7 +187,8 @@ function StatusLine({
         {state.warning}
       </Text>
     )
-  if (cancelled && !running) return <Text color={COLOR.warn}>cancelled</Text>
+  if ((cancelled || state.cancelled) && !running)
+    return <Text color={COLOR.warn}>cancelled · workspace changes are retained</Text>
 
   // A turn the leader answered ends in words, not in a pipeline. Saying "done"
   // there would claim work that never happened.
@@ -175,9 +216,17 @@ function StatusLine({
     const time = state.totalDuration === undefined ? "" : ` ${formatDuration(state.totalDuration)}`
     // The outcome leads once the turn is over; a warning raised mid-turn rides
     // along beside it rather than replacing it.
-    const outcome = state.success
-      ? `${STATUS.success.glyph} done${time}`
-      : `${STATUS.failed.glyph} finished with failures${time}`
+    const outcome = state.acceptance
+      ? `${state.success ? STATUS.success.glyph : STATUS.failed.glyph} ${
+          state.acceptance.status === "approved"
+            ? "delivery approved"
+            : state.acceptance.status === "changes_required"
+              ? "changes required"
+              : "acceptance failed"
+        }${time}`
+      : state.success
+        ? `${STATUS.success.glyph} done${time}`
+        : `${STATUS.failed.glyph} finished with failures${time}`
     // Cost, only when the run actually reported one — never "$0.00" by default.
     const cost = state.totalCostUsd === undefined ? "" : ` · ${formatCost(state.totalCostUsd)}`
     return (
@@ -197,7 +246,7 @@ function StatusLine({
   )
 }
 
-export function App({ config, onTurnStart }: AppProps) {
+export function App({ config, onTurnStart, sessions: providedSessions, onCleanupReady }: AppProps) {
   const { exit } = useApp()
   const { columns, rows } = useWindowSize()
 
@@ -232,7 +281,78 @@ export function App({ config, onTurnStart }: AppProps) {
   })
 
   const abortRef = useRef<AbortController | null>(null)
+  const sessionsRef = useRef<AgentSessionManager | null>(null)
+  if (!sessionsRef.current) sessionsRef.current = providedSessions ?? new AgentSessionManager()
+  const activeTurnRef = useRef<Promise<void> | null>(null)
+  const reporterErrorRef = useRef<Error | null>(null)
+  const closingRef = useRef(false)
+  const shutdownRef = useRef<Promise<void> | null>(null)
+  const busyRef = useRef(false)
+  const taskStartRef = useRef(0)
+  const turnSerialRef = useRef(0)
+  const [awaitingAnswer, setAwaitingAnswer] = useState(false)
+  const [queuePaused, setQueuePaused] = useState(false)
+  const awaitingAnswerRef = useRef(false)
+  const queuePausedRef = useRef(false)
   const pending = useRef<MultiClawEvent[]>([])
+  const permissionSerialRef = useRef(0)
+  const questionSerialRef = useRef(0)
+  const mountedRef = useRef(true)
+  const interactionsRef = useRef<PendingInteraction[]>([])
+  const [interactions, setInteractions] = useState<PendingInteraction[]>([])
+  const [questionScroll, setQuestionScroll] = useState({ id: "", offset: 0 })
+
+  const requestPermission = useCallback<RuntimePermissionHandler>((request, signal) => {
+    if (closingRef.current || signal.aborted) return Promise.resolve(undefined)
+    // Aliases never repeat during this console session, so an old command cannot
+    // accidentally decide a later request. Full request ids remain exact matches.
+    const shortId = `p${++permissionSerialRef.current}`
+    return new Promise<string | undefined>((resolve) => {
+      const entry: PendingInteraction = {
+        kind: "permission",
+        request,
+        shortId,
+        settle: (optionId) => {
+          if (!interactionsRef.current.includes(entry)) return
+          signal.removeEventListener("abort", onAbort)
+          interactionsRef.current = interactionsRef.current.filter((item) => item !== entry)
+          if (mountedRef.current) setInteractions([...interactionsRef.current])
+          resolve(optionId)
+        },
+      }
+      const onAbort = () => entry.settle()
+      interactionsRef.current.push(entry)
+      signal.addEventListener("abort", onAbort, { once: true })
+      if (mountedRef.current) setInteractions([...interactionsRef.current])
+    })
+  }, [])
+
+  const requestQuestion = useCallback<RuntimeQuestionHandler>((request, signal) => {
+    if (closingRef.current || signal.aborted) return Promise.resolve({ action: "cancel" })
+    const shortId = `q${++questionSerialRef.current}`
+    return new Promise<RuntimeQuestionResponse>((resolve) => {
+      const entry: PendingInteraction = {
+        kind: "question",
+        request,
+        shortId,
+        settle: (response = { action: "cancel" }) => {
+          if (!interactionsRef.current.includes(entry)) return
+          signal.removeEventListener("abort", onAbort)
+          interactionsRef.current = interactionsRef.current.filter((item) => item !== entry)
+          if (mountedRef.current) setInteractions([...interactionsRef.current])
+          resolve(response)
+        },
+      }
+      const onAbort = () => entry.settle()
+      interactionsRef.current.push(entry)
+      signal.addEventListener("abort", onAbort, { once: true })
+      if (mountedRef.current) setInteractions([...interactionsRef.current])
+    })
+  }, [])
+
+  const clearInteractions = useCallback(() => {
+    for (const entry of [...interactionsRef.current]) entry.settle()
+  }, [])
 
   const flush = useCallback(() => {
     const batch = pending.current
@@ -292,13 +412,46 @@ export function App({ config, onTurnStart }: AppProps) {
   }, [state.history, state.phase])
 
   const startTurn = useCallback(
-    async (requirement: string, opts?: { resume?: MultiClawConfig["resume"] }) => {
+    async (
+      requirement: string,
+      opts?: { resume?: MultiClawConfig["resume"]; newTask?: boolean }
+    ) => {
+      if (closingRef.current || busyRef.current) return
+      busyRef.current = true
+      setRunning(true)
+      if (opts?.newTask) {
+        try {
+          await sessionsRef.current?.reset()
+          if (closingRef.current) {
+            busyRef.current = false
+            setRunning(false)
+            return
+          }
+          taskStartRef.current = stateRef.current.turn
+        } catch (err) {
+          busyRef.current = false
+          setRunning(false)
+          setError(`session reset failed: ${(err as Error).message}`)
+          return
+        }
+      }
+      if (closingRef.current) {
+        busyRef.current = false
+        setRunning(false)
+        return
+      }
+      awaitingAnswerRef.current = false
+      setAwaitingAnswer(false)
       setError(undefined)
       setCancelled(false)
       setNotice(undefined)
       // Read before the dispatch below: `turn:start` moves the turn on screen
       // into `history`, and this wants it as it is right now.
-      const earlierTurns = conversationTurns(stateRef.current)
+      const earlierTurns = conversationTurns({
+        ...stateRef.current,
+        history: stateRef.current.history.filter((turn) => turn.turn > taskStartRef.current),
+        ...(stateRef.current.turn <= taskStartRef.current ? { phase: "idle" as const } : {}),
+      })
       // Each turn starts from the configured roster, so the team list is
       // populated the instant the turn begins rather than after the leader runs.
       dispatch({
@@ -313,7 +466,7 @@ export function App({ config, onTurnStart }: AppProps) {
       // build on what the previous turn wrote. Only the logs are per-run: the
       // `.multiclaw/runs/` directory is a record of what happened, not the place
       // the work happens.
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
+      const stamp = `${new Date().toISOString().replace(/[:.]/g, "-")}-${++turnSerialRef.current}`
       const logDir = path.join(config.workDir, ".multiclaw", "runs", `run-${stamp}`, "logs")
       const runConfig: MultiClawConfig = {
         ...config,
@@ -322,6 +475,11 @@ export function App({ config, onTurnStart }: AppProps) {
         // so the leader is handed the turns behind this one as well.
         history: earlierTurns,
         logDir,
+        permissions:
+          !config.permissions || config.permissions.mode === "ask"
+            ? { mode: "ask", onRequest: requestPermission }
+            : config.permissions,
+        questions: config.questions?.onRequest ? config.questions : { onRequest: requestQuestion },
         // Only a retry carries this; a normal turn lets the leader route.
         ...(opts?.resume ? { resume: opts.resume } : {}),
       }
@@ -330,38 +488,113 @@ export function App({ config, onTurnStart }: AppProps) {
       abortRef.current = controller
       setRunning(true)
 
-      const orchestrator = new Orchestrator(runConfig)
-      const unsubscribe = orchestrator.eventBus.subscribe((event) => {
-        pending.current.push(event)
-      })
-      onTurnStart?.(orchestrator.eventBus, logDir)
-
+      let unsubscribe: (() => void) | undefined
+      let disposeReporter: (() => void | Promise<void>) | undefined
       const timer = setInterval(flush, FLUSH_INTERVAL_MS)
+      let finishTurn!: () => void
+      activeTurnRef.current = new Promise<void>((resolve) => {
+        finishTurn = resolve
+      })
       try {
-        await orchestrator.run({ signal: controller.signal })
+        const orchestrator = new Orchestrator(runConfig, sessionsRef.current ?? undefined)
+        unsubscribe = orchestrator.eventBus.subscribe((event) => {
+          pending.current.push(event)
+        })
+        const reporter = onTurnStart?.(orchestrator.eventBus, logDir)
+        if (reporter) disposeReporter = reporter
+        const result = await orchestrator.run({ signal: controller.signal })
+        const asks = result.reply?.mode === "ask"
+        awaitingAnswerRef.current = asks
+        setAwaitingAnswer(asks)
+        if (asks || !result.success || result.cancelled) {
+          queuePausedRef.current = true
+          setQueuePaused(true)
+        }
+        if (result.cancelled) setCancelled(true)
       } catch (err) {
         // Cancellation is expected, not a failure worth surfacing as an error.
+        queuePausedRef.current = true
+        setQueuePaused(true)
         if (isAbortError(err)) setCancelled(true)
         else setError((err as Error).message)
       } finally {
+        clearInteractions()
         clearInterval(timer)
         flush()
-        unsubscribe()
+        unsubscribe?.()
+        try {
+          await disposeReporter?.()
+        } catch (err) {
+          queuePausedRef.current = true
+          setQueuePaused(true)
+          reporterErrorRef.current = err instanceof Error ? err : new Error(String(err))
+          setError(`log cleanup failed: ${reporterErrorRef.current.message}`)
+        }
         abortRef.current = null
+        busyRef.current = false
         setRunning(false)
+        finishTurn()
+        activeTurnRef.current = null
       }
     },
-    [config, flush, onTurnStart]
+    [config, flush, onTurnStart, requestPermission, requestQuestion, clearInteractions]
   )
 
   // A queued follow-up starts the moment the console goes idle again. Without
   // this the queue would just be a place text goes to be forgotten.
   useEffect(() => {
-    if (running || queue.length === 0) return
+    if (
+      running ||
+      busyRef.current ||
+      closingRef.current ||
+      queuePaused ||
+      awaitingAnswer ||
+      queue.length === 0
+    )
+      return
     const [next, ...rest] = queue
     setQueue(rest)
     void startTurn(next)
-  }, [running, queue, startTurn])
+  }, [running, queue, queuePaused, awaitingAnswer, startTurn])
+
+  const cleanup = useCallback(async () => {
+    closingRef.current = true
+    abortRef.current?.abort()
+    clearInteractions()
+    await activeTurnRef.current
+    await sessionsRef.current?.close()
+    if (reporterErrorRef.current) throw reporterErrorRef.current
+  }, [clearInteractions])
+
+  useEffect(() => {
+    mountedRef.current = true
+    onCleanupReady?.(cleanup)
+    return () => {
+      mountedRef.current = false
+      void cleanup().catch(() => {})
+    }
+  }, [cleanup, onCleanupReady])
+
+  const shutdown = useCallback(() => {
+    if (shutdownRef.current) return shutdownRef.current
+    closingRef.current = true
+    queuePausedRef.current = true
+    setQueuePaused(true)
+    setQueue([])
+    setNotice("closing sessions…")
+    abortRef.current?.abort()
+    shutdownRef.current = (async () => {
+      try {
+        await cleanup()
+        const turns = recordedTurns(stateRef.current).slice(-MAX_HISTORY)
+        if (turns.length) await saveHistory(config.workDir, turns)
+        exit()
+      } catch (err) {
+        setError(`shutdown failed: ${(err as Error).message}`)
+      }
+    })()
+    return shutdownRef.current
+  }, [config.workDir, exit, cleanup])
 
   const query = menuQuery(line.text)
   const matches = useMemo(
@@ -420,14 +653,14 @@ export function App({ config, onTurnStart }: AppProps) {
     overlay: helpOpen || historyOpen,
     menuRows: paletteOpen ? paletteTotal : 0,
     queueRows: queue.length,
-    notice: notice !== undefined,
+    notice: notice !== undefined || (queuePaused && queue.length > 0),
     viewing: state.view !== undefined,
     hasRail: shown.leaderIds.length > 0 || shown.stages.length > 0,
     railCells: railCellWidths(shown),
   })
 
   const runCommand = useCallback(
-    (name: string, args: string[]) => {
+    (name: string, args: string[], rawText?: string) => {
       setLine(EMPTY_LINE)
       // The palette only *offers* commands valid for the phase, but a command can
       // also be *typed* out, which bypasses the palette entirely — so the phase
@@ -443,7 +676,131 @@ export function App({ config, onTurnStart }: AppProps) {
       // past turn is open, `/clear` clears *its* buffer, so validating and
       // reporting against the live turn would name an agent that did not change.
       const shown = state.view ?? state
+      if (closingRef.current) return
       switch (name) {
+        case "respond":
+        case "skip":
+        case "dismiss": {
+          const [id, ...jsonParts] = args
+          if (!id || (name === "respond" ? jsonParts.length === 0 : args.length !== 1)) {
+            setNotice(
+              name === "respond"
+                ? "usage: /respond <question id> <JSON object>"
+                : `usage: /${name} <question id>`
+            )
+            return
+          }
+          const matches = interactionsRef.current.filter(
+            (entry) => entry.request.requestId === id || entry.shortId === id
+          )
+          const entry = matches.length === 1 ? matches[0] : undefined
+          if (entry?.kind !== "question") {
+            setNotice(`unknown or stale question request: ${id}`)
+            return
+          }
+          if (name !== "respond") {
+            entry.settle({ action: name === "skip" ? "decline" : "cancel" })
+            setNotice(`${name === "skip" ? "skipped" : "dismissed"} ${entry.shortId}`)
+            return
+          }
+          let content: unknown
+          try {
+            // Preserve whitespace within JSON strings, unlike generic slash args.
+            const rawJson = /^\/respond\s+\S+\s+([\s\S]+)$/.exec(rawText ?? "")?.[1] ?? ""
+            content = JSON.parse(rawJson)
+          } catch {
+            setNotice("response must be a valid JSON object")
+            return
+          }
+          if (!validateRuntimeQuestionContent(entry.request.requestedSchema, content)) {
+            setNotice(
+              "response does not match the question schema; check required fields and choices"
+            )
+            return
+          }
+          entry.settle({
+            action: "accept",
+            content,
+          })
+          setNotice(`responded to ${entry.shortId}`)
+          return
+        }
+        case "approve":
+        case "deny": {
+          const [id, number] = args
+          if (!id || (name === "approve" ? args.length !== 2 : args.length !== 1)) {
+            setNotice(
+              name === "approve"
+                ? "usage: /approve <request id> <option number>"
+                : "usage: /deny <request id>"
+            )
+            return
+          }
+          const matches = interactionsRef.current.filter(
+            (entry) => entry.request.requestId === id || entry.shortId === id
+          )
+          if (matches.length !== 1) {
+            setNotice(`unknown or stale permission request: ${id}`)
+            return
+          }
+          const entry = matches[0]
+          if (entry.kind !== "permission") {
+            setNotice(`not a permission request: ${id}`)
+            return
+          }
+          if (name === "deny") {
+            entry.settle()
+            setNotice(`denied ${entry.shortId}`)
+            return
+          }
+          const option = /^\d+$/.test(number ?? "")
+            ? entry.request.options[Number(number) - 1]
+            : undefined
+          if (!option) {
+            setNotice(
+              `invalid option for ${entry.shortId}; choose 1–${entry.request.options.length}`
+            )
+            return
+          }
+          entry.settle(option.optionId)
+          setNotice(`selected ${option.name} for ${entry.shortId}`)
+          return
+        }
+        case "task": {
+          const text = args.join(" ")
+          if (!text) {
+            setNotice("usage: /task <new requirement> — closes prior agent sessions")
+            return
+          }
+          setQueue([])
+          queuePausedRef.current = false
+          setQueuePaused(false)
+          void startTurn(text, { newTask: true })
+          return
+        }
+        case "answer": {
+          const text = args.join(" ")
+          if (!awaitingAnswerRef.current || !text) {
+            setNotice("usage: /answer <text> — only when the leader is waiting for an answer")
+            return
+          }
+          void startTurn(text)
+          return
+        }
+        case "pause":
+          queuePausedRef.current = true
+          setQueuePaused(true)
+          setNotice("queue paused — the active turn continues")
+          return
+        case "continue":
+          if (awaitingAnswerRef.current) {
+            setNotice("answer the leader first; queued input is not an answer")
+            return
+          }
+          queuePausedRef.current = false
+          setQueuePaused(false)
+          setNotice("queue resumed")
+          return
         case "agents":
           setNotice(
             `team: ${plannedAgents(config)
@@ -502,7 +859,15 @@ export function App({ config, onTurnStart }: AppProps) {
           // An explicit id accepts a unique prefix, matching `/focus`; with no id
           // the command falls back to every agent that failed.
           let ids: string[]
-          if (args[0]) {
+          if (
+            state.acceptance &&
+            state.acceptance.status !== "approved" &&
+            (!args[0] || args[0] === state.acceptance.reviewer)
+          ) {
+            ids = [
+              ...new Set(state.stages.flatMap((stage) => stage.agents.map((agent) => agent.id))),
+            ].filter((id) => id !== state.acceptance?.reviewer)
+          } else if (args[0]) {
             const resolved = resolveAgentId(args[0], Object.keys(state.agents))
             if ("error" in resolved) {
               setNotice(resolved.error)
@@ -527,7 +892,12 @@ export function App({ config, onTurnStart }: AppProps) {
               .filter((id) => state.agents[id]?.sessionId)
               .map((id) => [id, state.agents[id].sessionId as string])
           )
-          void startTurn(state.requirement, {
+          if (ids.some((id) => state.leaderIds.includes(id))) {
+            void startTurn(state.requirement)
+            setNotice("retrying leader routing")
+            return
+          }
+          void startTurn(state.effectiveRequirement ?? state.requirement, {
             resume: {
               agents: ids,
               ...(Object.keys(sessions).length > 0 ? { sessions } : {}),
@@ -620,6 +990,7 @@ export function App({ config, onTurnStart }: AppProps) {
           // "the cancel did not work".
           const dropped = queue.length
           abortRef.current.abort()
+          clearInteractions()
           setQueue([])
           setCancelled(true)
           setNotice(dropped > 0 ? `cancelling… · dropped ${dropped} queued` : "cancelling…")
@@ -630,28 +1001,38 @@ export function App({ config, onTurnStart }: AppProps) {
           setHelpOpen(true)
           return
         case "quit":
-          exit()
+          void shutdown()
           return
         default:
           setNotice(`unknown command: /${name}`)
       }
     },
-    [config, exit, layout.logViewport, layout.streamWidth, queue.length, running, state, startTurn]
+    [
+      config,
+      shutdown,
+      clearInteractions,
+      layout.logViewport,
+      layout.streamWidth,
+      queue.length,
+      running,
+      state,
+      startTurn,
+    ]
   )
 
   const submit = useCallback(() => {
     const text = line.text.trim()
-    if (!text) return
+    if (!text || closingRef.current) return
     const command = parseCommand(text)
     if (command) {
-      runCommand(command.name, command.args)
+      runCommand(command.name, command.args, text)
       return
     }
     setLine(EMPTY_LINE)
     setNotice(undefined)
     // The prompt stays live while the team works, so text typed mid-run becomes
     // the next turn instead of being dropped on the floor.
-    if (running) {
+    if (running || busyRef.current) {
       setQueue((pending) => [...pending, text])
       return
     }
@@ -713,6 +1094,7 @@ export function App({ config, onTurnStart }: AppProps) {
         setHistoryOpen(false)
       } else if (abortRef.current) {
         abortRef.current.abort()
+        clearInteractions()
         // Cancel means stop, so the queue is dropped along with the turn —
         // otherwise the follow-ups start the instant the abort lands.
         setNotice(queue.length > 0 ? `cancelling… · dropped ${queue.length} queued` : "cancelling…")
@@ -721,7 +1103,7 @@ export function App({ config, onTurnStart }: AppProps) {
       } else if (line.text) {
         setLine(EMPTY_LINE)
       } else {
-        exit()
+        void shutdown()
       }
       return
     }
@@ -758,7 +1140,7 @@ export function App({ config, onTurnStart }: AppProps) {
     }
 
     if (key.ctrl && char === "d") {
-      if (!line.text) exit()
+      if (!line.text) void shutdown()
       return
     }
     if (key.ctrl && char === "l") {
@@ -803,6 +1185,24 @@ export function App({ config, onTurnStart }: AppProps) {
         else runCommand(matches[selected].name, [])
         return
       }
+    }
+
+    if (
+      interactions[0]?.kind === "question" &&
+      (key.upArrow || key.downArrow || key.pageUp || key.pageDown)
+    ) {
+      const entry = interactions[0]
+      const capacity = Math.max(1, layout.bodyHeight - 4)
+      const maxOffset = Math.max(0, questionLines(entry.request, layout.columns).length - capacity)
+      const delta = key.pageDown ? capacity : key.pageUp ? -capacity : key.downArrow ? 1 : -1
+      setQuestionScroll((scroll) => ({
+        id: entry.shortId,
+        offset: Math.min(
+          maxOffset,
+          Math.max(0, (scroll.id === entry.shortId ? scroll.offset : 0) + delta)
+        ),
+      }))
+      return
     }
 
     // In a single-line input the vertical keys are free, and scrolling the
@@ -921,7 +1321,11 @@ export function App({ config, onTurnStart }: AppProps) {
         : menuOpen
           ? "↑↓ select · enter run · esc close"
           : running
-            ? "enter queues · ctrl+c cancel"
+            ? interactions.length > 0
+              ? interactions[0].kind === "question"
+                ? "/respond <id> <JSON> · /skip <id> · /dismiss <id>"
+                : "/approve <id> <number> · /deny <id> · ctrl+c cancel"
+              : "enter queues · ctrl+c cancel"
             : state.view
               ? "esc live · tab agent · ? help"
               : state.reply
@@ -994,6 +1398,23 @@ export function App({ config, onTurnStart }: AppProps) {
             width={layout.columns}
             maxRows={layout.bodyHeight}
           />
+        ) : interactions[0]?.kind === "question" ? (
+          <QuestionOverlay
+            request={interactions[0].request}
+            shortId={interactions[0].shortId}
+            queued={interactions.length}
+            width={layout.columns}
+            maxRows={layout.bodyHeight}
+            offset={questionScroll.id === interactions[0].shortId ? questionScroll.offset : 0}
+          />
+        ) : interactions[0]?.kind === "permission" ? (
+          <PermissionOverlay
+            request={interactions[0].request}
+            shortId={interactions[0].shortId}
+            queued={interactions.length}
+            width={layout.columns}
+            maxRows={layout.bodyHeight}
+          />
         ) : layout.welcome ? (
           <WelcomePanel turn={state} width={layout.columns} />
         ) : error ? (
@@ -1028,13 +1449,15 @@ export function App({ config, onTurnStart }: AppProps) {
         </Text>
       ) : null}
 
-      {notice ? (
+      {notice || (queuePaused && queue.length > 0) ? (
         <Text dimColor wrap="truncate-end">
           {"  "}
-          {notice}
+          {notice ??
+            (awaitingAnswer
+              ? "queue paused — answer the leader first"
+              : "queue paused — /continue resumes it")}
         </Text>
       ) : null}
-
       <QueueStrip items={queue} max={layout.queueRows} />
 
       {paletteOpen ? <CommandMenu rows={paletteWindow} selected={paletteSelected} /> : null}
@@ -1043,7 +1466,13 @@ export function App({ config, onTurnStart }: AppProps) {
         value={line.text}
         cursor={line.cursor}
         caretVisible={caretOn}
-        placeholder={running ? RUNNING_PLACEHOLDER : INPUT_PLACEHOLDER}
+        placeholder={
+          running
+            ? RUNNING_PLACEHOLDER
+            : awaitingAnswer
+              ? "answer the leader… · /task starts a new task"
+              : INPUT_PLACEHOLDER
+        }
       />
 
       <HintBar

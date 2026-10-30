@@ -1,4 +1,5 @@
 import type {
+  AcceptanceResult,
   AgentDefinition,
   AgentOutput,
   AgentStatus,
@@ -55,6 +56,12 @@ export interface AgentView {
 
 export type TuiPhase = "idle" | "running" | "complete"
 
+export interface TuiStageInfo extends StageInfo {
+  /** Frozen when this stage finishes, independent of later runs of its agents. */
+  outcome?: AgentStatus
+  memberStatuses?: Record<string, AgentStatus>
+}
+
 /**
  * One turn, as the panes need to see it.
  *
@@ -66,12 +73,14 @@ export type TuiPhase = "idle" | "running" | "complete"
 export interface TurnView {
   turn: number
   requirement?: string
+  effectiveRequirement?: string
+  cancelled?: boolean
   phase: TuiPhase
   /** Wall clock at which the turn started. */
   startedAt?: number
   /** Wall clock at which the turn finished. */
   endedAt?: number
-  stages: StageInfo[]
+  stages: TuiStageInfo[]
   agents: Record<string, AgentView>
   /**
    * Agents that run *before* the pipeline exists (the leader), so the pipeline
@@ -96,6 +105,7 @@ export interface TurnView {
    */
   scroll: number
   success?: boolean
+  acceptance?: AcceptanceResult
   totalDuration?: number
   /**
    * Sum of the per-agent costs the runtime reported, in USD. Absent when none
@@ -331,7 +341,7 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
         ...state,
         phase: "running",
         name: event.payload.name,
-        requirement: event.payload.requirement ?? state.requirement,
+        effectiveRequirement: event.payload.requirement ?? state.effectiveRequirement,
         reason: event.payload.selectionReason,
         stages: event.payload.stages,
         agents: mergeStageAgents(state.agents, event.payload.stages),
@@ -344,16 +354,33 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
     case "orchestration:stages": {
       return {
         ...state,
-        stages: event.payload.stages,
+        stages: event.payload.stages.map((stage) => {
+          const previous = state.stages.find((previous) => previous.stageIndex === stage.stageIndex)
+          return previous?.outcome === undefined
+            ? stage
+            : { ...stage, outcome: previous.outcome, memberStatuses: previous.memberStatuses }
+        }),
         agents: mergeStageAgents(state.agents, event.payload.stages),
       }
     }
 
-    // Stage boundaries carry no state of their own — the per-agent statuses
-    // derived from them already drive the pipeline bar.
     case "stage:start":
-    case "stage:complete":
       return state
+
+    case "stage:complete": {
+      const stage = state.stages.find((stage) => stage.stageIndex === event.payload.stageIndex)
+      if (!stage || stage.outcome !== undefined) return state
+      const outcome = stageStatus(stage, state.agents)
+      const memberStatuses = Object.fromEntries(
+        stage.agents.map((agent) => [agent.id, state.agents[agent.id]?.status ?? "pending"])
+      )
+      return {
+        ...state,
+        stages: state.stages.map((entry) =>
+          entry === stage ? { ...entry, outcome, memberStatuses } : entry
+        ),
+      }
+    }
 
     case "agent:start": {
       const { agentId, agentName, icon, model, taskTitle } = event.payload
@@ -368,6 +395,16 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
             taskTitle: taskTitle ?? existing.taskTitle,
             status: "running",
             startedAt: startedAt ?? existing.startedAt,
+            duration: undefined,
+            attempts: undefined,
+            retry: undefined,
+            error: undefined,
+            usage: undefined,
+            costUsd: undefined,
+            logs:
+              existing.startedAt !== undefined && existing.logs
+                ? appendLog(existing.logs, "\n[agent restarted]\n")
+                : existing.logs,
           }
         : blankAgent(agentId, agentName, {
             icon,
@@ -412,6 +449,7 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
         status: result.status,
         duration: result.duration,
         attempts: result.attempts,
+        retry: undefined,
         error: result.error,
         usage: result.usage,
         costUsd: result.costUsd,
@@ -423,6 +461,12 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
       const next: AgentView = existing
         ? { ...existing, ...patch }
         : blankAgent(result.agentId, result.agentName, patch)
+      if (event.type === "agent:failed") {
+        if (next.logs === "" && result.output) next.logs = appendLog("", result.output)
+        if (result.error && !next.logs.includes(stripAnsi(result.error))) {
+          next.logs = appendLog(next.logs, `\n[error] ${result.error}\n`)
+        }
+      }
       return { ...state, agents: { ...state.agents, [result.agentId]: next } }
     }
 
@@ -454,6 +498,9 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
         ...state,
         phase: "complete",
         success: event.payload.success,
+        acceptance: event.payload.acceptance,
+        cancelled: event.payload.cancelled,
+        effectiveRequirement: event.payload.requirement ?? state.effectiveRequirement,
         totalDuration: event.payload.totalDuration,
         totalCostUsd: event.payload.totalCostUsd,
         endedAt: epoch(event.timestamp) ?? Date.now(),
@@ -498,6 +545,8 @@ function snapshot(state: TuiState): TurnView {
   return {
     turn: state.turn,
     requirement: state.requirement,
+    effectiveRequirement: state.effectiveRequirement,
+    cancelled: state.cancelled,
     phase: state.phase,
     startedAt: state.startedAt,
     endedAt: state.endedAt,
@@ -508,6 +557,7 @@ function snapshot(state: TuiState): TurnView {
     autoFollow: state.autoFollow,
     scroll: state.scroll,
     success: state.success,
+    acceptance: state.acceptance,
     totalDuration: state.totalDuration,
     totalCostUsd: state.totalCostUsd,
     reason: state.reason,
@@ -573,10 +623,9 @@ export function recordedTurns(state: TuiState): TurnView[] {
 export function conversationTurns(state: TuiState): TurnRecord[] {
   const turns: TurnRecord[] = []
   for (const turn of recordedTurns(state)) {
-    // A cancelled turn never emits `orchestration:complete`, so it stays
-    // "running" — and half a turn is not context. Turn 0 is the seeded roster:
-    // a requirement nobody asked for is not part of the conversation either.
-    if (turn.phase !== "complete" || !turn.requirement) continue
+    // Cancelled turns remain browsable, but are not completed conversation
+    // context. Turn 0 is only the seeded roster, not a user request.
+    if (turn.phase !== "complete" || turn.cancelled || !turn.requirement) continue
     turns.push(
       turn.reply
         ? { requirement: turn.requirement, reply: turn.reply }
@@ -723,7 +772,8 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
  * to start, and reporting it as `pending` would be the same lie B2-6 fixed one
  * level down.
  */
-export function stageStatus(stage: StageInfo, agents: Record<string, AgentView>): AgentStatus {
+export function stageStatus(stage: TuiStageInfo, agents: Record<string, AgentView>): AgentStatus {
+  if (stage.outcome !== undefined) return stage.outcome
   const statuses = stage.agents.map((a) => agents[a.id]?.status ?? "pending")
   if (statuses.some((s) => s === "failed")) return "failed"
   if (statuses.some((s) => s === "running" || s === "retrying")) return "running"

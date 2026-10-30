@@ -13,6 +13,7 @@ Responsibilities:
 
 Deliverables (save to the working directory):
 - code-review.md — score (1–10), blocking issues, advisory issues, conclusion (Approved / Changes Required)
+- When the task includes a Delivery acceptance review contract, the final response must be only its JSON verdict, not the prose report. Approve only with no unresolved blocking issues; include file locations and fix directions in changes_required issues. The verdict is a review judgment, not proof that unexecuted tests passed.
 
 Principles: Judge the code, not the developer. A blocking issue must include the file path, the specific problem, and a fix direction. Advisory items should be actionable, not vague. If the code is solid, say so.`
 

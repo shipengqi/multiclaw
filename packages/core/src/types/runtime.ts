@@ -1,7 +1,7 @@
 /**
  * Everything a runtime emits about a run carries the same envelope. `seq` is a
  * per-run monotonic counter so a consumer can order events without trusting the
- * clock; `runId` is fresh for every `execute()` call.
+ * clock; `runId` is fresh for every `execute()` call or session `prompt()` turn.
  */
 export interface RuntimeEventBase {
   runId: string
@@ -78,6 +78,46 @@ export interface RuntimeQuery {
   command?: string
 }
 
+export interface RuntimePermissionRequest extends RuntimeEventBase {
+  requestId: string
+  sessionId: string
+  toolCallId: string
+  title: string
+  toolName?: string
+  kind?: string
+  input?: unknown
+  /** Only choices permitted by the configured tools policy are offered. */
+  options: Array<{
+    optionId: string
+    name: string
+    kind: "allow_once" | "allow_always" | "reject_once" | "reject_always"
+  }>
+}
+
+/** Return an offered option id, or undefined to cancel/deny. Never grant outside the tools policy. */
+export type RuntimePermissionHandler = (
+  request: RuntimePermissionRequest,
+  signal: AbortSignal
+) => Promise<string | undefined>
+
+export interface RuntimeQuestionRequest extends RuntimeEventBase {
+  requestId: string
+  sessionId: string
+  toolCallId?: string
+  message: string
+  requestedSchema: import("@agentclientprotocol/sdk").ElicitationSchema
+}
+
+export type RuntimeQuestionResponse =
+  | { action: "accept"; content: Record<string, string | number | boolean | string[]> }
+  | { action: "decline" | "cancel" }
+
+/** Structured form input only; the signal aborts when the requesting turn ends. */
+export type RuntimeQuestionHandler = (
+  request: RuntimeQuestionRequest,
+  signal: AbortSignal
+) => Promise<RuntimeQuestionResponse>
+
 export interface AgentTask {
   agentId: string
   systemPrompt: string
@@ -87,6 +127,10 @@ export interface AgentTask {
   timeout: number
   signal?: AbortSignal
   onEvent?: (event: RuntimeEvent) => void
+  /** Automatic tools policy by default; ask without a handler denies. */
+  permissionMode?: "auto" | "ask" | "deny"
+  onPermission?: RuntimePermissionHandler
+  onQuestion?: RuntimeQuestionHandler
   /**
    * Non-fatal diagnostics the runtime wants the caller to surface.
    *
@@ -125,8 +169,54 @@ export interface AgentOutput {
   stopReason?: string
 }
 
+/** Immutable agent configuration shared by all turns in an open session. */
+export type RuntimeSessionOptions = Omit<
+  AgentTask,
+  "prompt" | "onEvent" | "signal" | "timeout" | "permissionMode" | "onPermission" | "onQuestion"
+> & {
+  /** Immutable negotiated form capability; callbacks remain turn-local. */
+  questionForms?: boolean
+  /** Lifetime cancellation, including startup and idle time; closes the session. */
+  signal?: AbortSignal
+  /** Startup deadline and default per-turn timeout in ms (ACP defaults to 600,000). */
+  timeout?: number
+}
+
+export interface RuntimePromptOptions {
+  /** Cancels only this turn. A cooperative provider leaves the session reusable. */
+  signal?: AbortSignal
+  /** Overrides the session's default per-turn deadline. */
+  timeout?: number
+  /** Turn-local events, with a fresh runId and sequence counter. */
+  onEvent?: (event: RuntimeEvent) => void
+  /** Waiting uses the existing turn timeout; it does not pause the deadline. */
+  permissionMode?: "auto" | "ask" | "deny"
+  onPermission?: RuntimePermissionHandler
+  onQuestion?: RuntimeQuestionHandler
+}
+
+/** Caller-owned live session. Always await close() in a finally block. */
+export interface RuntimeSession {
+  readonly sessionId: string
+  readonly state: "idle" | "running" | "cancelling" | "closing" | "closed"
+  /** Continuation is sequential; supplement would mean supported mid-turn input. */
+  readonly capabilities: { continuation: boolean; supplement: boolean }
+  /** Rejects overlapping turns; it does not implicitly queue or inject input. */
+  prompt(text: string, options?: RuntimePromptOptions): Promise<AgentOutput>
+  /**
+   * Idempotently cancels the current turn and waits for its terminal response.
+   * ACP closes uncooperative providers after a grace period; cleanup failure rejects.
+   * Idle cancellation is a no-op. The prompt may reject independently.
+   */
+  cancelTurn(): Promise<void>
+  /** Idempotent cleanup barrier; rejects if process cleanup cannot be acknowledged. */
+  close(): Promise<void>
+}
+
 export interface AgentRuntime {
   readonly name: string
   describe(options?: RuntimeQuery): Promise<RuntimeInfo>
   execute(task: AgentTask): Promise<AgentOutput>
+  /** Optional live-session API; existing execute-only runtimes remain compatible. */
+  openSession?(options: RuntimeSessionOptions): Promise<RuntimeSession>
 }

@@ -81,15 +81,15 @@ export function resumeOptionsFromReport(
   report: OrchestratorResult,
   requirementOverride?: string
 ): { requirement: string; resume: NonNullable<MultiClawConfig["resume"]> } {
-  // De-duped defensively: one agent runs once per turn, but a report assembled
-  // by hand should not be able to make `resume.agents` name an agent twice.
-  const agents = [...new Set(report.agentResults.map((result) => result.agentId))]
+  // A review loop records every pass; only the latest result owns a resumable session.
+  const latest = new Map(report.agentResults.map((result) => [result.agentId, result]))
+  const agents = [...latest.keys()].filter((id) => id !== report.acceptance?.reviewer)
   if (agents.length === 0) {
     throw new Error("The previous run has no agent results — nothing to resume")
   }
 
   const sessions: Record<string, string> = {}
-  for (const result of report.agentResults) {
+  for (const result of latest.values()) {
     if (result.sessionId) sessions[result.agentId] = result.sessionId
   }
 

@@ -20,7 +20,10 @@ class FakeChild extends EventEmitter {
   stdin = new PassThrough()
   stdout = new PassThrough()
   stderr = new EventEmitter()
-  kill = vi.fn()
+  kill = vi.fn(() => {
+    queueMicrotask(() => this.emit("close", 0))
+    return true
+  })
 }
 
 function attachAgent(child: FakeChild, initialize?: () => unknown): void {

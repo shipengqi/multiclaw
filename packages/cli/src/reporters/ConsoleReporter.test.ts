@@ -194,6 +194,37 @@ describe("ConsoleReporter", () => {
     expect(out()).toContain("README.md (modified, 34 bytes)")
   })
 
+  it.each([
+    ["approved", "Approved"],
+    ["changes_required", "Changes required"],
+    ["failed", "Acceptance failed"],
+    ["cancelled", "Acceptance cancelled"],
+  ])("reports acceptance %s separately from execution", (status, title) => {
+    reporter().emit(
+      event("orchestration:complete", {
+        success: status === "approved",
+        totalDuration: 1000,
+        agentResults: [],
+        acceptance: {
+          status,
+          reviewer: "qa",
+          repairRounds: 1,
+          reason: "Review gate outcome",
+          reviews: [
+            { verdict: "changes_required", summary: "Missing tests", issues: ["Add tests"] },
+          ],
+        },
+      })
+    )
+    expect(out()).toContain(title)
+    expect(out()).toContain("Reviewer: qa  Repair rounds: 1")
+    expect(out()).toContain("Review gate outcome")
+    expect(out()).toContain("Missing tests")
+    expect(out()).toContain("Add tests")
+    expect(out()).not.toContain("All done")
+    expect(out()).not.toContain("Done (with failures)")
+  })
+
   it("flags a failed orchestration", () => {
     reporter().emit(
       event("orchestration:complete", {

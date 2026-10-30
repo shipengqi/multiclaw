@@ -8,6 +8,7 @@ import type { AgentDefinition } from "../types/agent"
 import type { MultiClawConfig, TurnRecord } from "../types/config"
 import type { MultiClawEvent } from "../types/event"
 import type { AgentOutput, AgentTask } from "../types/runtime"
+import { AgentSessionManager } from "./AgentSessionManager"
 import { Orchestrator } from "./Orchestrator"
 
 const RUNTIME = "test-orchestrator-run"
@@ -59,6 +60,307 @@ const regroupedStages = (events: MultiClawEvent[]) =>
         e.type === "orchestration:stages"
     )
     .map((e) => e.payload.stages.map((s) => s.agents.map((a) => a.id)))
+
+describe("review-gated orchestration", () => {
+  it("accepts one terminal verdict code block after streamed tool narration", async () => {
+    handler = async (task) => ({
+      output:
+        task.agentId === "reviewer"
+          ? 'I will read the file.\nThe artifact is verified.\n```json\n{"verdict":"approved","summary":"Checked","issues":[]}\n```'
+          : "work",
+      exitCode: 0,
+    })
+    const { result } = await runOrch([agent("worker"), agent("reviewer")], {
+      review: { reviewer: "reviewer", repairAgents: ["worker"] },
+    })
+    expect(result.success).toBe(true)
+    expect(result.acceptance?.status).toBe("approved")
+  })
+
+  it.each([
+    '```json\n{"verdict":"changes_required","summary":"Fix","issues":["Bug"]}\n```\n```json\n{"verdict":"approved","summary":"Checked","issues":[]}\n```',
+    '```json\n{"verdict":"approved","summary":"Checked","issues":[]}\n```\nActually do not approve this.',
+  ])("rejects ambiguous or nonterminal verdict blocks", async (output) => {
+    handler = async (task) => ({
+      output: task.agentId === "reviewer" ? output : "work",
+      exitCode: 0,
+    })
+    const { result } = await runOrch([agent("worker"), agent("reviewer")], {
+      review: { reviewer: "reviewer", repairAgents: ["worker"] },
+    })
+    expect(result.acceptance?.status).toBe("failed")
+  })
+
+  it("reuses live worker and reviewer sessions throughout repair and the next turn", async () => {
+    const runtimeName = "test-review-live-sessions"
+    const opened: string[] = []
+    const prompts: string[] = []
+    let reviews = 0
+    runtimeRegistry.register({
+      ...fakeRuntime(runtimeName, async () => {
+        throw new Error("one-shot execution should not run")
+      }),
+      openSession: async (options) => {
+        opened.push(options.agentId)
+        return {
+          sessionId: `review-session:${options.agentId}`,
+          state: "idle" as const,
+          capabilities: { continuation: true, supplement: false },
+          prompt: async (text) => {
+            prompts.push(text)
+            return {
+              output:
+                options.agentId === "reviewer"
+                  ? JSON.stringify({
+                      verdict: ++reviews === 1 ? "changes_required" : "approved",
+                      summary: "Checked",
+                      issues: reviews === 1 ? ["Fix bug"] : [],
+                    })
+                  : "work",
+              exitCode: 0,
+            }
+          },
+          cancelTurn: async () => {},
+          close: async () => {},
+        }
+      },
+    })
+    const sessions = new AgentSessionManager()
+    const config: MultiClawConfig = {
+      name: "live-review",
+      workDir,
+      agents: [
+        agent("worker", { runtime: runtimeName }),
+        agent("reviewer", { runtime: runtimeName }),
+      ],
+      review: { reviewer: "reviewer", repairAgents: ["worker"] },
+    }
+    try {
+      expect((await new Orchestrator(config, sessions).run()).success).toBe(true)
+      expect((await new Orchestrator(config, sessions).run()).success).toBe(true)
+      expect(opened).toEqual(["worker", "reviewer"])
+      expect(prompts).toHaveLength(6)
+      expect(prompts[2]).toContain("Fix bug")
+    } finally {
+      await sessions.close()
+    }
+  })
+
+  it("previews the reserved final reviewer without running workers", async () => {
+    const orch = new Orchestrator({
+      name: "preview-review",
+      workDir,
+      agents: [agent("worker"), agent("reviewer")],
+      review: { reviewer: "reviewer", repairAgents: ["worker"] },
+    })
+    const preview = await orch.preview()
+    expect(preview.stages.map((stage) => stage.agents.map((a) => a.id))).toEqual([
+      ["worker"],
+      ["reviewer"],
+    ])
+    expect(preview.totalAgents).toBe(2)
+  })
+
+  it("omits the reserved reviewer from leader choices and never marks it skipped", async () => {
+    let leaderPrompt = ""
+    handler = async (task) => {
+      if (task.agentId === "leader") {
+        leaderPrompt = task.prompt
+        return { output: '{"mode":"run","run":["worker"]}', exitCode: 0 }
+      }
+      return {
+        output:
+          task.agentId === "reviewer"
+            ? '{"verdict":"approved","summary":"Checked","issues":[]}'
+            : "work",
+        exitCode: 0,
+      }
+    }
+    const { result, events } = await runOrch([agent("worker"), agent("reviewer")], {
+      leader: agent("leader", { taskPrompt: "{{availableAgents}}" }),
+      review: { reviewer: "reviewer", repairAgents: ["worker"] },
+    })
+    expect(leaderPrompt).not.toContain("reviewer")
+    expect(result.success).toBe(true)
+    expect(
+      events.filter((e) => e.type === "agent:skipped" && e.payload.agentId === "reviewer")
+    ).toHaveLength(0)
+  })
+
+  it("validates policy in preview without launching the leader", async () => {
+    const orch = new Orchestrator({
+      name: "bad-review",
+      workDir,
+      agents: [agent("worker")],
+      review: { reviewer: "missing", repairAgents: ["worker"] },
+    })
+    await expect(orch.preview()).rejects.toThrow("configured non-leader reviewer")
+  })
+
+  it("never marks an ordinary unreviewed pipeline as accepted", async () => {
+    const { result } = await runOrch([agent("worker")])
+    expect(result.success).toBe(true)
+    expect("acceptance" in result).toBe(false)
+  })
+
+  it("allows review-only validation with no repair passes", async () => {
+    handler = async () => ({
+      output: '```json\n{"verdict":"approved","summary":"Checked","issues":[]}\n```',
+      exitCode: 0,
+    })
+    const { result } = await runOrch([agent("worker"), agent("reviewer")], {
+      review: { reviewer: "reviewer", repairAgents: ["worker"], maxRepairRounds: 0 },
+    })
+    expect(result.success).toBe(true)
+    expect(result.acceptance).toMatchObject({ status: "approved", repairRounds: 0 })
+  })
+
+  it("preserves cancellation during review and does not start repairs", async () => {
+    const controller = new AbortController()
+    const seen: string[] = []
+    handler = async (task) => {
+      seen.push(task.agentId)
+      if (task.agentId === "reviewer") controller.abort()
+      return { output: "partial", exitCode: 0 }
+    }
+    const orch = new Orchestrator({
+      name: "cancel-review",
+      workDir,
+      agents: [agent("worker"), agent("reviewer")],
+      review: { reviewer: "reviewer", repairAgents: ["worker"] },
+    })
+    const result = await orch.run({ signal: controller.signal })
+    expect(result.cancelled).toBe(true)
+    expect(result.success).toBe(false)
+    expect(result.acceptance?.status).toBe("cancelled")
+    expect(seen).toEqual(["worker", "reviewer"])
+  })
+
+  it.each(["reviewer", "repair"])("stops when %s execution fails", async (failure) => {
+    let workers = 0
+    handler = async (task) => {
+      const failed =
+        task.agentId === "reviewer" ? failure === "reviewer" : ++workers > 1 && failure === "repair"
+      return {
+        output:
+          task.agentId === "reviewer"
+            ? '{"verdict":"changes_required","summary":"Fix","issues":["Bug"]}'
+            : "work",
+        exitCode: failed ? 1 : 0,
+      }
+    }
+    const { result } = await runOrch([agent("worker"), agent("reviewer")], {
+      review: { reviewer: "reviewer", repairAgents: ["worker"] },
+    })
+    expect(result.success).toBe(false)
+    expect(result.acceptance?.status).toBe("failed")
+    expect(result.agentResults).toHaveLength(failure === "reviewer" ? 2 : 3)
+  })
+
+  const review = { reviewer: "reviewer", repairAgents: ["worker"], maxRepairRounds: 1 }
+  const verdict = (approved: boolean) =>
+    JSON.stringify({
+      verdict: approved ? "approved" : "changes_required",
+      summary: approved ? "Verified" : "Fix validation",
+      issues: approved ? [] : ["Missing input validation"],
+    })
+
+  it("reserves the reviewer and repairs before accepting, preserving every cost and output", async () => {
+    const seen: AgentTask[] = []
+    let reviews = 0
+    handler = async (task) => {
+      seen.push(task)
+      return {
+        output: task.agentId === "reviewer" ? verdict(++reviews > 1) : `worker:${seen.length}`,
+        exitCode: 0,
+        costUsd: 0.25,
+      }
+    }
+    const { result, events } = await runOrch([agent("worker"), agent("reviewer")], {
+      review,
+      context: { requirement: "Build a validated API" },
+    })
+    expect(seen.map((task) => task.agentId)).toEqual(["worker", "reviewer", "worker", "reviewer"])
+    expect(seen[2].prompt).toContain("Missing input validation")
+    expect(seen[2].prompt).toContain("Build a validated API")
+    expect(seen[3].prompt).toContain("worker:3")
+    expect(seen[3].prompt).not.toContain("worker:1")
+    expect(result.acceptance).toMatchObject({
+      status: "approved",
+      repairRounds: 1,
+      reviews: [{ verdict: "changes_required" }, { verdict: "approved" }],
+    })
+    expect(result.success).toBe(true)
+    expect(result.agentResults).toHaveLength(4)
+    expect(result.totalCostUsd).toBe(1)
+    expect(events.filter((event) => event.type === "orchestration:complete")).toHaveLength(1)
+  })
+
+  it("blocks approval when the repair budget is exhausted", async () => {
+    handler = async (task) => ({
+      output: task.agentId === "reviewer" ? verdict(false) : "work",
+      exitCode: 0,
+    })
+    const { result } = await runOrch([agent("worker"), agent("reviewer")], { review })
+    expect(result.success).toBe(false)
+    expect(result.acceptance).toMatchObject({ status: "changes_required", repairRounds: 1 })
+    expect(result.agentResults).toHaveLength(4)
+  })
+
+  it.each(["Approved", "{}", '{"verdict":"approved","summary":"ok","issues":["Unresolved"]}'])(
+    "fails closed for invalid verdict %s",
+    async (output) => {
+      handler = async (task) => ({
+        output: task.agentId === "reviewer" ? output : "work",
+        exitCode: 0,
+      })
+      const { result } = await runOrch([agent("worker"), agent("reviewer")], { review })
+      expect(result.success).toBe(false)
+      expect(result.acceptance?.status).toBe("failed")
+      expect(result.agentResults).toHaveLength(2)
+    }
+  )
+
+  it("does not run a reviewer after pipeline failure", async () => {
+    handler = async () => ({ output: "partial", exitCode: 1 })
+    const { result } = await runOrch([agent("worker"), agent("reviewer")], { review })
+    expect(result.acceptance?.status).toBe("failed")
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["worker"])
+  })
+
+  it("rejects invalid policy before launching agents", async () => {
+    const seen: string[] = []
+    handler = async (task) => {
+      seen.push(task.agentId)
+      return { output: "work", exitCode: 0 }
+    }
+    const { result } = await runOrch([agent("worker"), agent("reviewer")], {
+      review: { ...review, maxRepairRounds: -1 },
+    })
+    expect(result.success).toBe(false)
+    expect(result.acceptance?.status).toBe("failed")
+    expect(seen).toEqual([])
+  })
+
+  it("does not widen a leader-selected task during repair", async () => {
+    handler = async (task) => ({
+      output:
+        task.agentId === "leader"
+          ? '{"mode":"run","run":["other"]}'
+          : task.agentId === "reviewer"
+            ? verdict(false)
+            : "work",
+      exitCode: 0,
+    })
+    const { result } = await runOrch([agent("worker"), agent("other"), agent("reviewer")], {
+      review,
+      leader: agent("leader"),
+    })
+    expect(result.success).toBe(false)
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["other", "reviewer"])
+    expect(result.acceptance?.status).toBe("changes_required")
+  })
+})
 
 describe("Orchestrator.run", () => {
   it("runs independent agents and reports overall success", async () => {
@@ -567,6 +869,66 @@ describe("Orchestrator.run", () => {
     expect(result.success).toBe(true)
   })
 
+  it.each([
+    null,
+    42,
+    { tasks: [null] },
+    { tasks: [{ id: "dev", dependsOn: "architect" }] },
+    { tasks: [{ id: "dev", dependsOn: [42] }] },
+    { tasks: [{ id: "dev", plan: "implement" }] },
+    { tasks: [{ id: "dev", plan: [null] }] },
+    { tasks: [{ id: "dev", title: {}, scope: 42 }] },
+  ])("ignores malformed model task-plan shapes without crashing: %j", async (plan) => {
+    handler = async (task) => {
+      if (task.agentId === "architect")
+        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+      return { output: "done", exitCode: 0 }
+    }
+    const { result, events } = await runOrch([
+      agent("architect"),
+      agent("dev", { dependsOn: ["architect"], taskTitle: "Original title" }),
+    ])
+    expect(result.success).toBe(true)
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["architect", "dev"])
+    expect(warningsOf(events).length).toBeGreaterThan(0)
+    expect(
+      events.find((e) => e.type === "agent:start" && e.payload.agentId === "dev")?.payload
+    ).toMatchObject({ taskTitle: "Original title" })
+    expect(events.filter((e) => e.type === "orchestration:complete")).toHaveLength(1)
+  })
+
+  it("keeps valid tasks while warning and ignoring malformed, duplicate, and unknown entries", async () => {
+    handler = async (task) => {
+      if (task.agentId === "architect")
+        fs.writeFileSync(
+          path.join(workDir, "task-plan.json"),
+          JSON.stringify({
+            tasks: [
+              null,
+              { id: "dev", title: "Valid title", scope: "Valid scope", plan: ["Implement"] },
+              { id: "dev", title: "Duplicate title" },
+              { id: "ghost", title: "Unknown task" },
+            ],
+          })
+        )
+      return { output: "done", exitCode: 0 }
+    }
+    const { result, events } = await runOrch([
+      agent("architect"),
+      agent("dev", { dependsOn: ["architect"] }),
+    ])
+    expect(result.success).toBe(true)
+    expect(
+      events.find((e) => e.type === "agent:start" && e.payload.agentId === "dev")?.payload
+    ).toMatchObject({ taskTitle: "Valid title" })
+    const messages = warningsOf(events)
+      .map((e) => e.payload.message)
+      .join("\n")
+    expect(messages).toMatch(/malformed/)
+    expect(messages).toMatch(/duplicate/i)
+    expect(messages).toContain("ghost")
+  })
+
   it("fails loudly when the leader selects no configured agent", async () => {
     handler = async (task) =>
       task.agentId === "leader"
@@ -823,6 +1185,272 @@ describe("Orchestrator.run · a turn that ends in words", () => {
     const complete = events.find((e) => e.type === "orchestration:complete")
     expect(complete?.payload).toMatchObject({
       reply: { mode: "reply", message: "just a greeting" },
+    })
+  })
+})
+
+describe("Orchestrator.run · regression boundaries", () => {
+  it("uses the complete leader requirement without mutating the raw input", async () => {
+    const effective = "Build a web app using Postgres, without authentication"
+    const prompts: Record<string, string> = {}
+    handler = async (task) => {
+      prompts[task.agentId] = task.prompt
+      return {
+        output:
+          task.agentId === "leader"
+            ? JSON.stringify({ mode: "run", run: ["dev"], requirement: effective })
+            : "done",
+        exitCode: 0,
+      }
+    }
+    const config: MultiClawConfig = {
+      name: "test",
+      workDir,
+      leader: agent("leader"),
+      agents: [agent("dev", { taskPrompt: "{{requirement}}" })],
+      context: { requirement: "Postgres, without authentication" },
+      history: [
+        { requirement: "Build a web app", reply: { mode: "ask", message: "Which database?" } },
+      ],
+    }
+    const preview = await new Orchestrator(config).preview()
+    expect(preview.requirement).toBe(effective)
+    const orch = new Orchestrator(config)
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => events.push(e))
+    const result = await orch.run()
+    expect(result.requirement).toBe(effective)
+    expect(events.find((e) => e.type === "orchestration:start")?.payload).toMatchObject({
+      requirement: effective,
+    })
+    expect(prompts.dev).toContain(effective)
+    expect(config.context?.requirement).toBe("Postgres, without authentication")
+  })
+
+  it("never starts an agent for a pre-aborted run", async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const orch = new Orchestrator({
+      name: "test",
+      workDir,
+      leader: agent("leader"),
+      agents: [agent("a")],
+    })
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => events.push(e))
+    const result = await orch.run({ signal: controller.signal })
+    expect(result).toMatchObject({ success: false, cancelled: true, agentResults: [] })
+    expect(startedIds(events)).toEqual([])
+    expect(events.map((e) => e.type)).toEqual(["orchestration:complete"])
+  })
+
+  it("does not fall back to the team when the provider cancels the leader", async () => {
+    handler = async () => ({ output: "", exitCode: 0, stopReason: "cancelled" })
+    const { result, events } = await runOrch([agent("a")], { leader: agent("leader") })
+    expect(result).toMatchObject({ success: false, cancelled: true, agentResults: [] })
+    expect(startedIds(events)).toEqual(["leader"])
+    expect(warningsOf(events)).toEqual([])
+  })
+
+  it("stops after the leader is aborted rather than answering or running", async () => {
+    const controller = new AbortController()
+    handler = async () => {
+      controller.abort()
+      return { output: '{"mode":"reply","message":"done"}', exitCode: 0 }
+    }
+    const orch = new Orchestrator({
+      name: "test",
+      workDir,
+      leader: agent("leader"),
+      agents: [agent("a")],
+    })
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => events.push(e))
+    const result = await orch.run({ signal: controller.signal })
+    expect(result).toMatchObject({ success: false, cancelled: true, agentResults: [] })
+    expect(result.reply).toBeUndefined()
+    expect(startedIds(events)).toEqual(["leader"])
+    expect(events.map((e) => e.type)).not.toContain("orchestration:start")
+  })
+
+  it("does not start later stages after provider cancellation", async () => {
+    handler = async () => ({ output: "", exitCode: 0, stopReason: "cancelled" })
+    const { result, events } = await runOrch([agent("a"), agent("b", { dependsOn: ["a"] })], {
+      continueOnError: true,
+    })
+    expect(result).toMatchObject({ success: false, cancelled: true })
+    expect(startedIds(events)).toEqual(["a"])
+    expect(events.filter((e) => e.type === "stage:start")).toHaveLength(1)
+  })
+
+  it("stops dequeuing agents after provider cancellation and returns no holes", async () => {
+    handler = async () => ({ output: "", exitCode: 0, stopReason: "cancelled" })
+    const { result, events } = await runOrch([agent("a"), agent("b"), agent("c")], {
+      maxConcurrency: 1,
+      continueOnError: true,
+    })
+    expect(result).toMatchObject({ success: false, cancelled: true })
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["a"])
+    expect(startedIds(events)).toEqual(["a"])
+    expect(events.map((e) => e.type)).not.toContain("stage:complete")
+  })
+
+  it("waits for started siblings while cancelling queued agents", async () => {
+    let releaseSibling!: () => void
+    const sibling = new Promise<void>((resolve) => {
+      releaseSibling = resolve
+    })
+    handler = async (task) => {
+      if (task.agentId === "a") {
+        await sibling
+        return { output: "done", exitCode: 0 }
+      }
+      releaseSibling()
+      return { output: "", exitCode: 0, stopReason: "cancelled" }
+    }
+    const { result, events } = await runOrch([agent("a"), agent("b"), agent("c"), agent("d")], {
+      maxConcurrency: 2,
+    })
+    expect(result).toMatchObject({ success: false, cancelled: true })
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["a", "b"])
+    expect(startedIds(events)).toEqual(["a", "b"])
+  })
+
+  it("checks cancellation again when a slot is freed", async () => {
+    const controller = new AbortController()
+    handler = async () => {
+      controller.abort()
+      return { output: "done", exitCode: 0 }
+    }
+    const orch = new Orchestrator({
+      name: "test",
+      workDir,
+      agents: [agent("a"), agent("b"), agent("c")],
+      maxConcurrency: 1,
+    })
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => events.push(e))
+    const result = await orch.run({ signal: controller.signal })
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["a"])
+    expect(startedIds(events)).toEqual(["a"])
+  })
+
+  it("stops before a stage when the start event aborts the run", async () => {
+    const controller = new AbortController()
+    const orch = new Orchestrator({ name: "test", workDir, agents: [agent("a")] })
+    const events: MultiClawEvent[] = []
+    orch.eventBus.subscribe((e) => {
+      events.push(e)
+      if (e.type === "orchestration:start") controller.abort()
+    })
+    const result = await orch.run({ signal: controller.signal })
+    expect(result).toMatchObject({ success: false, cancelled: true, agentResults: [] })
+    expect(startedIds(events)).toEqual([])
+    expect(events.map((e) => e.type)).not.toContain("stage:start")
+  })
+
+  it("does not skip or repeat agents when a task plan collapses earlier stages", async () => {
+    handler = async (task) => {
+      if (task.agentId === "architect")
+        fs.writeFileSync(
+          path.join(workDir, "task-plan.json"),
+          JSON.stringify({
+            tasks: [
+              { id: "architect", dependsOn: [] },
+              { id: "dev", dependsOn: [] },
+              { id: "review", dependsOn: ["dev"] },
+            ],
+          })
+        )
+      return { output: "done", exitCode: 0 }
+    }
+    const { result, events } = await runOrch([
+      agent("pm"),
+      agent("architect", { dependsOn: ["pm"] }),
+      agent("dev", { dependsOn: ["architect"] }),
+      agent("review", { dependsOn: ["dev"] }),
+    ])
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["pm", "architect", "dev", "review"])
+    expect(startedIds(events)).toEqual(["pm", "architect", "dev", "review"])
+    expect(regroupedStages(events)).toEqual([[["pm"], ["architect"], ["dev"], ["review"]]])
+    expect(events.filter((e) => e.type === "stage:start").map((e) => e.payload)).toEqual([
+      { stageIndex: 0, agentIds: ["pm"] },
+      { stageIndex: 1, agentIds: ["architect"] },
+      { stageIndex: 2, agentIds: ["dev"] },
+      { stageIndex: 3, agentIds: ["review"] },
+    ])
+    expect(
+      events.filter((e) => e.type === "stage:complete").map((e) => e.payload.stageIndex)
+    ).toEqual([0, 1, 2, 3])
+  })
+
+  it("does not repeat completed agents when a task plan moves them later", async () => {
+    handler = async (task) => {
+      if (task.agentId === "architect")
+        fs.writeFileSync(
+          path.join(workDir, "task-plan.json"),
+          JSON.stringify({
+            tasks: [
+              { id: "pm", dependsOn: ["dev"] },
+              { id: "architect", dependsOn: [] },
+              { id: "dev", dependsOn: ["architect"] },
+            ],
+          })
+        )
+      return { output: "done", exitCode: 0 }
+    }
+    const { result, events } = await runOrch([
+      agent("pm"),
+      agent("architect", { dependsOn: ["pm"] }),
+      agent("dev", { dependsOn: ["architect"] }),
+    ])
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["pm", "architect", "dev"])
+    expect(startedIds(events)).toEqual(["pm", "architect", "dev"])
+  })
+
+  it("ignores new completed-agent dependencies when ordering remaining work", async () => {
+    handler = async (task) => {
+      if (task.agentId === "architect")
+        fs.writeFileSync(
+          path.join(workDir, "task-plan.json"),
+          JSON.stringify({
+            tasks: [
+              { id: "pm", title: "Changed completed title", dependsOn: ["x"] },
+              { id: "x", dependsOn: ["architect"] },
+              { id: "y", dependsOn: ["x"] },
+            ],
+          })
+        )
+      return { output: "done", exitCode: 0 }
+    }
+    const { result, events } = await runOrch([
+      agent("pm", { taskTitle: "Original completed title" }),
+      agent("architect", { dependsOn: ["pm"] }),
+      agent("y", { dependsOn: ["architect"] }),
+      agent("x", { dependsOn: ["architect"] }),
+    ])
+    expect(result.agentResults.map((r) => r.agentId)).toEqual(["pm", "architect", "x", "y"])
+    expect(warningsOf(events)).toEqual([])
+    expect(regroupedStages(events)).toEqual([[["pm"], ["architect"], ["x"], ["y"]]])
+    const regrouped = events.find((e) => e.type === "orchestration:stages")
+    expect(regrouped?.payload.stages[0].agents[0].taskTitle).toBe("Original completed title")
+  })
+
+  it("runs broken dependency graphs truly sequentially", async () => {
+    const order: string[] = []
+    handler = async (task) => {
+      order.push(`start:${task.agentId}`)
+      await Promise.resolve()
+      order.push(`end:${task.agentId}`)
+      return { output: "done", exitCode: 0 }
+    }
+    const { events } = await runOrch([agent("a", { dependsOn: ["missing"] }), agent("b")])
+    expect(order).toEqual(["start:a", "end:a", "start:b", "end:b"])
+    expect(events.find((e) => e.type === "orchestration:start")?.payload).toMatchObject({
+      stages: [
+        { stageIndex: 0, agents: [{ id: "a" }] },
+        { stageIndex: 1, agents: [{ id: "b" }] },
+      ],
     })
   })
 })

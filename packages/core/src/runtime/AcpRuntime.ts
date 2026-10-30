@@ -11,80 +11,37 @@ import type {
   RuntimeEvent,
   RuntimeEventBase,
   RuntimeInfo,
+  RuntimePromptOptions,
   RuntimeQuery,
+  RuntimeSession,
+  RuntimeSessionOptions,
 } from "../types/runtime"
 import { abortError } from "../utils/abort"
 import { PermanentError } from "../utils/errors"
 import { RuntimeBase } from "./RuntimeBase"
 
-/**
- * Cache of model ids discovered per command, to avoid re-asking every session.
- *
- * Module-level, so it lives for the whole process. The key is the command, and a
- * command resolves to the same binary every time within one process —
- * `resolveExecutable` is a pure function of the command, `PATH` and the
- * filesystem, and `exe = resolveExecutable(command) ?? command` is a 1:1
- * function of `command` on every branch — so this key is reliable. Its size is
- * bounded by the number of distinct commands a run touches (one to four in
- * practice), so no eviction is needed.
- *
- * Known limitation, recorded rather than fixed: the list comes from a single
- * `session/new`'s `configOptions` and is then reused for every later session of
- * that binary. If a provider's advertised list changes between sessions (e.g.
- * with the account or subscription), the cached list goes stale — and the check
- * below only emits a `warn(...)` and *skips* `setConfigOption` when the
- * configured model is absent, so the configured model would not take effect (a
- * warning is raised, but the model the user asked for is not applied).
- * Verifying that needs a real agent, so it is documented, not patched.
- */
+/** Model ids advertised by each command's session/new response. */
 const discoveredModels = new Map<string, string[]>()
 
-/**
- * Grace period between SIGTERM and SIGKILL when an agent will not stop.
- *
- * This is time a single attempt can still consume *after* its `timeout`: the
- * inner timeout fires a SIGTERM, and a child that ignores it is not reaped until
- * this grace elapses — the reject itself lands on the child's `close`. A caller
- * that budgets for a whole retry sequence must therefore add this to the
- * per-attempt timeout, or its "upper bound" is not one (see `retryBudgetMs`).
- */
+/** Grace period between SIGTERM and SIGKILL during process cleanup. */
 export const KILL_ESCALATION_MS = 3000
-
-/**
- * Grace period between asking the agent to cancel (`session/cancel`) and killing
- * its process group. A well-behaved agent stops the turn on its own; this is the
- * fallback for one that does not.
- */
 const CANCEL_GRACE_MS = 2000
-
-/** Default ACP agent: opencode speaks ACP natively under `opencode acp`. */
+const CLEANUP_ACK_MS = 3000
+const DEFAULT_TIMEOUT_MS = 600_000
 const DEFAULT_COMMAND = "opencode"
 const DEFAULT_ARGS = ["acp"]
 
-/** A `RuntimeEvent` before the emitter supplies its per-run envelope. */
 type RuntimeEventPayload = RuntimeEvent extends infer E
   ? E extends RuntimeEventBase
     ? Omit<E, keyof RuntimeEventBase>
     : never
   : never
 
-/** The SDK module, imported lazily (see `execute`). */
 type AcpModule = typeof import("@agentclientprotocol/sdk")
 type AcpSessionNotification = import("@agentclientprotocol/sdk").SessionNotification
 type AcpPermissionRequest = import("@agentclientprotocol/sdk").RequestPermissionRequest
 type AcpPermissionResponse = import("@agentclientprotocol/sdk").RequestPermissionResponse
 
-/**
- * What *this adapter* implements — not what an ACP agent could do.
- *
- * `permissions` is true: a `session/request_permission` is answered against
- * `task.tools` — a tool named there is approved and everything else is rejected
- * (see `decidePermission`). `models` is false because ACP negotiates no model
- * here; `images` is false because image blocks are not mapped. `resume` is true
- * because a set `sessionId` drives `session/load`.
- *
- * `tools` is set per provider at describe time — see `specForCommand`.
- */
 const BASE_CAPABILITIES: RuntimeCapabilities = {
   streaming: true,
   sessions: true,
@@ -102,7 +59,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-/** Text of an ACP content block, or undefined when it is not a text block. */
 function textOf(content: unknown): string | undefined {
   if (isRecord(content) && content.type === "text" && typeof content.text === "string") {
     return content.text
@@ -110,14 +66,12 @@ function textOf(content: unknown): string | undefined {
   return undefined
 }
 
-/** Render arbitrary tool output as the string the `tool_result` event carries. */
 function stringifyOutput(value: unknown): string {
   if (typeof value === "string") return value
   if (value === undefined || value === null) return ""
   return JSON.stringify(value)
 }
 
-/** Map an ACP `stopReason` onto the runtime union. */
 function mapStopReason(reason: string): "success" | "max_turns" | "cancelled" | "error" {
   switch (reason) {
     case "end_turn":
@@ -128,21 +82,10 @@ function mapStopReason(reason: string): "success" | "max_turns" | "cancelled" | 
     case "max_turn_requests":
       return "max_turns"
     default:
-      // "refusal" and anything unknown: the agent did not complete the task.
       return "error"
   }
 }
 
-/**
- * Claude tool names an ACP `ToolKind` stands for.
- *
- * A fallback only: `claude-agent-acp` always sends the real tool name, so
- * `name` is the primary path (verified against the live bridge — its `Write`
- * and `Bash` permission requests both carried `name`). A bridge that omits
- * `name` still gets a chance here. `delete`, `move`, `think`, `switch_mode`
- * and `other` map to nothing — no Claude tool corresponds to them, so they
- * fail closed.
- */
 const KIND_TO_TOOLS: Record<string, string[]> = {
   read: ["Read"],
   edit: ["Edit", "Write"],
@@ -151,7 +94,6 @@ const KIND_TO_TOOLS: Record<string, string[]> = {
   fetch: ["WebFetch"],
 }
 
-/** The tool a permission request was rejected for — surfaced as a visible event. */
 interface RejectedPermission {
   toolCallId: string
   name?: string
@@ -159,22 +101,17 @@ interface RejectedPermission {
   title?: string
 }
 
-/**
- * Answer a `session/request_permission` against `task.tools`.
- *
- * A tool is approved only when it
- * is named in `tools`, and everything else is rejected — fail-closed, so an
- * unidentifiable request never widens the agent's reach.
- *
- * Identification is name-first. The live `claude-agent-acp` bridge always sends
- * the real Claude tool name, so a name that is absent from `tools` is a
- * rejection, not a prompt to consult `kind`; `kind` is only a fallback for a
- * bridge that omits `name` entirely. A request carrying another session's id is
- * not ours to answer and is cancelled rather than silently ignored.
- *
- * The decision is synchronous — the handler returns the outcome directly — so
- * there is no pending-request state to track or clean up.
- */
+function toolPermitted(params: AcpPermissionRequest, tools: string[]): boolean {
+  const allowed = new Set(tools.map((tool) => tool.toLowerCase()))
+  const name = params.toolCall.name ?? undefined
+  return name !== undefined
+    ? allowed.has(name.toLowerCase())
+    : (KIND_TO_TOOLS[params.toolCall.kind ?? ""] ?? []).some((tool) =>
+        allowed.has(tool.toLowerCase())
+      )
+}
+
+/** Approve named tools only; unidentified requests fail closed. */
 function decidePermission(
   params: AcpPermissionRequest,
   tools: string[],
@@ -183,29 +120,16 @@ function decidePermission(
   if (sessionId !== undefined && params.sessionId !== sessionId) {
     return { response: { outcome: { outcome: "cancelled" } } }
   }
-
-  const allowed = new Set(tools.map((tool) => tool.toLowerCase()))
   const name = params.toolCall.name ?? undefined
   const kind = params.toolCall.kind ?? undefined
-  const approved =
-    name !== undefined
-      ? allowed.has(name.toLowerCase())
-      : (KIND_TO_TOOLS[kind ?? ""] ?? []).some((candidate) => allowed.has(candidate.toLowerCase()))
-
-  // Prefer the durable option in the direction the decision went; an empty or
-  // one-directional `options` list must not throw.
-  const option = approved
-    ? (params.options.find((o) => o.kind === "allow_always") ??
-      params.options.find((o) => o.kind === "allow_once"))
-    : (params.options.find((o) => o.kind === "reject_always") ??
-      params.options.find((o) => o.kind === "reject_once"))
-
-  // No option in the needed direction: cancel rather than fall back to the
-  // opposite one, which would be the agent's decision to make, not ours.
+  const approved = toolPermitted(params, tools)
+  // Automatic policy never changes provider/session-wide permission settings.
+  const option = params.options.find((o) =>
+    approved ? o.kind === "allow_once" : o.kind === "reject_once"
+  )
   const response: AcpPermissionResponse = option
     ? { outcome: { outcome: "selected", optionId: option.optionId } }
     : { outcome: { outcome: "cancelled" } }
-
   if (approved) return { response }
   return {
     response,
@@ -218,14 +142,151 @@ function decidePermission(
   }
 }
 
-/**
- * Add a login hint to a JSON-RPC "authentication required" error.
- *
- * `claude-agent-acp` reuses the ambient Claude Code login and advertises no ACP
- * login flow (`authMethods: []`), so the SDK's bare "Authentication required"
- * is a dead end for the user. Detected by the SDK's own error code — the client
- * rejects a failed request with a real `RequestError` — not by matching text.
- */
+const FORM_ANNOTATIONS = ["title", "description", "default", "_meta"]
+function knownFormKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key) || FORM_ANNOTATIONS.includes(key))
+}
+function validFormBound(value: unknown, integer = false): boolean {
+  return (
+    value == null ||
+    (typeof value === "number" &&
+      Number.isFinite(value) &&
+      (!integer || (Number.isInteger(value) && value >= 0)))
+  )
+}
+function titledChoices(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (option) =>
+        isRecord(option) && knownFormKeys(option, ["const"]) && typeof option.const === "string"
+    )
+  )
+}
+
+function supportedQuestionSchema(
+  schema: unknown
+): schema is import("@agentclientprotocol/sdk").ElicitationSchema {
+  if (
+    !isRecord(schema) ||
+    (schema.type !== undefined && schema.type !== "object") ||
+    !knownFormKeys(schema, ["type", "properties", "required"])
+  )
+    return false
+  const properties = schema.properties ?? {}
+  if (!isRecord(properties)) return false
+  if (
+    schema.required != null &&
+    (!Array.isArray(schema.required) ||
+      !schema.required.every(
+        (key) =>
+          typeof key === "string" && Object.getOwnPropertyDescriptor(properties, key) !== undefined
+      ))
+  )
+    return false
+  return Object.values(properties).every((field) => {
+    if (!isRecord(field)) return false
+    if (field.type === "string") {
+      // Formats and regular expressions require a dedicated validator, not guessed semantics.
+      return (
+        knownFormKeys(field, ["type", "enum", "oneOf", "minLength", "maxLength"]) &&
+        validFormBound(field.minLength, true) &&
+        validFormBound(field.maxLength, true) &&
+        (field.enum == null ||
+          (Array.isArray(field.enum) &&
+            field.enum.length > 0 &&
+            field.enum.every((value) => typeof value === "string"))) &&
+        (field.oneOf == null || titledChoices(field.oneOf))
+      )
+    }
+    if (field.type === "boolean") return knownFormKeys(field, ["type"])
+    if (field.type === "number" || field.type === "integer") {
+      return (
+        knownFormKeys(field, ["type", "minimum", "maximum"]) &&
+        validFormBound(field.minimum) &&
+        validFormBound(field.maximum)
+      )
+    }
+    if (
+      field.type !== "array" ||
+      !isRecord(field.items) ||
+      !knownFormKeys(field, ["type", "items", "minItems", "maxItems"]) ||
+      !validFormBound(field.minItems, true) ||
+      !validFormBound(field.maxItems, true)
+    )
+      return false
+    return (
+      (knownFormKeys(field.items, ["type", "enum"]) &&
+        field.items.type === "string" &&
+        Array.isArray(field.items.enum) &&
+        field.items.enum.length > 0 &&
+        field.items.enum.every((value) => typeof value === "string")) ||
+      (knownFormKeys(field.items, ["anyOf"]) &&
+        field.items.type === undefined &&
+        titledChoices(field.items.anyOf))
+    )
+  })
+}
+
+export function validateRuntimeQuestionContent(
+  schema: unknown,
+  content: unknown
+): content is Record<string, string | number | boolean | string[]> {
+  if (!supportedQuestionSchema(schema) || !isRecord(content)) return false
+  // Validate exactly the data that will survive JSON/structured-clone transport.
+  if (
+    Object.getOwnPropertySymbols(content).length > 0 ||
+    Object.getOwnPropertyNames(content).some((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(content, key)
+      return !descriptor?.enumerable || !("value" in descriptor)
+    })
+  )
+    return false
+  const properties = schema.properties ?? {}
+  if (
+    (schema.required ?? []).some(
+      (key) => Object.getOwnPropertyDescriptor(content, key) === undefined
+    )
+  )
+    return false
+  return Object.entries(content).every(([key, value]) => {
+    if (Object.getOwnPropertyDescriptor(properties, key) === undefined) return false
+    const field = properties[key] as Record<string, unknown>
+    if (field.type === "boolean") return typeof value === "boolean"
+    if (field.type === "number" || field.type === "integer") {
+      return (
+        typeof value === "number" &&
+        Number.isFinite(value) &&
+        (field.type !== "integer" || Number.isInteger(value)) &&
+        (typeof field.minimum !== "number" || value >= field.minimum) &&
+        (typeof field.maximum !== "number" || value <= field.maximum)
+      )
+    }
+    if (field.type === "string") {
+      return (
+        typeof value === "string" &&
+        (typeof field.minLength !== "number" || [...value].length >= field.minLength) &&
+        (typeof field.maxLength !== "number" || [...value].length <= field.maxLength) &&
+        (!Array.isArray(field.enum) || field.enum.includes(value)) &&
+        (!Array.isArray(field.oneOf) ||
+          field.oneOf.some((option) => isRecord(option) && option.const === value))
+      )
+    }
+    const items = field.items as Record<string, unknown>
+    const choices = Array.isArray(items.enum)
+      ? items.enum
+      : (items.anyOf as Array<{ const: string }>).map((option) => option.const)
+    return (
+      Array.isArray(value) &&
+      value.every((item) => typeof item === "string" && choices.includes(item)) &&
+      new Set(value).size === value.length &&
+      (typeof field.minItems !== "number" || value.length >= field.minItems) &&
+      (typeof field.maxItems !== "number" || value.length <= field.maxItems)
+    )
+  })
+}
+
 function withAuthHint(acp: AcpModule, err: unknown): Error {
   const error = err instanceof Error ? err : new Error(String(err))
   if (error instanceof acp.RequestError && error.code === acp.RequestError.authRequired().code) {
@@ -234,32 +295,45 @@ function withAuthHint(acp: AcpModule, err: unknown): Error {
   return error
 }
 
-/** Render an unknown error as a string for a diagnostic message. */
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function timeoutMs(value: number | undefined): number {
+  const timeout = value ?? DEFAULT_TIMEOUT_MS
+  if (!Number.isFinite(timeout) || timeout < 0 || timeout > 2_147_483_647) {
+    throw new PermanentError("ACP timeout must be a finite non-negative timer duration")
+  }
+  return timeout
+}
+
+interface ActiveTurn {
+  runId: string
+  seq: number
+  options: RuntimePromptOptions
+  output: string
+  usage?: { contextTokens: number; contextSize: number }
+  cost?: { amount: number; currency: string }
+  error?: Error
+  timer?: NodeJS.Timeout
+  cancelTimer?: NodeJS.Timeout
+  onAbort?: () => void
+  promise: Promise<AgentOutput>
+  resolve: (output: AgentOutput) => void
+  reject: (error: Error) => void
+  cancellation?: Promise<void>
+  decisions: AbortController
 }
 
 export class AcpRuntime extends RuntimeBase {
   readonly name = "acp"
 
   async describe(options?: RuntimeQuery): Promise<RuntimeInfo> {
-    // Deliberately does NOT import the SDK. `describe()` runs at CLI startup
-    // (`assertRuntimesAvailable`), and importing the SDK pulls in zod — measured
-    // at ~5s here — so doing it here would add seconds to every `multiclaw`
-    // launch for an ACP config. Availability is about the agent binary, not the
-    // client library, so a PATH lookup is both cheaper and more accurate.
-    //
-    // The command is caller-supplied: an ACP agent is whatever binary the config
-    // pinned (`opencode`, `codex-acp`, …), so probing the default would report a
-    // perfectly installed non-default agent as missing.
+    // Do not import the SDK at CLI startup; availability is about the binary.
     const command = options?.command ?? DEFAULT_COMMAND
     return {
       name: this.name,
       available: resolveExecutable(command) !== null,
-      // `tools` is the one capability that depends on the bridge: only some of
-      // them read an allowlist out of `_meta`, and none negotiates it. Claiming
-      // it for a bridge that ignores `task.tools` would let a caller believe a
-      // restriction landed when the agent is running unrestricted.
       capabilities: {
         ...BASE_CAPABILITIES,
         tools: specForCommand(command)?.tools ?? false,
@@ -269,174 +343,227 @@ export class AcpRuntime extends RuntimeBase {
   }
 
   async execute(task: AgentTask): Promise<AgentOutput> {
-    // Lazy, never a top-level import: the SDK drags in zod (~5s, ~6MB), so a
-    // static import would tax every CLI startup even for runs that never touch
-    // ACP.
-    const acp: AcpModule = await import("@agentclientprotocol/sdk")
+    const { prompt, onEvent, signal, permissionMode, onPermission, onQuestion, ...options } = task
+    // Startup cancellation must not remain a lifetime listener: once opened,
+    // execute's signal cancels the turn through session/cancel before teardown.
+    const startup = new AbortController()
+    const forward = () => startup.abort()
+    if (signal?.aborted) startup.abort()
+    signal?.addEventListener("abort", forward, { once: true })
+    let session: RuntimeSession
+    try {
+      session = await this.openSession({
+        ...options,
+        questionForms: Boolean(onQuestion),
+        signal: startup.signal,
+      })
+    } finally {
+      signal?.removeEventListener("abort", forward)
+    }
+    try {
+      return await session.prompt(prompt, {
+        signal,
+        timeout: task.timeout,
+        onEvent,
+        permissionMode,
+        onPermission,
+        onQuestion,
+      })
+    } finally {
+      await session.close()
+    }
+  }
 
-    const command = task.command ?? DEFAULT_COMMAND
-    const args = task.args ?? DEFAULT_ARGS
-    // Prefer a binary on the user's PATH; fall back to a bridge multiclaw
-    // bundles. `spawn` accepts either the bare name or an absolute path.
-    const exe = resolveExecutable(command) ?? command
-
-    // The role prompt has no ACP field, so it is delivered one of two ways (see
-    // `specForCommand`). Both are pure functions of the task, so compute them once.
-    const spec = specForCommand(command)
-    const meta = spec?.meta?.(task)
-    // Prefix only when the role prompt had nowhere else to go. `meta ===
-    // undefined` covers an unknown bridge *and* one whose builder produced
-    // nothing (an empty `systemPrompt`), and an empty prompt is never prefixed.
-    const promptText =
-      meta === undefined && task.systemPrompt
-        ? `${task.systemPrompt}\n\n---\n\n${task.prompt}`
-        : task.prompt
-
-    return new Promise<AgentOutput>((resolve, reject) => {
-      const child = spawn(exe, args, {
-        cwd: task.workDir,
+  async openSession(options: RuntimeSessionOptions): Promise<RuntimeSession> {
+    if (options.signal?.aborted) throw abortError()
+    if (options.resume === "fork") {
+      throw new PermanentError("ACP does not support forked sessions")
+    }
+    const defaultTimeout = timeoutMs(options.timeout)
+    const questionForms = options.questionForms === true
+    let startupReject!: (error: Error) => void
+    const startupFailure = new Promise<never>((_, reject) => {
+      startupReject = reject
+    })
+    let failSession: ((error: Error) => void) | undefined
+    const failStartup = (error: Error) => {
+      startupReject(error)
+      failSession?.(error)
+    }
+    const onSessionAbort = () => failStartup(abortError())
+    options.signal?.addEventListener("abort", onSessionAbort, { once: true })
+    const startupTimer = setTimeout(
+      () => failStartup(new Error(`acp startup timed out (${defaultTimeout}ms)`)),
+      defaultTimeout
+    )
+    let cleanup: (() => Promise<void>) | undefined
+    try {
+      // Bound the lazy import too, and recheck abort before spawning anything.
+      const acp = await Promise.race([import("@agentclientprotocol/sdk"), startupFailure])
+      if (options.signal?.aborted) throw abortError()
+      const command = options.command ?? DEFAULT_COMMAND
+      const spec = specForCommand(command)
+      const meta = spec?.meta?.({ ...options, prompt: "", timeout: defaultTimeout })
+      const child = spawn(resolveExecutable(command) ?? command, options.args ?? DEFAULT_ARGS, {
+        cwd: options.workDir,
         env: process.env,
-        // Own process group, so a kill reaches whatever the agent spawned too.
         detached: true,
       })
+      let state: RuntimeSession["state"] = "idle"
+      let sessionId = ""
+      let active: ActiveTurn | undefined
+      let childClosed = false
+      let terminalError: Error | undefined
+      let errorOutput = ""
+      let escalation: NodeJS.Timeout | undefined
+      let acknowledgement: NodeJS.Timeout | undefined
+      let closePromise: Promise<void> | undefined
+      let closeResolve: (() => void) | undefined
+      let closeReject: ((error: Error) => void) | undefined
+      let connection: import("@agentclientprotocol/sdk").ClientConnection | undefined
 
-      /**
-       * Signal the whole group, falling back to the child alone.
-       *
-       * `process.kill(-pid)` throws once the group is gone, and a fake child in
-       * tests has no pid at all — neither is a reason to fail a cancellation.
-       */
-      const signalChild = (signal: NodeJS.Signals) => {
+      const killTree = (signal: NodeJS.Signals) => {
+        if (child.pid !== undefined) {
+          try {
+            process.kill(-child.pid, signal)
+            return
+          } catch {
+            // A fake child or an already-ended group may need the child fallback.
+          }
+        }
         try {
           child.kill(signal)
         } catch {
-          // Already gone.
+          // Already gone; only the close event acknowledges cleanup.
         }
       }
-      const killTree = (signal: NodeJS.Signals) => {
-        if (child.pid === undefined) {
-          signalChild(signal)
-          return
-        }
-        try {
-          process.kill(-child.pid, signal)
-        } catch {
-          signalChild(signal)
-        }
+      const emitForTurn = (turn: ActiveTurn, event: RuntimeEventPayload) => {
+        turn.options.onEvent?.({
+          ...event,
+          runId: turn.runId,
+          agentId: options.agentId,
+          seq: turn.seq++,
+        } as RuntimeEvent)
       }
-
-      let stopped = false
-      let escalation: NodeJS.Timeout | undefined
-      const stop = (signal: NodeJS.Signals) => {
-        if (stopped) return
-        stopped = true
-        killTree(signal)
-        // Escalate for every stop reason — timeout, abort and normal teardown
-        // alike. A long-lived agent that ignores SIGTERM must not linger.
-        escalation = setTimeout(() => killTree("SIGKILL"), KILL_ESCALATION_MS)
-        escalation.unref()
-      }
-
-      let timedOut = false
-      const timer =
-        task.timeout === undefined
-          ? undefined
-          : setTimeout(() => {
-              timedOut = true
-              stop("SIGTERM")
-            }, task.timeout)
-
-      let cancelGrace: NodeJS.Timeout | undefined
-      const clearTimers = () => {
-        if (timer) clearTimeout(timer)
-        if (escalation) clearTimeout(escalation)
-        if (cancelGrace) clearTimeout(cancelGrace)
-      }
-
-      // A fresh id per run, and a counter that orders the events it carries.
-      const runId = randomUUID()
-      let seq = 0
       const emit = (event: RuntimeEventPayload) => {
-        task.onEvent?.({ ...event, runId, agentId: task.agentId, seq: seq++ } as RuntimeEvent)
+        if (active) emitForTurn(active, event)
       }
-
-      /**
-       * Surface a non-fatal diagnostic.
-       *
-       * The caller's channel is preferred: under a TUI's alternate screen a
-       * stderr write is never seen. A direct caller that supplies no channel
-       * still gets the message on stderr, so nothing is lost.
-       */
-      const warn = (message: string) => {
-        if (task.onWarning) {
-          task.onWarning(message)
-          return
+      const settleTurn = (turn: ActiveTurn, output?: AgentOutput, error?: Error) => {
+        if (active !== turn) return
+        turn.decisions.abort()
+        if (turn.timer) clearTimeout(turn.timer)
+        if (turn.cancelTimer) clearTimeout(turn.cancelTimer)
+        if (turn.onAbort) turn.options.signal?.removeEventListener("abort", turn.onAbort)
+        active = undefined
+        if (state === "running" || state === "cancelling") state = "idle"
+        if (error) {
+          if (closePromise) {
+            void closePromise.then(
+              () => turn.reject(error),
+              (cleanupError: Error) => turn.reject(cleanupError)
+            )
+          } else turn.reject(error)
+        } else if (output) turn.resolve(output)
+      }
+      const clearCleanupTimers = () => {
+        if (escalation) clearTimeout(escalation)
+        if (acknowledgement) clearTimeout(acknowledgement)
+      }
+      const close = (): Promise<void> => {
+        if (closePromise) return closePromise
+        closePromise = new Promise<void>((resolve, reject) => {
+          closeResolve = resolve
+          closeReject = reject
+        })
+        options.signal?.removeEventListener("abort", onSessionAbort)
+        clearTimeout(startupTimer)
+        state = "closing"
+        if (active) settleTurn(active, undefined, active.error ?? terminalError ?? abortError())
+        if (childClosed) {
+          state = "closed"
+          closeResolve?.()
+          return closePromise
         }
-        process.stderr.write(`[multiclaw] Warning: ${message}\n`)
+        // Cleanup timers belong to the process, not to a turn's settlement.
+        escalation = setTimeout(() => {
+          killTree("SIGKILL")
+          if (childClosed) return
+          acknowledgement = setTimeout(() => {
+            state = "closed"
+            clearCleanupTimers()
+            closeReject?.(new Error(`${command} cleanup failed: no child close after SIGKILL`))
+          }, CLEANUP_ACK_MS)
+        }, KILL_ESCALATION_MS)
+        try {
+          connection?.close()
+        } catch {
+          // Still reap the process if closing the protocol fails.
+        }
+        killTree("SIGTERM")
+        return closePromise
       }
-
-      let sessionId: string | undefined
-      let agentText = ""
-      let errorOutput = ""
-      let connectionError: Error | undefined
-      let settled = false
-      let lastUsage: { contextTokens: number; contextSize: number } | undefined
-      let lastCost: { amount: number; currency: string } | undefined
-
-      const settleResolve = (output: AgentOutput) => {
-        if (settled) return
-        settled = true
-        clearTimers()
-        resolve(output)
+      const fail = (error: Error) => {
+        terminalError ??= error
+        startupReject(terminalError)
+        void close().catch(() => {})
       }
-      const settleReject = (error: Error) => {
-        if (settled) return
-        settled = true
-        clearTimers()
-        reject(error)
-      }
+      failSession = fail
+      cleanup = close
 
-      // ── session/update → RuntimeEvent ────────────────────────────────────
+      const stderrDecoder = new StringDecoder("utf8")
+      child.stderr.on("data", (data: Buffer) => {
+        errorOutput += stderrDecoder.write(data)
+      })
+      child.on("close", (code) => {
+        childClosed = true
+        errorOutput += stderrDecoder.end()
+        clearCleanupTimers()
+        clearTimeout(startupTimer)
+        options.signal?.removeEventListener("abort", onSessionAbort)
+        if (!closePromise) {
+          fail(new Error(`${command} exited with code ${code}: ${errorOutput}`))
+        }
+        state = "closed"
+        try {
+          connection?.close()
+        } catch {
+          // The child has already acknowledged process cleanup.
+        }
+        closeResolve?.()
+      })
+      child.on("error", (error) => {
+        fail(new PermanentError(`Failed to start ${command}: ${error.message}`))
+      })
+
       const handleUpdate = (notification: AcpSessionNotification) => {
-        // A shared agent process could in principle host several sessions; only
-        // this run's session is ours.
-        if (sessionId && notification.sessionId !== sessionId) return
-
-        // The SDK validated `update` against the ACP schema before delivering
-        // it, so the typed union can be trusted — no defensive re-parsing.
+        // Replay from session/load and all idle notifications are not turn output.
+        const turn = active
+        if (!turn || notification.sessionId !== sessionId) return
         const update = notification.update
         switch (update.sessionUpdate) {
           case "agent_message_chunk": {
             const text = textOf(update.content)
-            if (text === undefined) {
-              emit({ type: "raw", vendor: "acp", payload: update })
-              break
+            if (text === undefined) emit({ type: "raw", vendor: "acp", payload: update })
+            else {
+              turn.output += text
+              emit({ type: "message_delta", role: "agent", text })
             }
-            agentText += text
-            emit({ type: "message_delta", role: "agent", text })
             break
           }
-          case "user_message_chunk": {
-            const text = textOf(update.content)
-            if (text === undefined) {
-              emit({ type: "raw", vendor: "acp", payload: update })
-              break
-            }
-            // Deliberately NOT appended to `agentText`: that accumulator is the
-            // agent's own output and feeds `AgentOutput.output`.
-            emit({ type: "message_delta", role: "user", text })
-            break
-          }
+          case "user_message_chunk":
           case "agent_thought_chunk": {
             const text = textOf(update.content)
-            if (text === undefined) {
-              emit({ type: "raw", vendor: "acp", payload: update })
-              break
+            if (text === undefined) emit({ type: "raw", vendor: "acp", payload: update })
+            else {
+              emit({
+                type: "message_delta",
+                role: update.sessionUpdate === "user_message_chunk" ? "user" : "thought",
+                text,
+              })
             }
-            emit({ type: "message_delta", role: "thought", text })
             break
           }
-          case "tool_call": {
+          case "tool_call":
             emit({
               type: "tool_call",
               id: update.toolCallId,
@@ -444,8 +571,7 @@ export class AcpRuntime extends RuntimeBase {
               input: update.rawInput,
             })
             break
-          }
-          case "tool_call_update": {
+          case "tool_call_update":
             emit({
               type: "tool_result",
               id: update.toolCallId,
@@ -453,247 +579,381 @@ export class AcpRuntime extends RuntimeBase {
               isError: update.status === "failed",
             })
             break
-          }
-          case "plan": {
+          case "plan":
             emit({ type: "plan", entries: update.entries.map((entry) => entry.content) })
             break
-          }
           case "usage_update": {
-            const contextTokens = typeof update.used === "number" ? update.used : undefined
-            const contextSize = typeof update.size === "number" ? update.size : undefined
-            if (contextTokens !== undefined && contextSize !== undefined) {
-              lastUsage = { contextTokens, contextSize }
-              emit({ type: "usage", contextTokens, contextSize })
+            if (typeof update.used === "number" && typeof update.size === "number") {
+              turn.usage = { contextTokens: update.used, contextSize: update.size }
+              emit({ type: "usage", ...turn.usage })
             }
             const cost = isRecord(update.cost) ? update.cost : undefined
-            const amount = typeof cost?.amount === "number" ? cost.amount : undefined
-            const currency = typeof cost?.currency === "string" ? cost.currency : undefined
-            if (amount !== undefined && currency !== undefined) {
-              lastCost = { amount, currency }
-              const costUsd = currency.toLowerCase() === "usd" ? amount : undefined
+            if (typeof cost?.amount === "number" && typeof cost.currency === "string") {
+              turn.cost = { amount: cost.amount, currency: cost.currency }
               emit({
                 type: "cost",
-                amount,
-                currency,
-                ...(costUsd !== undefined ? { costUsd } : {}),
+                ...turn.cost,
+                ...(cost.currency.toLowerCase() === "usd" ? { costUsd: cost.amount } : {}),
               })
             }
             break
           }
           default:
-            // Unknown / extension updates (notice, `_`-prefixed extensions, …)
-            // must never break the run — surface and move on.
             emit({ type: "raw", vendor: "acp", payload: update })
         }
       }
-
       const app = acp.client({ name: "multiclaw" })
-      app.onNotification(acp.methods.client.session.update, (nctx) => {
-        handleUpdate(nctx.params)
+      app.onNotification(acp.methods.client.session.update, (context) => {
+        handleUpdate(context.params)
       })
-      // Answered synchronously against `task.tools` (see `decidePermission`), so
-      // there is no pending-request bookkeeping: the outcome goes back in one
-      // shot, with nothing to track or clean up.
-      app.onRequest(acp.methods.client.session.requestPermission, (rctx) => {
-        const { response, rejected } = decidePermission(rctx.params, task.tools, sessionId)
+      app.onRequest(acp.methods.client.session.requestPermission, async (context) => {
+        const cancelled: AcpPermissionResponse = { outcome: { outcome: "cancelled" } }
+        const turn = active
+        const params = context.params
+        if (
+          state !== "running" ||
+          !turn ||
+          params.sessionId !== sessionId ||
+          context.signal.aborted
+        )
+          return cancelled
+        const mode = turn.options.permissionMode ?? "auto"
+        const { response, rejected } = decidePermission(params, options.tools, sessionId)
         if (rejected) {
-          // A rejection is invisible on the wire — the tool simply does not run
-          // — so surface it: the user must see which tool the agent asked for
-          // and was refused.
+          warn("Tool permission denied by the configured tools policy.")
           emit({
             type: "raw",
             vendor: "acp",
             payload: { type: "permission_rejected", ...rejected },
           })
+          return response
         }
-        return response
-      })
-
-      // stderr is diagnostics only — the protocol lives on stdout. Never parse
-      // it as protocol; keep it for the error message if the agent dies.
-      //
-      // Decoded statefully: stderr is chunked arbitrarily, so a multi-byte
-      // codepoint can straddle a chunk boundary and a per-chunk
-      // `Buffer.toString()` would corrupt it into U+FFFD.
-      const stderrDecoder = new StringDecoder("utf8")
-      child.stderr.on("data", (d: Buffer) => {
-        errorOutput += stderrDecoder.write(d)
-      })
-
-      // `Readable.toWeb` is typed against Node's web-stream types, which do not
-      // line up with the DOM `ReadableStream<Uint8Array>` the SDK declares.
-      const stream = acp.ndJsonStream(
-        Writable.toWeb(child.stdin),
-        Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>
-      )
-      const connection = app.connect(stream)
-      const ctx = connection.agent
-
-      const teardown = () => {
+        if (mode === "auto") return response
+        if (mode !== "ask" || !turn.options.onPermission) {
+          warn(
+            mode === "ask"
+              ? "Tool permission cancelled: no approval handler is available."
+              : "Tool permission denied by the configured approval mode."
+          )
+          return cancelled
+        }
+        const signal = AbortSignal.any([turn.decisions.signal, context.signal])
+        const offered = new Set(params.options.map((option) => option.optionId))
+        const request = {
+          requestId: randomUUID(),
+          runId: turn.runId,
+          agentId: options.agentId,
+          seq: turn.seq++,
+          sessionId,
+          toolCallId: params.toolCall.toolCallId,
+          title: params.toolCall.title ?? params.toolCall.name ?? "Tool permission",
+          toolName: params.toolCall.name ?? undefined,
+          kind: params.toolCall.kind ?? undefined,
+          input: params.toolCall.rawInput,
+          options: params.options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
+        }
+        let onAbort!: () => void
+        const aborted = new Promise<undefined>((resolve) => {
+          onAbort = () => resolve(undefined)
+          signal.addEventListener("abort", onAbort, { once: true })
+          if (signal.aborted) onAbort()
+        })
         try {
-          connection.close()
+          const optionId = await Promise.race([
+            Promise.resolve().then(() =>
+              signal.aborted ? undefined : turn.options.onPermission?.(request, signal)
+            ),
+            aborted,
+          ])
+          if (signal.aborted || active !== turn || state !== "running") return cancelled
+          return optionId !== undefined && offered.has(optionId)
+            ? ({ outcome: { outcome: "selected", optionId } } as AcpPermissionResponse)
+            : cancelled
         } catch {
-          // Already closed.
+          return cancelled
+        } finally {
+          signal.removeEventListener("abort", onAbort)
         }
-        stop("SIGTERM")
-      }
-
-      // Abort: ask the agent to stop the turn (protocol-correct), but do not
-      // trust it — kill the process group if it does not exit promptly.
-      task.signal?.addEventListener(
-        "abort",
-        () => {
-          if (sessionId) {
-            void ctx.notify(acp.methods.agent.session.cancel, { sessionId }).catch(() => {})
+      })
+      app.onRequest(acp.methods.client.elicitation.create, async (context) => {
+        const cancelled: import("@agentclientprotocol/sdk").CreateElicitationResponse = {
+          action: "cancel",
+        }
+        const turn = active
+        const params = context.params
+        if (
+          state !== "running" ||
+          !turn ||
+          context.signal.aborted ||
+          !("sessionId" in params) ||
+          params.sessionId !== sessionId
+        )
+          return cancelled
+        if (params.mode !== "form" || !supportedQuestionSchema(params.requestedSchema)) {
+          warn("Structured question cancelled: unsupported form mode or schema.")
+          return cancelled
+        }
+        if (!questionForms || !turn.options.onQuestion) {
+          warn("Structured question cancelled: no negotiated question handler is available.")
+          return cancelled
+        }
+        const schema = structuredClone(params.requestedSchema)
+        const signal = AbortSignal.any([turn.decisions.signal, context.signal])
+        const request = {
+          requestId: randomUUID(),
+          runId: turn.runId,
+          agentId: options.agentId,
+          seq: turn.seq++,
+          sessionId,
+          toolCallId:
+            "toolCallId" in params && typeof params.toolCallId === "string"
+              ? params.toolCallId
+              : undefined,
+          message: params.message,
+          requestedSchema: structuredClone(schema),
+        }
+        let onAbort!: () => void
+        const aborted = new Promise<undefined>((resolve) => {
+          onAbort = () => resolve(undefined)
+          signal.addEventListener("abort", onAbort, { once: true })
+          if (signal.aborted) onAbort()
+        })
+        try {
+          const response = await Promise.race([
+            Promise.resolve().then(() =>
+              signal.aborted ? undefined : turn.options.onQuestion?.(request, signal)
+            ),
+            aborted,
+          ])
+          if (signal.aborted || active !== turn || state !== "running" || !response)
+            return cancelled
+          if (response.action === "accept") {
+            if (!validateRuntimeQuestionContent(schema, response.content)) {
+              warn("Structured question cancelled: the answer does not match the requested schema.")
+              return cancelled
+            }
+            return { action: "accept" as const, content: structuredClone(response.content) }
           }
-          cancelGrace = setTimeout(() => stop("SIGTERM"), CANCEL_GRACE_MS)
-          cancelGrace.unref()
-        },
-        { once: true }
+          return response.action === "decline" ? { action: "decline" as const } : cancelled
+        } catch {
+          return cancelled
+        } finally {
+          signal.removeEventListener("abort", onAbort)
+        }
+      })
+      connection = app.connect(
+        acp.ndJsonStream(
+          Writable.toWeb(child.stdin),
+          Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>
+        )
       )
+      const ctx = connection.agent
+      const onConnectionClosed = () => {
+        if (!closePromise) fail(new Error(`${command} ACP connection closed: ${errorOutput}`))
+      }
+      // Some embedders mock just the request context; the real SDK supplies closed.
+      connection.closed?.then(onConnectionClosed, onConnectionClosed)
 
-      child.on("close", (code) => {
-        // Flush the decoder first: it may hold the tail of a codepoint whose
-        // remaining bytes never arrived, and any decoded bytes must land before
-        // `errorOutput` is interpolated into the message below.
-        errorOutput += stderrDecoder.end()
-        if (settled) return
-        // Settle on cancellation too — a cancelled run must not leave the
-        // caller's promise pending forever.
-        if (task.signal?.aborted) {
-          settleReject(abortError())
-          return
+      const cancelTurn = (): Promise<void> => {
+        const turn = active
+        if (!turn) return closePromise ?? Promise.resolve()
+        if (turn.cancellation) return turn.cancellation
+        state = "cancelling"
+        turn.decisions.abort()
+        const waitForCleanup = async () => {
+          if (closePromise) await closePromise
         }
-        if (timedOut) {
-          settleReject(new Error(`acp timed out (${task.timeout}ms)`))
-          return
+        turn.cancellation = turn.promise.then(waitForCleanup, waitForCleanup)
+        turn.cancelTimer = setTimeout(() => {
+          fail(turn.error ?? abortError())
+        }, CANCEL_GRACE_MS)
+        void Promise.resolve()
+          .then(() => {
+            if (active === turn) return ctx.notify(acp.methods.agent.session.cancel, { sessionId })
+          })
+          .catch((error: unknown) => {
+            if (active === turn) fail(withAuthHint(acp, error))
+          })
+        return turn.cancellation
+      }
+      const prompt = (
+        text: string,
+        promptOptions: RuntimePromptOptions = {}
+      ): Promise<AgentOutput> => {
+        if (state !== "idle") {
+          return Promise.reject(new Error(`Cannot prompt ACP session while ${state}`))
         }
-        if (connectionError) {
-          settleReject(connectionError)
-          return
+        if (options.signal?.aborted || promptOptions.signal?.aborted) {
+          return Promise.reject(abortError())
         }
-        settleReject(new Error(`${command} exited with code ${code}: ${errorOutput}`))
-      })
-      child.on("error", (err) => {
-        // ENOENT / EACCES: the binary is missing or not runnable. That is a
-        // property of the install, not a transient fault — a retry would fail
-        // identically after the backoff, so classify it as permanent.
-        settleReject(new PermanentError(`Failed to start ${command}: ${err.message}`))
-      })
-
-      const run = async () => {
+        let duration: number
+        try {
+          duration = timeoutMs(promptOptions.timeout ?? defaultTimeout)
+        } catch (error) {
+          return Promise.reject(error)
+        }
+        let resolve!: (output: AgentOutput) => void
+        let reject!: (error: Error) => void
+        const promise = new Promise<AgentOutput>((res, rej) => {
+          resolve = res
+          reject = rej
+        })
+        const turn: ActiveTurn = {
+          runId: randomUUID(),
+          seq: 0,
+          options: promptOptions,
+          output: "",
+          decisions: new AbortController(),
+          promise,
+          resolve,
+          reject,
+        }
+        active = turn
+        state = "running"
+        turn.onAbort = () => {
+          turn.error = abortError()
+          void cancelTurn().catch(() => {})
+        }
+        promptOptions.signal?.addEventListener("abort", turn.onAbort, { once: true })
+        turn.timer = setTimeout(() => {
+          turn.error = new Error(`acp timed out (${duration}ms)`)
+          fail(turn.error)
+        }, duration)
+        const run = async () => {
+          emit({ type: "run_started", model: options.model })
+          // A synchronous event callback may close or cancel this turn.
+          if (active !== turn) return
+          const response = await ctx.request(acp.methods.agent.session.prompt, {
+            sessionId,
+            prompt: [
+              {
+                type: "text",
+                text:
+                  meta === undefined && options.systemPrompt
+                    ? `${options.systemPrompt}\n\n---\n\n${text}`
+                    : text,
+              },
+            ],
+          })
+          if (active !== turn) return
+          if (turn.error) {
+            settleTurn(turn, undefined, turn.error)
+            return
+          }
+          const stopReason = mapStopReason(response.stopReason)
+          settleTurn(turn, {
+            output: turn.output,
+            exitCode: stopReason === "success" ? 0 : 1,
+            sessionId,
+            stopReason,
+            ...(turn.usage ? { usage: turn.usage } : {}),
+            ...(turn.cost?.currency.toLowerCase() === "usd" ? { costUsd: turn.cost.amount } : {}),
+          })
+          emitForTurn(turn, { type: "run_finished", stopReason })
+        }
+        void run().catch((error: unknown) => {
+          if (active === turn) fail(withAuthHint(acp, error))
+        })
+        return promise
+      }
+      const session: RuntimeSession = {
+        get sessionId() {
+          return sessionId
+        },
+        get state() {
+          return state
+        },
+        capabilities: { continuation: true, supplement: false },
+        prompt,
+        cancelTurn,
+        close,
+      }
+      const warn = (message: string) => {
+        if (options.onWarning) options.onWarning(message)
+        else process.stderr.write(`[multiclaw] Warning: ${message}\n`)
+      }
+      const initialize = async () => {
         const init = await ctx.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
+          ...(questionForms ? { clientCapabilities: { elicitation: { form: {} } } } : {}),
         })
-        emit({ type: "run_started", model: task.model })
-
-        if (task.sessionId) {
-          // `session/load` only exists when the agent advertises it; sending it
-          // blind earns a cryptic protocol error. Do NOT fall back to a fresh
-          // session — the caller asked to resume and would wrongly believe it did.
+        if (terminalError) throw terminalError
+        if (options.sessionId) {
           if (init.agentCapabilities?.loadSession !== true) {
-            // The capability is fixed for this agent: retrying cannot make it
-            // start advertising `session/load`, so fail fast rather than after
-            // the backoff budget.
             throw new PermanentError(
-              `Agent does not support session/load (loadSession=false); cannot resume session ${task.sessionId}`
+              `Agent does not support session/load (loadSession=false); cannot resume session ${options.sessionId}`
             )
           }
           await ctx.request(acp.methods.agent.session.load, {
-            sessionId: task.sessionId,
-            cwd: task.workDir,
+            sessionId: options.sessionId,
+            cwd: options.workDir,
             mcpServers: [],
-            // Both session-defining requests carry `_meta`: the bridge's own
-            // session fingerprint includes it, so a changed prompt rebuilds the
-            // session on resume.
             ...(meta ? { _meta: meta } : {}),
           })
-          sessionId = task.sessionId
+          sessionId = options.sessionId
         } else {
           const created = await ctx.request(acp.methods.agent.session.new, {
-            cwd: task.workDir,
+            cwd: options.workDir,
             mcpServers: [],
             ...(meta ? { _meta: meta } : {}),
           })
           sessionId = created.sessionId
-
-          // Cache model options from the session response for validation.
           const modelOpt = created.configOptions?.find(
-            (o) =>
-              (o as { category?: string | null; id?: string }).category === "model" ||
-              (o as { id?: string }).id === "model"
+            (option) =>
+              (option as { category?: string | null; id?: string }).category === "model" ||
+              (option as { id?: string }).id === "model"
           )
           if (
             modelOpt &&
             "options" in modelOpt &&
             Array.isArray((modelOpt as { options?: unknown }).options)
           ) {
-            const ids = ((modelOpt as { options?: Array<{ value?: string }> }).options ?? []).map(
-              (o) => o.value ?? String(o)
+            discoveredModels.set(
+              command,
+              ((modelOpt as { options?: Array<{ value?: string }> }).options ?? []).map(
+                (option) => option.value ?? String(option)
+              )
             )
-            discoveredModels.set(command, ids)
           }
         }
-
-        // Drive model selection when the provider supports it and a model was configured.
-        if (task.model && spec?.modelSelection === "config-option" && sessionId) {
+        if (terminalError) throw terminalError
+        if (options.model && spec?.modelSelection === "config-option") {
           const known = discoveredModels.get(command)
-          if (known && !known.includes(task.model)) {
-            // Model id is not in the provider's advertised list — warn but do not
-            // fail. The warning travels on the caller's channel so the TUI can
-            // actually show it; the runtime is not told what the default is, so
-            // it does not guess one.
+          if (known && !known.includes(options.model)) {
             warn(
-              `model "${task.model}" is not offered by ${command}; running with the provider's default.`
+              `model "${options.model}" is not offered by ${command}; running with the provider's default.`
             )
           } else {
             try {
               await ctx.request(acp.methods.agent.session.setConfigOption, {
                 sessionId,
                 configId: "model",
-                value: task.model,
+                value: options.model,
               })
-            } catch (err) {
-              // Fail-closed on model selection: a mismatch must not kill the run
-              // — but it must not be silent either, or the user cannot tell which
-              // model actually ran.
+            } catch (error) {
+              if (terminalError) throw terminalError
               warn(
-                `Could not set model "${task.model}" on ${command}; running with the provider's default (${errorMessage(err)}).`
+                `Could not set model "${options.model}" on ${command}; running with the provider's default (${errorMessage(error)}).`
               )
             }
           }
         }
-
-        const response = await ctx.request(acp.methods.agent.session.prompt, {
-          sessionId,
-          prompt: [{ type: "text", text: promptText }],
-        })
-
-        if (task.signal?.aborted) {
-          settleReject(abortError())
-          teardown()
-          return
-        }
-
-        const stopReason = mapStopReason(response.stopReason)
-        emit({ type: "run_finished", stopReason })
-        settleResolve({
-          output: agentText,
-          exitCode: 0,
-          sessionId,
-          stopReason,
-          ...(lastUsage ? { usage: lastUsage } : {}),
-          ...(lastCost?.currency.toLowerCase() === "usd" ? { costUsd: lastCost.amount } : {}),
-        })
-        // ACP agents are long-lived: the turn is done, so end the process.
-        teardown()
+        if (terminalError) throw terminalError
+        if (options.signal?.aborted) throw abortError()
       }
-
-      void run().catch((err: unknown) => {
-        connectionError = withAuthHint(acp, err)
-        settleReject(connectionError)
-        teardown()
-      })
-    })
+      await Promise.race([
+        initialize().catch((error: unknown) => {
+          throw withAuthHint(acp, error)
+        }),
+        startupFailure,
+      ])
+      clearTimeout(startupTimer)
+      return session
+    } catch (error) {
+      clearTimeout(startupTimer)
+      options.signal?.removeEventListener("abort", onSessionAbort)
+      if (cleanup) await cleanup()
+      throw error
+    }
   }
 }

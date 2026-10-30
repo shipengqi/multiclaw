@@ -117,7 +117,8 @@ vi.mock("../reporters/FileLogWriter", () => ({
   },
 }))
 
-import { runCommand } from "./run"
+import { Command } from "commander"
+import { type RunOptions, runCommand } from "./run"
 
 let root: string
 
@@ -177,6 +178,28 @@ const REPORT = {
 function consoleLines(): string {
   return (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n")
 }
+
+describe("runCommand · leader option", () => {
+  it("honors Commander's negated --no-leader option", async () => {
+    const command = new Command()
+      .argument("[requirement]")
+      .option("--no-leader")
+      .option("--dry-run")
+      .action((requirement: string | undefined, options: RunOptions) =>
+        runCommand(requirement, options)
+      )
+    await command.parseAsync(["ship it", "--no-leader", "--dry-run"], { from: "user" })
+    expect(command.opts().leader).toBe(false)
+    expect(state.config?.useLeader).toBe(false)
+  })
+
+  it("keeps routing enabled by default and supports direct noLeader callers", async () => {
+    await runCommand("ship it", { leader: true, dryRun: true })
+    expect(state.config?.useLeader).toBeUndefined()
+    await runCommand("ship it", { noLeader: true, dryRun: true })
+    expect(state.config?.useLeader).toBe(false)
+  })
+})
 
 describe("runCommand · dry run and deliverables", () => {
   it("previews the routed plan without running the pipeline or creating logs", async () => {

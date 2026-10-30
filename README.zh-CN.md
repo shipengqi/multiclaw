@@ -272,6 +272,29 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 
 控制台在备用屏幕缓冲区（alternate screen buffer）中渲染，因此终端的 scrollback 不会被破坏。
 
+### 人工审批与 Agent 提问
+
+控制台默认以 **ask** 模式处理 ACP 工具权限请求，展示请求的 Agent、工具输入和 provider 提供的选项。并发请求按顺序排队，各自有唯一别名；普通输入仍只会加入后续需求队列，绝不会自动授权。
+
+- `/approve p1 1` 为请求 `p1` 选择第 1 个选项；`/deny p1` 取消该请求。
+- 请求别名在同一次控制台会话中不重复。过期 ID 或无效选项不能误答另一条请求。
+- 人工同意也不能启用该 Agent 的 `tools` 配置之外的工具。
+- 等待人工操作计入 Agent 原有超时。取消、退出和会话清理都会解除未决请求，不让 Agent 永久等待。
+
+无头运行和直接调用 core 时，默认仍按 `tools` 自动决策。配置 `permissions: { mode: "ask" }` 后，若调用方没有提供 `permissions.onRequest`，请求将被拒绝；`permissions: { mode: "deny" }` 则拒绝权限请求。回调属于当前轮次，不保存在复用的 provider 会话中。
+
+**这处理的是 provider 实际发出的审批请求，不是拦截每一次工具调用。** Claude 可能直接允许读取文件或安全命令，provider 自己的权限设置仍然生效。这不是沙箱，也不是细粒度的路径或命令授权。`allow_always` 的范围以 provider 展示的说明为准，不是 multiclaw 全局授权缓存，也可能修改 provider 设置。自动策略只选择单次授权，不会静默授予长期权限。拒绝工具不必然让 Agent 轮次失败；需要验证任务真正完成时，应使用可选的交付验收门禁。
+
+**运行中的结构化问题** 使用 ACP form elicitation；已安装的 Claude bridge 会将其回传到 `AskUserQuestion`。控制台将问题与审批放进同一个决策队列：
+
+- `/respond q1 {"question_0":"Azure"}` 将表单答案返回给准确的请求。字段键名和选项标签以问题面板为准；多选答案用 JSON 数组，自定义回答字段接受自由文本。
+- `/skip q1` 跳过问题；`/dismiss q1` 取消请求。这是两种不同的 provider 动作，不会回答别的 Agent，也不会作为下一轮需求。
+- JSON 格式错误或不符合已支持表单约束的值，不会清除请求，可以修改后再答。取消和超时都会解除问题等待。
+
+直接调用 core 时提供 `questions.onRequest`，或使用 `AgentTask.onQuestion`；直接复用 runtime 会话时，在打开会话时设置 `questionForms: true`，并在每次 `prompt` 中传入 `onQuestion`。只有调用方支持时才协商 form 能力；工具也必须在 Agent 的 `tools` 中可用，例如 Claude 的 `"AskUserQuestion"`。不支持 URL elicitation、自定义 schema 类型，也不根据普通输出文字猜测问题。支持字符串、数字、整数、布尔值及枚举多选表单，不是完整 JSON Schema 实现。没有问题处理回调时，意外收到的表单请求会被取消，不会自动填答。
+
+leader 澄清是独立机制：`/answer <text>` 回答已经结束的 leader `ask` 轮次，之前排队的文字不会被当作回答。`/task <需求>` 关闭旧 Agent 会话并开始新任务；`/pause`、`/continue` 控制后续需求队列，不暂停正在执行的 Agent。
+
 ### 工作区
 
 控制台是迭代式的，因此每一轮都跑在**同一个** `workDir` 上。像"给这个再补上测试"这样的后继需求，能看到上一轮写下的文件；同时 `task-plan.json` 会在每轮开始时清除，所以上一轮遗留的任务计划绝不会被重新套用到新需求上。

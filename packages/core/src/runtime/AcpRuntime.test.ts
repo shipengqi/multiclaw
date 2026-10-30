@@ -12,7 +12,7 @@ vi.mock("node:child_process", () => ({
 }))
 
 const acp = await import("@agentclientprotocol/sdk")
-const { AcpRuntime } = await import("./AcpRuntime")
+const { AcpRuntime, validateRuntimeQuestionContent } = await import("./AcpRuntime")
 
 /**
  * A stand-in for the spawned agent process.
@@ -26,11 +26,15 @@ class FakeChild extends EventEmitter {
   stdin = new PassThrough()
   stdout = new PassThrough()
   stderr = new EventEmitter()
-  kill = vi.fn()
+  autoClose = true
+  kill = vi.fn(() => {
+    if (this.autoClose) queueMicrotask(() => this.emit("close", 0))
+    return true
+  })
 }
 
 interface AgentHandlers {
-  initialize?: () => unknown
+  initialize?: (params: unknown) => unknown
   newSession?: (params: unknown) => unknown
   loadSession?: (params: unknown) => unknown
   setConfigOption?: (params: unknown) => unknown
@@ -42,7 +46,11 @@ interface AgentPromptContext {
   params: { sessionId: string; prompt?: Array<{ type: string; text: string }> }
   client: {
     notify: (method: string, params: unknown) => Promise<void>
-    request: (method: string, params: unknown) => Promise<unknown>
+    request: (
+      method: string,
+      params: unknown,
+      options?: { cancellationSignal?: AbortSignal }
+    ) => Promise<unknown>
   }
 }
 
@@ -61,8 +69,8 @@ function attachAgent(child: FakeChild, handlers: AgentHandlers): void {
   const app = acp.agent({ name: "fake-agent" })
   app.onRequest(
     "initialize",
-    (() =>
-      handlers.initialize?.() ?? {
+    ((ctx: { params: unknown }) =>
+      handlers.initialize?.(ctx.params) ?? {
         protocolVersion: acp.PROTOCOL_VERSION,
         // A fully-capable fake by default, so resume works out of the box;
         // the loadSession-gate test overrides this to advertise `false`.
@@ -74,10 +82,13 @@ function attachAgent(child: FakeChild, handlers: AgentHandlers): void {
     ((ctx: { params: unknown }) =>
       handlers.newSession?.(ctx.params) ?? { sessionId: "sess-1" }) as never
   )
-  app.onRequest(
-    "session/load",
-    ((ctx: { params: unknown }) => handlers.loadSession?.(ctx.params) ?? {}) as never
-  )
+  app.onRequest("session/load", (async (ctx: AgentPromptContext) => {
+    await notifyUpdate(ctx, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "historical replay" },
+    })
+    return handlers.loadSession?.(ctx.params) ?? {}
+  }) as never)
   app.onRequest(
     "session/set_config_option",
     ((ctx: { params: unknown }) => handlers.setConfigOption?.(ctx.params) ?? {}) as never
@@ -138,6 +149,812 @@ async function untilSpawned(): Promise<void> {
 
 afterEach(() => {
   spawnMock.mockReset()
+  vi.useRealTimers()
+})
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+async function openWith(child: FakeChild, options: Record<string, unknown> = {}) {
+  spawnMock.mockReturnValue(child)
+  return new AcpRuntime().openSession(makeTask({ questionForms: true, ...options }))
+}
+
+describe("AcpRuntime structured questions", () => {
+  const requestedSchema = {
+    type: "object",
+    properties: {
+      question_0: { type: "string", enum: ["Postgres", "SQLite"] },
+      question_1: { type: "array", items: { type: "string", enum: ["api", "ui"] } },
+    },
+    required: ["question_0", "question_1"],
+  }
+  const question = {
+    mode: "form",
+    sessionId: "sess-1",
+    toolCallId: "ask-1",
+    message: "Choose a database",
+    requestedSchema,
+  }
+
+  it("advertises only form support and roundtrips structured answers", async () => {
+    const child = new FakeChild()
+    let initialized: unknown
+    let answer: unknown
+    attachAgent(child, {
+      initialize: (params) => {
+        initialized = params
+        return { protocolVersion: acp.PROTOCOL_VERSION }
+      },
+      prompt: async (ctx) => {
+        answer = await ctx.client.request("elicitation/create", question)
+        return { stopReason: "end_turn" }
+      },
+    })
+    const onQuestion = vi.fn(async () => ({
+      action: "accept",
+      content: { question_0: "Postgres", question_1: ["api"] },
+    }))
+    await runWith(child, { onQuestion })
+    expect(initialized).toMatchObject({ clientCapabilities: { elicitation: { form: {} } } })
+    expect(
+      (initialized as { clientCapabilities: { elicitation: unknown } }).clientCapabilities
+        .elicitation
+    ).toEqual({ form: {} })
+    expect(answer).toEqual({
+      action: "accept",
+      content: { question_0: "Postgres", question_1: ["api"] },
+    })
+    expect(onQuestion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "a1",
+        sessionId: "sess-1",
+        toolCallId: "ask-1",
+        message: question.message,
+        requestedSchema,
+      }),
+      expect.any(AbortSignal)
+    )
+  })
+
+  it("does not negotiate forms for headless execute callers", async () => {
+    const child = new FakeChild()
+    let initialized: unknown
+    attachAgent(child, {
+      initialize: (params) => {
+        initialized = params
+        return { protocolVersion: acp.PROTOCOL_VERSION }
+      },
+    })
+    await runWith(child)
+    expect(initialized).not.toHaveProperty("clientCapabilities.elicitation.form")
+  })
+
+  it.each([
+    { content: { question_0: "Other", question_1: [] } },
+    { content: { question_0: 1, question_1: [] } },
+    { content: { question_0: "Postgres" } },
+    { content: { question_0: "Postgres", question_1: ["other"] } },
+    { content: { question_0: "Postgres", question_1: [], extra: true } },
+  ])("cancels invalid accepted content $content", async ({ content }) => {
+    const child = new FakeChild()
+    let answer: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        answer = await ctx.client.request("elicitation/create", question)
+        return { stopReason: "end_turn" }
+      },
+    })
+    await runWith(child, { onQuestion: async () => ({ action: "accept", content }) })
+    expect(answer).toEqual({ action: "cancel" })
+  })
+
+  it.each([
+    { request: question, handler: false },
+    { request: { ...question, sessionId: "other" }, handler: true },
+    { request: { mode: "_custom", sessionId: "sess-1", message: "Custom" }, handler: true },
+    {
+      request: {
+        mode: "url",
+        sessionId: "sess-1",
+        message: "Open",
+        elicitationId: "url-1",
+        url: "https://example.com",
+      },
+      handler: true,
+    },
+    {
+      request: { ...question, requestedSchema: { properties: { custom: { type: "_custom" } } } },
+      handler: true,
+    },
+  ])("cancels headless and unsupported requests %#", async ({ request, handler }) => {
+    const child = new FakeChild()
+    let answer: unknown
+    const onQuestion = vi.fn(async () => ({ action: "decline" }))
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        answer = await ctx.client.request("elicitation/create", request)
+        return { stopReason: "end_turn" }
+      },
+    })
+    await runWith(child, handler ? { onQuestion } : {})
+    expect(answer).toEqual({ action: "cancel" })
+    expect(onQuestion).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    {
+      action: "accept",
+      content: { count: 2, enabled: true, label: "OK", ratio: 0.5 },
+      expected: "accept",
+    },
+    {
+      action: "accept",
+      content: { count: 2.5, enabled: true, label: "OK", ratio: 0.5 },
+      expected: "cancel",
+    },
+    {
+      action: "accept",
+      content: { count: 4, enabled: true, label: "OK", ratio: 0.5 },
+      expected: "cancel",
+    },
+    {
+      action: "accept",
+      content: { count: 2, enabled: "true", label: "OK", ratio: 0.5 },
+      expected: "cancel",
+    },
+    {
+      action: "accept",
+      content: { count: 2, enabled: true, label: "NO", ratio: 0.5 },
+      expected: "cancel",
+    },
+    {
+      action: "accept",
+      content: { count: 2, enabled: true, label: "OK", ratio: 1.5 },
+      expected: "cancel",
+    },
+    { action: "decline", content: undefined, expected: "decline" },
+    { action: "cancel", content: undefined, expected: "cancel" },
+  ])(
+    "validates standard field values and preserves actions %#",
+    async ({ action, content, expected }) => {
+      const child = new FakeChild()
+      let answer: unknown
+      attachAgent(child, {
+        prompt: async (ctx) => {
+          answer = await ctx.client.request("elicitation/create", {
+            ...question,
+            requestedSchema: {
+              properties: {
+                count: { type: "integer", minimum: 1, maximum: 3 },
+                enabled: { type: "boolean" },
+                label: {
+                  type: "string",
+                  minLength: 2,
+                  maxLength: 2,
+                  oneOf: [{ const: "OK", title: "Okay" }],
+                },
+                ratio: { type: "number", minimum: 0, maximum: 1 },
+              },
+              required: ["count", "enabled", "label", "ratio"],
+            },
+          })
+          return { stopReason: "end_turn" }
+        },
+      })
+      await runWith(child, { onQuestion: async () => ({ action, content }) })
+      expect(answer).toEqual(expected === "accept" ? { action, content } : { action: expected })
+    }
+  )
+
+  it.each([
+    { selected: ["api", "ui"], expected: "accept" },
+    { selected: ["API"], expected: "cancel" },
+    { selected: ["api", "api"], expected: "cancel" },
+    { selected: [], expected: "cancel" },
+  ])("handles Claude titled multiselect schema %#", async ({ selected, expected }) => {
+    const child = new FakeChild()
+    let answer: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        answer = await ctx.client.request("elicitation/create", {
+          ...question,
+          requestedSchema: {
+            type: "object",
+            properties: {
+              question_0: {
+                type: "array",
+                minItems: 1,
+                maxItems: 2,
+                items: {
+                  anyOf: [
+                    { const: "api", title: "API" },
+                    { const: "ui", title: "UI" },
+                  ],
+                },
+              },
+            },
+            required: ["question_0"],
+          },
+        })
+        return { stopReason: "end_turn" }
+      },
+    })
+    await runWith(child, {
+      onQuestion: async () => ({ action: "accept", content: { question_0: selected } }),
+    })
+    expect(answer).toEqual(
+      expected === "accept"
+        ? { action: "accept", content: { question_0: selected } }
+        : { action: "cancel" }
+    )
+  })
+
+  it("cancels callback errors and validates against an unmodified schema", async () => {
+    const child = new FakeChild()
+    const answers: unknown[] = []
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        answers.push(await ctx.client.request("elicitation/create", question))
+        return { stopReason: "end_turn" }
+      },
+    })
+    const session = await openWith(child)
+    await session.prompt("error", {
+      onQuestion: async () => {
+        throw new Error("failed")
+      },
+    })
+    await session.prompt("mutation", {
+      onQuestion: async (request) => {
+        request.requestedSchema.properties = {}
+        request.requestedSchema.required = []
+        return { action: "accept", content: {} }
+      },
+    })
+    expect(answers).toEqual([{ action: "cancel" }, { action: "cancel" }])
+    await session.close()
+  })
+
+  it("cancels pending callbacks on turn abort and ignores late answers", async () => {
+    const child = new FakeChild()
+    const started = deferred<AbortSignal>()
+    const late = deferred<unknown>()
+    let answer: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        answer = await ctx.client.request("elicitation/create", question)
+        return { stopReason: "cancelled" }
+      },
+    })
+    const session = await openWith(child)
+    const result = session.prompt("ask", {
+      onQuestion: (async (_request: unknown, signal: AbortSignal) => {
+        started.resolve(signal)
+        return late.promise
+      }) as never,
+    })
+    const signal = await started.promise
+    await session.cancelTurn()
+    expect(signal.aborted).toBe(true)
+    expect(answer).toEqual({ action: "cancel" })
+    expect((await result).stopReason).toBe("cancelled")
+    late.resolve({ action: "accept", content: { question_0: "Postgres", question_1: [] } })
+    await session.close()
+  })
+
+  it.each(["timeout", "close"])("aborts a hanging question on %s", async (reason) => {
+    const child = new FakeChild()
+    const started = deferred<AbortSignal>()
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        await ctx.client.request("elicitation/create", question)
+        return new Promise(() => {})
+      },
+    })
+    const session = await openWith(child)
+    const result = session.prompt("ask", {
+      timeout: reason === "timeout" ? 50 : 1000,
+      onQuestion: async (_request, signal) => {
+        started.resolve(signal)
+        return new Promise(() => {})
+      },
+    })
+    const rejected = expect(result).rejects.toThrow(reason === "timeout" ? "timed out" : "aborted")
+    const signal = await started.promise
+    if (reason === "close") await session.close()
+    await rejected
+    expect(signal.aborted).toBe(true)
+    await session.close()
+  })
+
+  it.each(["question", "permission"])(
+    "settles provider-cancelled %s requests without ending the turn",
+    async (kind) => {
+      const child = new FakeChild()
+      const started = deferred<AbortSignal>()
+      const providerAbort = new AbortController()
+      let answer: unknown
+      attachAgent(child, {
+        prompt: async (ctx) => {
+          const pending =
+            kind === "question"
+              ? ctx.client.request("elicitation/create", question, {
+                  cancellationSignal: providerAbort.signal,
+                })
+              : ctx.client.request(
+                  "session/request_permission",
+                  {
+                    sessionId: "sess-1",
+                    toolCall: { toolCallId: "tool-1", title: "Read", name: "Read" },
+                    options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+                  },
+                  { cancellationSignal: providerAbort.signal }
+                )
+          await started.promise
+          providerAbort.abort()
+          answer = await pending
+          return { stopReason: "end_turn" }
+        },
+      })
+      const pendingHandler = async (_request: unknown, signal: AbortSignal) => {
+        started.resolve(signal)
+        return new Promise(() => {})
+      }
+      await runWith(
+        child,
+        kind === "question"
+          ? { onQuestion: pendingHandler }
+          : { permissionMode: "ask", onPermission: pendingHandler }
+      )
+      expect((await started.promise).aborted).toBe(true)
+      expect(answer).toEqual(
+        kind === "question" ? { action: "cancel" } : { outcome: { outcome: "cancelled" } }
+      )
+    }
+  )
+
+  it("keeps concurrent requests distinct and callbacks turn-local", async () => {
+    const child = new FakeChild()
+    const requests: Array<{ requestId: string; runId: string; seq: number }> = []
+    const answers: unknown[] = []
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        answers.push(
+          ...(await Promise.all([
+            ctx.client.request("elicitation/create", question),
+            ctx.client.request("elicitation/create", question),
+          ]))
+        )
+        return { stopReason: "end_turn" }
+      },
+    })
+    const session = await openWith(child)
+    await session.prompt("first", {
+      onQuestion: async (request) => {
+        requests.push(request)
+        return { action: "decline" }
+      },
+    })
+    await session.prompt("headless")
+    expect(requests).toHaveLength(2)
+    expect(requests[0].requestId).not.toBe(requests[1].requestId)
+    expect(requests[0].runId).toBe(requests[1].runId)
+    expect(requests[0].seq).not.toBe(requests[1].seq)
+    expect(answers).toEqual([
+      { action: "decline" },
+      { action: "decline" },
+      { action: "cancel" },
+      { action: "cancel" },
+    ])
+    await session.close()
+  })
+})
+
+describe("structured question schema boundary", () => {
+  it.each([
+    { type: "string", anyOf: [{ const: "x" }] },
+    { type: "string", const: "x" },
+    { type: "string", pattern: "^x$" },
+    { type: "number", exclusiveMaximum: 2 },
+    { type: "number", multipleOf: 2 },
+    { type: "boolean", enum: [true] },
+    { type: "string", minLength: "3" },
+    { type: "array", items: { type: "string", enum: ["x"], pattern: "x" } },
+  ])("rejects unsupported or malformed constraints: %j", (field) => {
+    expect(
+      validateRuntimeQuestionContent({ type: "object", properties: { answer: field } }, {})
+    ).toBe(false)
+  })
+  it("rejects required values that will disappear or change during transport", () => {
+    const schema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+    }
+    const hidden = Object.defineProperty({}, "answer", { value: "x", enumerable: false })
+    const accessor = Object.defineProperty({}, "answer", { get: () => "x", enumerable: true })
+    expect(validateRuntimeQuestionContent(schema, hidden)).toBe(false)
+    expect(validateRuntimeQuestionContent(schema, accessor)).toBe(false)
+  })
+  it("rejects malformed required and root constraints without throwing", () => {
+    expect(
+      validateRuntimeQuestionContent({ type: "object", properties: {}, required: "answer" }, {})
+    ).toBe(false)
+    expect(validateRuntimeQuestionContent({ type: "object", properties: {}, anyOf: [] }, {})).toBe(
+      false
+    )
+    expect(validateRuntimeQuestionContent(null, {})).toBe(false)
+  })
+  it("accepts the actual Claude multi-select shape and enforces constraints", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        picks: {
+          type: "array",
+          minItems: 1,
+          maxItems: 2,
+          items: {
+            anyOf: [
+              { const: "A", title: "Alpha" },
+              { const: "B", description: "Beta" },
+            ],
+          },
+        },
+      },
+      required: ["picks"],
+    }
+    expect(validateRuntimeQuestionContent(schema, { picks: ["A", "B"] })).toBe(true)
+    expect(validateRuntimeQuestionContent(schema, { picks: [] })).toBe(false)
+    expect(validateRuntimeQuestionContent(schema, { picks: ["A", "A"] })).toBe(false)
+    expect(validateRuntimeQuestionContent(schema, { picks: ["C"] })).toBe(false)
+    expect(validateRuntimeQuestionContent(schema, {})).toBe(false)
+  })
+})
+
+// Lifecycle assertions exercise a real in-process ACP peer, not a mocked RPC client.
+describe("AcpRuntime.openSession", () => {
+  it("keeps one process/session across sequential prompts and isolates turn output/events", async () => {
+    const child = new FakeChild()
+    const created = vi.fn(() => ({ sessionId: "continuous" }))
+    const seen: string[] = []
+    attachAgent(child, {
+      newSession: created,
+      prompt: async (ctx) => {
+        const text = ctx.params.prompt?.[0].text ?? ""
+        seen.push(text)
+        await notifyUpdate(ctx, {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `answer:${text}` },
+        })
+        if (seen.length === 1) {
+          await notifyUpdate(ctx, {
+            sessionUpdate: "usage_update",
+            used: 10,
+            size: 100,
+            cost: { amount: 0.1, currency: "USD" },
+          })
+        }
+        return { stopReason: "end_turn" }
+      },
+    })
+    const session = await openWith(child)
+    const first = collect()
+    const second = collect()
+    try {
+      expect(session.state).toBe("idle")
+      expect(session.capabilities).toMatchObject({ continuation: true, supplement: false })
+      const a = await session.prompt("implement", { onEvent: first.onEvent })
+      const b = await session.prompt("fix review", { onEvent: second.onEvent })
+      expect(a).toMatchObject({ output: "answer:implement", sessionId: "continuous", costUsd: 0.1 })
+      expect(b.output).toBe("answer:fix review")
+      expect(b.usage).toBeUndefined()
+      expect(b.costUsd).toBeUndefined()
+      expect(created).toHaveBeenCalledTimes(1)
+      expect(spawnMock).toHaveBeenCalledTimes(1)
+      expect(child.kill).not.toHaveBeenCalled()
+      expect(first.events[0].runId).not.toBe(second.events[0].runId)
+      expect(first.events.map((e) => e.seq)).toEqual(first.events.map((_, i) => i))
+      expect(second.events.map((e) => e.seq)).toEqual(second.events.map((_, i) => i))
+    } finally {
+      await session.close()
+    }
+    expect(session.state).toBe("closed")
+    await expect(session.prompt("after close")).rejects.toThrow()
+  })
+
+  it("rejects overlapping prompts instead of silently queuing user input", async () => {
+    const child = new FakeChild()
+    const started = deferred<void>()
+    const finish = deferred<void>()
+    attachAgent(child, {
+      prompt: async () => {
+        started.resolve()
+        await finish.promise
+        return { stopReason: "end_turn" }
+      },
+    })
+    const session = await openWith(child)
+    const first = session.prompt("first")
+    await started.promise
+    expect(session.state).toBe("running")
+    await expect(session.prompt("not silently queued")).rejects.toThrow()
+    finish.resolve()
+    await first
+    await session.close()
+  })
+
+  it("cancels the active turn and allows continuation in the same session", async () => {
+    const child = new FakeChild()
+    const started = deferred<void>()
+    const finish = deferred<void>()
+    let calls = 0
+    attachAgent(child, {
+      prompt: async () => {
+        calls += 1
+        if (calls === 1) {
+          started.resolve()
+          await finish.promise
+          return { stopReason: "cancelled" }
+        }
+        return { stopReason: "end_turn" }
+      },
+      cancel: () => finish.resolve(),
+    })
+    const session = await openWith(child)
+    const first = session.prompt("stop this")
+    await started.promise
+    await session.cancelTurn()
+    expect(await first).toMatchObject({ stopReason: "cancelled" })
+    expect(session.state).toBe("idle")
+    expect(child.kill).not.toHaveBeenCalled()
+    expect(await session.prompt("continue safely")).toMatchObject({ stopReason: "success" })
+    await session.cancelTurn()
+    await session.close()
+  })
+
+  it("waits for child cleanup before resolving close or the execute compatibility wrapper", async () => {
+    const child = new FakeChild()
+    child.autoClose = false
+    attachAgent(child, {})
+    let completed = false
+    const promise = runWith(child).then(() => {
+      completed = true
+    })
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGTERM"))
+    expect(completed).toBe(false)
+    child.emit("close", 0)
+    await promise
+    expect(completed).toBe(true)
+  })
+
+  it("ignores session/load replay when collecting the next turn", async () => {
+    const child = new FakeChild()
+    attachAgent(child, {
+      loadSession: () => ({}),
+      prompt: async (ctx) => {
+        await notifyUpdate(ctx, {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "new turn" },
+        })
+        return { stopReason: "end_turn" }
+      },
+    })
+    const session = await openWith(child, { sessionId: "saved" })
+    const output = await session.prompt("continue")
+    expect(output).toMatchObject({ sessionId: "saved", output: "new turn" })
+    await session.close()
+  })
+
+  it("does not spawn for an already aborted session or prompt", async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      new AcpRuntime().openSession(makeTask({ signal: controller.signal }))
+    ).rejects.toMatchObject({ name: "AbortError" })
+    expect(spawnMock).not.toHaveBeenCalled()
+    const child = new FakeChild()
+    const prompt = vi.fn(() => ({ stopReason: "end_turn" }))
+    attachAgent(child, { prompt })
+    const session = await openWith(child)
+    await expect(session.prompt("aborted", { signal: controller.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    })
+    expect(prompt).not.toHaveBeenCalled()
+    expect(session.state).toBe("idle")
+    await session.close()
+  })
+
+  it("does not launch after an abort during the lazy import boundary", async () => {
+    const controller = new AbortController()
+    const promise = new AcpRuntime().openSession(makeTask({ signal: controller.signal }))
+    controller.abort()
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" })
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
+
+  it("closes an idle session when its lifetime signal is aborted", async () => {
+    const child = new FakeChild()
+    attachAgent(child, {})
+    const controller = new AbortController()
+    const session = await openWith(child, { signal: controller.signal })
+    controller.abort()
+    await vi.waitFor(() => expect(session.state).toBe("closed"))
+    await session.close()
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM")
+  })
+
+  it("settles an active turn when close is called and rejects further prompts", async () => {
+    const child = new FakeChild()
+    const started = deferred<void>()
+    attachAgent(child, {
+      prompt: () => {
+        started.resolve()
+        return new Promise(() => {})
+      },
+    })
+    const session = await openWith(child)
+    const result = session.prompt("working").catch((error: Error) => error)
+    await started.promise
+    await Promise.all([session.close(), session.close()])
+    expect(await result).toMatchObject({ name: "AbortError" })
+    expect(child.kill).toHaveBeenCalledTimes(1)
+    await expect(session.prompt("late")).rejects.toThrow()
+  })
+
+  it("escalates cleanup for a stubborn child without resolving close early", async () => {
+    const child = new FakeChild()
+    child.autoClose = false
+    attachAgent(child, {})
+    const session = await openWith(child)
+    vi.useFakeTimers()
+    let closed = false
+    const closing = session.close().then(() => {
+      closed = true
+    })
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL")
+    expect(closed).toBe(false)
+    child.emit("close", 0)
+    await closing
+    expect(closed).toBe(true)
+  })
+
+  it("rejects close and the active prompt when cleanup is never acknowledged", async () => {
+    const child = new FakeChild()
+    child.autoClose = false
+    const started = deferred<void>()
+    attachAgent(child, {
+      prompt: () => {
+        started.resolve()
+        return new Promise(() => {})
+      },
+    })
+    const session = await openWith(child)
+    const result = session.prompt("working").catch((error: Error) => error)
+    await started.promise
+    vi.useFakeTimers()
+    const closing = session.close()
+    const rejection = expect(closing).rejects.toThrow(/cleanup failed/)
+    await vi.advanceTimersByTimeAsync(6000)
+    await rejection
+    expect(await result).toMatchObject({ message: expect.stringContaining("cleanup failed") })
+    expect(session.close()).toBe(closing)
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL")
+  })
+
+  it("keeps cancellation pending until forced process cleanup is acknowledged", async () => {
+    const child = new FakeChild()
+    child.autoClose = false
+    const started = deferred<void>()
+    attachAgent(child, {
+      prompt: () => {
+        started.resolve()
+        return new Promise(() => {})
+      },
+    })
+    const session = await openWith(child)
+    const result = session.prompt("stalled").catch((error: Error) => error)
+    await started.promise
+    vi.useFakeTimers()
+    let acknowledged = false
+    const cancelling = session.cancelTurn().then(() => {
+      acknowledged = true
+    })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(session.state).toBe("closing")
+    expect(acknowledged).toBe(false)
+    child.emit("close", 0)
+    await cancelling
+    expect(await result).toMatchObject({ name: "AbortError" })
+    expect(acknowledged).toBe(true)
+  })
+
+  it("fails cancellation safely when a provider never completes the turn", async () => {
+    const child = new FakeChild()
+    const started = deferred<void>()
+    attachAgent(child, {
+      prompt: () => {
+        started.resolve()
+        return new Promise(() => {})
+      },
+    })
+    const session = await openWith(child)
+    const result = session.prompt("stalled").catch((error: Error) => error)
+    await started.promise
+    vi.useFakeTimers()
+    const cancelling = session.cancelTurn()
+    await vi.advanceTimersByTimeAsync(2000)
+    await cancelling
+    expect(await result).toMatchObject({ name: "AbortError" })
+    expect(session.state).toBe("closed")
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM")
+    await session.close()
+  })
+
+  it("aborts a stalled initialization without ever sending a task prompt", async () => {
+    const child = new FakeChild()
+    const entered = deferred<void>()
+    const prompt = vi.fn(() => ({ stopReason: "end_turn" }))
+    attachAgent(child, {
+      initialize: () => {
+        entered.resolve()
+        return new Promise(() => {})
+      },
+      prompt,
+    })
+    const controller = new AbortController()
+    const opening = openWith(child, { signal: controller.signal })
+    await entered.promise
+    controller.abort()
+    await expect(opening).rejects.toMatchObject({ name: "AbortError" })
+    expect(prompt).not.toHaveBeenCalled()
+  })
+
+  it("treats a provider-side cancellation as an incomplete output", async () => {
+    const child = new FakeChild()
+    attachAgent(child, { prompt: () => ({ stopReason: "cancelled" }) })
+    const session = await openWith(child)
+    const result = await session.prompt("cancelled upstream")
+    expect(result.stopReason).toBe("cancelled")
+    expect(result.exitCode).not.toBe(0)
+    expect(session.state).toBe("idle")
+    await session.close()
+  })
+
+  it("times out a stalled handshake and waits for cleanup", async () => {
+    const child = new FakeChild()
+    attachAgent(child, { initialize: () => new Promise(() => {}) })
+    await expect(openWith(child, { timeout: 20 })).rejects.toThrow(/timed out/)
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM")
+  })
+
+  it("validates startup and per-turn timeout durations without closing a usable session", async () => {
+    for (const timeout of [-1, Number.NaN, Infinity, 2_147_483_648]) {
+      await expect(new AcpRuntime().openSession(makeTask({ timeout }))).rejects.toThrow(/timeout/)
+    }
+    const child = new FakeChild()
+    attachAgent(child, {})
+    const session = await openWith(child)
+    await expect(session.prompt("bad timeout", { timeout: -1 })).rejects.toThrow(/timeout/)
+    expect(session.state).toBe("idle")
+    await session.prompt("valid")
+    await session.cancelTurn()
+    expect(session.state).toBe("idle")
+    await session.close()
+  })
+
+  it("rejects unsupported fork rather than continuing the original session", async () => {
+    await expect(
+      new AcpRuntime().openSession(makeTask({ sessionId: "saved", resume: "fork" }))
+    ).rejects.toThrow(/fork/i)
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
 })
 
 describe("AcpRuntime.describe", () => {
@@ -593,11 +1410,12 @@ describe("AcpRuntime.execute", () => {
     })
 
     const p = runWith(child, { timeout: 20 })
+    const rejection = expect(p).rejects.toThrow("acp timed out (20ms)")
     await promptStarted
     await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGTERM"))
     child.emit("close", null)
 
-    await expect(p).rejects.toThrow("acp timed out (20ms)")
+    await rejection
   })
 
   it("sends session/cancel on abort and rejects with an AbortError", async () => {
@@ -1107,7 +1925,203 @@ const PERMISSION_OPTIONS = [
 const REJECT_ONLY = [{ optionId: "reject-once", name: "No", kind: "reject_once" }]
 
 describe("AcpRuntime · session/request_permission", () => {
-  it("approves a tool named in task.tools, preferring the durable option", async () => {
+  it("never automatically selects durable-only permissions", async () => {
+    const child = new FakeChild()
+    const decisions: unknown[] = []
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decisions.push(
+          await askPermission(ctx, {
+            name: "Read",
+            options: [{ optionId: "always", name: "Always", kind: "allow_always" }],
+          })
+        )
+        decisions.push(
+          await askPermission(ctx, {
+            name: "Write",
+            options: [{ optionId: "never", name: "Never", kind: "reject_always" }],
+          })
+        )
+        return { stopReason: "end_turn" }
+      },
+    })
+    await runWith(child, { tools: ["Read"] })
+    expect(decisions).toEqual([
+      { outcome: { outcome: "cancelled" } },
+      { outcome: { outcome: "cancelled" } },
+    ])
+  })
+
+  it("allows a durable choice only when explicitly selected by the human handler", async () => {
+    const child = new FakeChild()
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, { name: "Read", options: PERMISSION_OPTIONS })
+        return { stopReason: "end_turn" }
+      },
+    })
+    await runWith(child, { permissionMode: "ask", onPermission: async () => "allow-always" })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-always" } })
+  })
+
+  it("waits for a turn-local human decision and returns only the selected offered option", async () => {
+    const child = new FakeChild()
+    const choice = deferred<string>()
+    const received = deferred<void>()
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, {
+          name: "Read",
+          title: "Read fixture",
+          options: PERMISSION_OPTIONS,
+        })
+        return { stopReason: "end_turn" }
+      },
+    })
+    const handler = vi.fn((request) => {
+      expect(request).toMatchObject({
+        agentId: "a1",
+        sessionId: "sess-1",
+        toolCallId: "tc-1",
+        title: "Read fixture",
+      })
+      expect(request.requestId).toBeTruthy()
+      received.resolve()
+      return choice.promise
+    })
+    const session = await openWith(child)
+    try {
+      const pending = session.prompt("first", { permissionMode: "ask", onPermission: handler })
+      await received.promise
+      expect(decision).toBeUndefined()
+      choice.resolve("allow-once")
+      await pending
+      expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
+      await session.prompt("second", { permissionMode: "ask" })
+      expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
+      expect(handler).toHaveBeenCalledTimes(1)
+    } finally {
+      await session.close()
+    }
+  })
+
+  it.each(["deny", "ask"])(
+    "fails closed in %s mode without an interactive handler",
+    async (permissionMode) => {
+      const child = new FakeChild()
+      let decision: unknown
+      attachAgent(child, {
+        prompt: async (ctx) => {
+          decision = await askPermission(ctx, { name: "Read", options: PERMISSION_OPTIONS })
+          return { stopReason: "end_turn" }
+        },
+      })
+      await runWith(child, { permissionMode })
+      expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
+    }
+  )
+
+  it("does not let human approval exceed the configured tool policy", async () => {
+    const child = new FakeChild()
+    const onPermission = vi.fn(async () => "allow-always")
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, { name: "Write", options: PERMISSION_OPTIONS })
+        return { stopReason: "end_turn" }
+      },
+    })
+    await runWith(child, { tools: ["Read"], permissionMode: "ask", onPermission })
+    expect(onPermission).not.toHaveBeenCalled()
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-once" } })
+  })
+
+  it.each(["invalid", "throws", "mutated"])("rejects a %s handler answer", async (answer) => {
+    const child = new FakeChild()
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, { name: "Read", options: PERMISSION_OPTIONS })
+        return { stopReason: "end_turn" }
+      },
+    })
+    await runWith(child, {
+      permissionMode: "ask",
+      onPermission: async (request: { options: unknown[] }) => {
+        if (answer === "throws") throw new Error("UI failed")
+        if (answer === "mutated") request.options.push({ optionId: "invented", kind: "allow_once" })
+        return "invented"
+      },
+    })
+    expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
+  })
+
+  it("cancels a hanging decision even when its handler ignores abort, then allows another turn", async () => {
+    const child = new FakeChild()
+    const requested = deferred<void>()
+    const late = deferred<string>()
+    let signal: AbortSignal | undefined
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, { name: "Read", options: PERMISSION_OPTIONS })
+        return { stopReason: "end_turn" }
+      },
+    })
+    const session = await openWith(child)
+    try {
+      const pending = session.prompt("first", {
+        permissionMode: "ask",
+        onPermission: (_request, abort) => {
+          signal = abort
+          requested.resolve()
+          return late.promise
+        },
+      })
+      await requested.promise
+      await session.cancelTurn()
+      await pending
+      expect(signal?.aborted).toBe(true)
+      expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
+      late.resolve("allow-always")
+      await session.prompt("next", { permissionMode: "deny" })
+      expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
+    } finally {
+      await session.close()
+    }
+  })
+
+  it("keeps the turn deadline while waiting and aborts the decision on timeout", async () => {
+    const child = new FakeChild()
+    const requested = deferred<void>()
+    let signal: AbortSignal | undefined
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        await askPermission(ctx, { name: "Read", options: PERMISSION_OPTIONS })
+        return { stopReason: "end_turn" }
+      },
+    })
+    const session = await openWith(child)
+    const pending = session.prompt("wait", {
+      timeout: 80,
+      permissionMode: "ask",
+      onPermission: (_request, abort) => {
+        signal = abort
+        requested.resolve()
+        return new Promise(() => {})
+      },
+    })
+    const assertion = expect(pending).rejects.toThrow("timed out")
+    await requested.promise
+    await assertion
+    expect(signal?.aborted).toBe(true)
+    expect(session.state).toBe("closed")
+    await session.close()
+  })
+
+  it("approves a tool named in task.tools using only a one-time option", async () => {
     const child = new FakeChild()
     let decision: unknown
     attachAgent(child, {
@@ -1122,7 +2136,7 @@ describe("AcpRuntime · session/request_permission", () => {
     })
 
     await runWith(child, { tools: ["Read", "Write"] })
-    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-always" } })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
   })
 
   it("rejects a tool that is not in task.tools and emits a visible raw event", async () => {
@@ -1168,7 +2182,7 @@ describe("AcpRuntime · session/request_permission", () => {
     })
 
     await runWith(child, { tools: ["Write"] })
-    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-always" } })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
   })
 
   it.each([
@@ -1188,7 +2202,7 @@ describe("AcpRuntime · session/request_permission", () => {
     })
 
     await runWith(child, { tools: [tool] })
-    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-always" } })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
   })
 
   it("rejects when neither the name nor the kind maps to an allowed tool", async () => {
@@ -1208,7 +2222,7 @@ describe("AcpRuntime · session/request_permission", () => {
     expect(events.some((e) => e.type === "raw")).toBe(true)
   })
 
-  it("prefers reject_always over reject_once when both are offered", async () => {
+  it("prefers reject_once over durable rejection when both are offered", async () => {
     const child = new FakeChild()
     let decision: unknown
     attachAgent(child, {
@@ -1225,7 +2239,7 @@ describe("AcpRuntime · session/request_permission", () => {
     })
 
     await runWith(child, { tools: ["Read"] })
-    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-always" } })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-once" } })
   })
 
   it("cancels when the options offer no matching direction, and tolerates an empty list", async () => {

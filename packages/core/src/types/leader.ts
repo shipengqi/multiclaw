@@ -12,6 +12,8 @@ export type LeaderDecision =
   | {
       mode: "run"
       run: string[]
+      /** Complete task combining the original goal with clarification constraints. */
+      requirement?: string
       /**
        * Why these agents, in the leader's own words.
        *

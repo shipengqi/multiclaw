@@ -45,10 +45,11 @@ interface ChipProps {
   agent?: AgentView
   fallbackName: string
   spinner: string
+  statusOverride?: AgentStatus
 }
 
-function Chip({ agent, fallbackName, spinner }: ChipProps) {
-  const status: AgentStatus = agent?.status ?? "pending"
+function Chip({ agent, fallbackName, spinner, statusOverride }: ChipProps) {
+  const status: AgentStatus = statusOverride ?? agent?.status ?? "pending"
   const style = STATUS[status]
   const glyph = status === "running" ? spinner : style.glyph
   return (
@@ -117,8 +118,9 @@ export function PipelineRail({ turn, spinner }: { turn: TurnView; spinner: strin
     for (const agent of stage.agents) {
       items.push(
         <Chip
-          key={agent.id}
+          key={`${stage.stageIndex}-${agent.id}`}
           agent={turn.agents[agent.id]}
+          statusOverride={stage.memberStatuses?.[agent.id]}
           fallbackName={agent.name}
           spinner={spinner}
         />

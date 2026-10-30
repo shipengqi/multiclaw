@@ -315,6 +315,59 @@ never dropped.
 > **No TTY?** The console needs an interactive terminal. In CI, in a pipe, or over a non-TTY SSH
 > session it exits with a message pointing at `multiclaw run`, which runs the same pipeline headless.
 
+### Human approvals and agent questions
+
+The console defaults to **ask** for ACP tool-permission requests. It shows the
+requesting agent, tool input, and the provider's offered choices. Requests from
+concurrent agents are queued with unique aliases; normal input still queues a
+follow-up and never grants approval.
+
+- `/approve p1 1` selects option 1 for request `p1`; `/deny p1` cancels that request.
+- Request aliases do not repeat within the console session. Stale ids and invalid
+  option numbers cannot decide another request.
+- Approval cannot enable a tool outside the agent's configured `tools` policy.
+- Waiting counts toward the agent's existing timeout. Cancel, quit, and session
+  cleanup release outstanding decisions; they do not leave agents waiting forever.
+
+For headless runs and direct core callers, the default remains automatic matching
+against `tools`. Set `permissions: { mode: "ask" }` to deny unless a caller supplies
+`permissions.onRequest`, or `permissions: { mode: "deny" }` to deny requests.
+Permission handlers are turn-local, not saved in reusable provider sessions.
+
+**This handles requests the provider actually sends, not every tool invocation.**
+Claude may allow reads or safe commands without asking; its permission settings
+still apply. This is neither a sandbox nor fine-grained path/command enforcement.
+An `allow_always` choice has the scope shown by the provider, not a multiclaw-wide
+approval cache and may change provider settings. Automatic policy matching selects
+one-time approval only; it never silently grants a durable permission. Denying a tool
+does not itself mean the agent turn failed: use the
+optional delivery review gate when completion must satisfy acceptance criteria.
+
+**Structured live questions** use ACP form elicitation, which the installed Claude
+bridge maps to `AskUserQuestion`. The console queues these alongside approvals:
+
+- `/respond q1 {"question_0":"Azure"}` returns form values to the exact request.
+  Use the field keys and allowed labels shown in the question panel; multi-select
+  values are JSON arrays, and custom-answer fields accept free text.
+- `/skip q1` declines the question; `/dismiss q1` cancels it. These are distinct
+  provider actions, not answers to another agent or a queued follow-up.
+- Invalid JSON or values that violate the supported form schema leave the request
+  pending so you can correct them. Cancellation and timeout release question waits.
+
+Core callers supply `questions.onRequest` (or `AgentTask.onQuestion`); live-session
+callers open with `questionForms: true` and provide `onQuestion` on each prompt.
+Form support is negotiated only when the caller supports it. The tool must also
+be available in the agent's configured `tools`, e.g. `"AskUserQuestion"` for Claude.
+URL elicitation, custom schema types, and arbitrary prose questions are not
+supported. Supported forms include strings, numbers, integers, booleans, and enum
+multi-selects; this is not a general JSON Schema implementation. No question
+handler means unexpected form requests are cancelled, not automatically answered.
+
+Leader clarification remains separate: `/answer <text>` answers a completed leader
+`ask` turn. Previously queued text is not used as that answer. `/task <requirement>`
+starts a new task with fresh agent sessions; `/pause` and `/continue` control the
+follow-up queue, not the running agent.
+
 ### Workspace
 
 The console is iterative, so every turn runs against the **same** `workDir`. A follow-up like "now

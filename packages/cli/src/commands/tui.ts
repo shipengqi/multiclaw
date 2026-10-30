@@ -15,7 +15,15 @@ export async function tuiCommand(options: TuiCommandOptions): Promise<void> {
   await startTui({
     config,
     onTurnStart: (eventBus, logDir) => {
-      new FileLogWriter(logDir).attach(eventBus)
+      const writer = new FileLogWriter(logDir)
+      const detach = writer.attach(eventBus)
+      return async () => {
+        try {
+          await writer.drain()
+        } finally {
+          detach()
+        }
+      }
     },
   })
 }

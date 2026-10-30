@@ -123,7 +123,7 @@ describe("matchCommands", () => {
   })
 
   it("does not surface a running-only command when idle", () => {
-    expect(matchCommands("cancel", false)).toEqual([])
+    expect(matchCommands("cancel", false).map((command) => command.name)).not.toContain("cancel")
   })
 })
 
@@ -195,6 +195,29 @@ describe("COMMANDS", () => {
   it("offers /fork in both phases, since it only edits the prompt", () => {
     expect(availableCommands(false).map((c) => c.name)).toContain("fork")
     expect(availableCommands(true).map((c) => c.name)).toContain("fork")
+  })
+
+  it.each(["task", "answer", "continue"])("offers /%s only while idle", (name) => {
+    expect(availableCommands(false).map((c) => c.name)).toContain(name)
+    expect(availableCommands(true).map((c) => c.name)).not.toContain(name)
+    expect(canRun(name, true)).toBe(false)
+    expect(unavailableReason(name, true)).toBe(`/${name} waits for the current turn to finish`)
+  })
+
+  it("allows /pause during an active turn without exposing continuation", () => {
+    expect(COMMANDS.find((c) => c.name === "pause")?.availability).toBe("always")
+    expect(availableCommands(true).map((c) => c.name)).toContain("pause")
+    expect(availableCommands(false).map((c) => c.name)).toContain("pause")
+    expect(canRun("pause", true)).toBe(true)
+  })
+
+  it("shows task and answer text arguments without an agent completer", () => {
+    expect(paletteRows(COMMANDS).find((row) => row.key === "task")?.label).toBe(
+      "/task <requirement>"
+    )
+    expect(paletteRows(COMMANDS).find((row) => row.key === "answer")?.label).toBe("/answer <text>")
+    expect(argQuery("/task fresh work")).toBeUndefined()
+    expect(argQuery("/answer Postgres")).toBeUndefined()
   })
 })
 
