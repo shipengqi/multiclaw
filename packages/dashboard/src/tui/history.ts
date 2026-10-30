@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { writeJsonFile } from "./atomic"
 import { MAX_HISTORY, type TurnView } from "./state"
 
 /** Directory, under a workspace's `.multiclaw/`, that holds console state. */
@@ -64,6 +65,7 @@ function isTurnView(value: unknown): value is TurnView {
     typeof turn.turn === "number" &&
     typeof turn.phase === "string" &&
     (turn.cancelled === undefined || typeof turn.cancelled === "boolean") &&
+    (turn.interrupted === undefined || typeof turn.interrupted === "boolean") &&
     (turn.acceptance === undefined || isAcceptance(turn.acceptance)) &&
     (turn.effectiveRequirement === undefined || typeof turn.effectiveRequirement === "string") &&
     isObject(turn.agents) &&
@@ -123,34 +125,13 @@ export function loadHistory(workDir: string): TurnView[] {
 /**
  * Write the workspace's turn history.
  *
- * Written to a temp file and renamed into place: `rename` is atomic within a
- * filesystem, so a crash mid-write leaves the *previous* file intact. Writing
- * `history.json` directly would instead leave half a JSON document, and since
- * `loadHistory` can only drop a file it cannot parse, that would cost the user
- * *all* of their history rather than the last write.
+ * Atomic and serialized per path (see {@link writeJsonFile}), because a crash
+ * mid-write must leave the previous history readable rather than half a
+ * document: `loadHistory` can only drop a file it cannot parse, so a torn write
+ * would cost the user *all* of their history rather than the last one.
  */
-const historyWrites = new Map<string, Promise<void>>()
-
 export function saveHistory(workDir: string, turns: readonly TurnView[]): Promise<void> {
-  const target = historyPath(workDir)
-  const json = JSON.stringify(turns)
-  // Serialize writes to one workspace: rapid turns must not rename the same
-  // temporary file out from under each other or overwrite newer history.
-  const write = (historyWrites.get(target) ?? Promise.resolve())
-    .catch(() => {})
-    .then(async () => {
-      await fs.promises.mkdir(path.dirname(target), { recursive: true })
-      const tmp = `${target}.tmp`
-      await fs.promises.writeFile(tmp, json, "utf-8")
-      await fs.promises.rename(tmp, target)
-    })
-  historyWrites.set(target, write)
-  void write
-    .finally(() => {
-      if (historyWrites.get(target) === write) historyWrites.delete(target)
-    })
-    .catch(() => {})
-  return write
+  return writeJsonFile(historyPath(workDir), JSON.stringify(turns))
 }
 
 export function exportPath(workDir: string, turn: number): string {
@@ -169,17 +150,19 @@ export function formatTurnMarkdown(turn: TurnView): string {
     lines.push("## Reply", "", `_${turn.reply.mode}_`, "", turn.reply.message, "")
   } else {
     const acceptance = turn.acceptance
-    const status = acceptance
-      ? acceptance.status === "failed"
-        ? "acceptance failed"
-        : acceptance.status === "cancelled"
-          ? "acceptance cancelled"
-          : acceptance.status.replace("_", " ")
-      : turn.cancelled
-        ? "cancelled"
-        : turn.success
-          ? "success"
-          : "failed"
+    const status = turn.interrupted
+      ? "interrupted"
+      : acceptance
+        ? acceptance.status === "failed"
+          ? "acceptance failed"
+          : acceptance.status === "cancelled"
+            ? "acceptance cancelled"
+            : acceptance.status.replace("_", " ")
+        : turn.cancelled
+          ? "cancelled"
+          : turn.success
+            ? "success"
+            : "failed"
     lines.push("## Result", "", `Status: ${status}`, "")
     if (acceptance) {
       lines.push(

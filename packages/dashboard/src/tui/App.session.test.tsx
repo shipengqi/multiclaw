@@ -141,6 +141,7 @@ describe("App · caller-owned live sessions", () => {
 
   it("shows rejected acceptance and /retry reruns the selected workers, not nothing failed", async () => {
     const tracker = turns(2)
+    const firstTurn = turns(1)
     let reviews = 0
     respond = async (id) =>
       id === "code-reviewer"
@@ -161,10 +162,24 @@ describe("App · caller-owned live sessions", () => {
       review: { reviewer: "code-reviewer", repairAgents: ["architect"], maxRepairRounds: 0 },
     }
     const frame = stripAnsi(
-      await driveFrame(<App config={reviewed} sessions={sessions} onTurnStart={tracker.start} />, {
-        keys: ["build API", "\r", "/retry", "\r"],
-        ready: tracker.ready,
-      })
+      await driveFrame(
+        <App
+          config={reviewed}
+          sessions={sessions}
+          onTurnStart={(bus) => {
+            tracker.start(bus)
+            firstTurn.start(bus)
+          }}
+        />,
+        {
+          keys: ["build API", "\r"],
+          // `/retry` is idle-only, so it is typed once the first turn has
+          // actually ended rather than after a guessed delay.
+          ready: firstTurn.ready,
+          thenKeys: ["/retry", "\r"],
+          thenReady: tracker.ready,
+        }
+      )
     )
     expect(tracker.completed()).toBe(2)
     expect(prompts.map((p) => p.agentId)).toEqual([

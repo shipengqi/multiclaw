@@ -266,7 +266,12 @@ function outcome(turn: TurnView): { text: string; color: string } {
       ? { text: `${GLYPH.ask} needs input`, color: COLOR.warn }
       : { text: `${STATUS.success.glyph} answered`, color: COLOR.ok }
   }
-  if (turn.phase !== "complete") return { text: "interrupted", color: COLOR.warn }
+  // A turn that never finished reads the same whether it was still running when
+  // it was snapshotted or recovered from the journal after a restart: it was
+  // stopped, and it is neither a success nor a failure.
+  if (turn.interrupted || turn.phase !== "complete") {
+    return { text: "interrupted", color: COLOR.warn }
+  }
   if (turn.acceptance) {
     switch (turn.acceptance.status) {
       case "approved":

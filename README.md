@@ -393,6 +393,27 @@ Finished turns are written to `workDir/.multiclaw/console/history.json`, so clos
 reopening it restores the list — and the turn numbering carries on from where it left off rather than
 restarting at one.
 
+### Restarting
+
+Closing the console politely and reopening it is the easy case: the turns are on disk, so they come
+back. A console that was killed — a crashed terminal, a reboot, `kill -9` — leaves more behind than
+that, and it is written to `workDir/.multiclaw/console/session.json` while the turn runs:
+
+- **The turn in flight.** Agent processes die with the console and a pending approval is an RPC to
+  one of them, so the turn cannot be continued. Instead it is restored as a turn that ended
+  **interrupted**: its requirement, its roster, its pipeline and the tail of each agent's log, with
+  every agent that never reported back marked stopped. Nothing claims it succeeded.
+- **The queue.** Follow-ups you typed but never ran come back — **paused**, because running them the
+  instant the console reopens would do work you are not watching. `/continue` starts them.
+- **The task boundary.** `/task` closes the previous task's context, and that boundary now outlives
+  the process: a restart hands the leader the current task's turns, not every turn ever run.
+- **Pending decisions.** An approval or question that was waiting is gone — the agent that asked no
+  longer exists. The console says how many were discarded instead of silently dropping them.
+
+The notice bar names all of this on the first frame, and the interrupted turn is in `/history` like
+any other, so `/export` and `/replay` work on it. The one thing a restart does not do is pretend: no
+decision is answered on your behalf, and no agent is resumed from a session this process never held.
+
 ## Logs
 
 After each run, all generated files are written under `workDir/.multiclaw/runs/run-<timestamp>/` (or `logDir` if set):

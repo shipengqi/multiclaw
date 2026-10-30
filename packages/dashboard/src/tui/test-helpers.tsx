@@ -1,12 +1,27 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { PassThrough } from "node:stream"
 import { agents, type MultiClawConfig } from "@multiclawcli/core"
 import { render } from "ink"
 import type { ReactNode } from "react"
 
+/**
+ * A workspace of this test process's own.
+ *
+ * The console persists turns, and now the turn in flight, under `workDir`. A
+ * fixed path like `/tmp/dev-team` is shared state across parallel test files,
+ * so a test that leaves a run half-finished hands the next one an interrupted
+ * turn — and an idle-screen test sees a history it never created.
+ */
+function testWorkDir(name: string): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), `multiclaw-${name}-`))
+}
+
 /** A three-agent team, shaped like `examples/dev-team`. */
 export const DEMO: MultiClawConfig = {
   name: "dev-team",
-  workDir: "/tmp/dev-team",
+  workDir: testWorkDir("demo"),
   leader: {
     id: "leader",
     name: "Leader",
@@ -46,7 +61,7 @@ export const DEMO: MultiClawConfig = {
  */
 export const PRESET: MultiClawConfig = {
   name: "Dev Team Demo",
-  workDir: "/tmp/multiclaw-tui-preset",
+  workDir: testWorkDir("preset"),
   leader: agents.leader({ model: "haiku" }),
   agents: [
     agents.architect({ model: "haiku" }),
@@ -149,6 +164,14 @@ export async function driveFrame(
     ready?: Promise<unknown>
     /** Keys typed *after* `ready` resolves, for flows that need a finished state. */
     thenKeys?: string[]
+    /**
+     * Resolved by the app under test after `thenKeys` have been typed.
+     *
+     * Without this, a flow whose second step is only legal once a turn has
+     * finished has to guess how long that turn takes — and a guess that fits an
+     * idle machine fails on a busy one.
+     */
+    thenReady?: Promise<unknown>
     /** Extra time for React to paint after `ready` resolves. */
     settleMs?: number
     timeoutMs?: number
@@ -160,6 +183,7 @@ export async function driveFrame(
     rows = 30,
     ready,
     thenKeys = [],
+    thenReady,
     settleMs = 120,
     timeoutMs = 5000,
   } = options
@@ -211,6 +235,10 @@ export async function driveFrame(
   for (const chunk of thenKeys) {
     stdin.write(chunk)
     await new Promise((resolve) => setTimeout(resolve, 30))
+  }
+
+  if (thenReady) {
+    await Promise.race([thenReady, new Promise((resolve) => setTimeout(resolve, timeoutMs))])
   }
 
   if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs))

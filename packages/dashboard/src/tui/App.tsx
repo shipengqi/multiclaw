@@ -18,6 +18,7 @@ import {
 } from "@multiclawcli/core"
 import { Box, type Key, Text, useApp, useInput, useWindowSize } from "ink"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
+import { pendingWrite } from "./atomic"
 import {
   argQuery,
   canRun,
@@ -56,8 +57,16 @@ import {
 } from "./components/panels"
 import { CommandMenu, Prompt } from "./components/prompt"
 import { formatCost, formatDuration } from "./format"
-import { exportPath, exportTurn, loadHistory, saveHistory } from "./history"
+import { exportPath, exportTurn, historyPath, saveHistory } from "./history"
 import { computeLayout } from "./layout"
+import {
+  journalTurn,
+  restoreConsole,
+  SESSION_VERSION,
+  type SessionJournal,
+  saveJournal,
+  sessionPath,
+} from "./session"
 import {
   conversationTurns,
   createInitialState,
@@ -94,6 +103,16 @@ const SPINNER_INTERVAL_MS = 110
 
 /** Standard terminal cursor blink period, in milliseconds. */
 const BLINK_INTERVAL_MS = 530
+
+/**
+ * How often a running turn's journal is rewritten.
+ *
+ * The journal is what a restart reads, so it has to be current enough that
+ * "what was it doing" is still true — but it is also a disk write, so it cannot
+ * follow the stream. A couple of seconds is both: the logs are a tail, not a
+ * transcript, and a turn that died mid-write loses at most that much.
+ */
+const SESSION_SAVE_INTERVAL_MS = 2000
 
 const INPUT_PLACEHOLDER = "describe what the team should do…"
 const RUNNING_PLACEHOLDER = "type to queue a follow-up…"
@@ -250,12 +269,17 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   const { exit } = useApp()
   const { columns, rows } = useWindowSize()
 
-  // Open with whatever the last session left on disk. Read synchronously in the
-  // lazy initialiser so the first frame already shows the restored history — an
-  // async load would race the user's first turn and force an "history still
+  // Open with whatever the last session left on disk. Read once, synchronously,
+  // before the first frame: the history list, the interrupted turn the previous
+  // process never finished, the follow-ups it never ran, and the task boundary.
+  // An async load would race the user's first turn and force an "history still
   // loading" state that nothing else needs.
+  const restoredRef = useRef<ReturnType<typeof restoreConsole> | null>(null)
+  if (!restoredRef.current) restoredRef.current = restoreConsole(config.workDir)
+  const restored = restoredRef.current
+
   const [state, dispatch] = useReducer(tuiReducer, config, (c) =>
-    createInitialState(c, loadHistory(c.workDir))
+    createInitialState(c, restored.history)
   )
   // `startTurn` is not rebuilt when state changes, so it reads the turn on screen
   // through a ref. The conversation it hands the leader has to be the one the
@@ -267,11 +291,14 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   const [tick, setTick] = useState(0)
   const [running, setRunning] = useState(false)
   // Follow-ups typed while the team was busy. Kept in the order they were typed,
-  // because that is the order they will run in.
-  const [queue, setQueue] = useState<string[]>([])
+  // because that is the order they will run in. Restored ones come back *paused*
+  // — see `queuePaused` below.
+  const [queue, setQueue] = useState<string[]>(restored.queue)
+  const queueRef = useRef(queue)
+  queueRef.current = queue
   const [cancelled, setCancelled] = useState(false)
   const [error, setError] = useState<string>()
-  const [notice, setNotice] = useState<string>()
+  const [notice, setNotice] = useState<string | undefined>(restored.notice)
   const [helpOpen, setHelpOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyCursor, setHistoryCursor] = useState(0)
@@ -288,12 +315,18 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   const closingRef = useRef(false)
   const shutdownRef = useRef<Promise<void> | null>(null)
   const busyRef = useRef(false)
-  const taskStartRef = useRef(0)
+  // The `/task` boundary, restored from the journal: turns numbered after it
+  // belong to the current task, and the ones before it are closed.
+  const taskStartRef = useRef(restored.taskStart)
   const turnSerialRef = useRef(0)
-  const [awaitingAnswer, setAwaitingAnswer] = useState(false)
-  const [queuePaused, setQueuePaused] = useState(false)
-  const awaitingAnswerRef = useRef(false)
-  const queuePausedRef = useRef(false)
+  const [awaitingAnswer, setAwaitingAnswer] = useState(restored.awaitingAnswer)
+  // A restored queue starts paused on purpose. The user typed those follow-ups
+  // for a turn that then died; starting them the instant the console reopens
+  // would run work the user is no longer watching, with no chance to read what
+  // the interrupted turn had already done.
+  const [queuePaused, setQueuePaused] = useState(restored.queue.length > 0)
+  const awaitingAnswerRef = useRef(restored.awaitingAnswer)
+  const queuePausedRef = useRef(restored.queue.length > 0)
   const pending = useRef<MultiClawEvent[]>([])
   const permissionSerialRef = useRef(0)
   const questionSerialRef = useRef(0)
@@ -410,6 +443,71 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       setNotice(`history not saved: ${err.message}`)
     )
   }, [state.history, state.phase])
+
+  /**
+   * Write the session journal: the turn in flight, the queue, the task boundary.
+   *
+   * This is the *other* half of crash recovery. `history.json` only ever holds
+   * turns that ended, so without this file a process that dies mid-turn takes
+   * the requirement the user typed, the follow-ups they queued and the `/task`
+   * boundary with it — and the next session cannot even say that a turn was
+   * lost. Everything is read through refs so the callback stays stable and can
+   * be called from a timer.
+   */
+  const persistSession = useCallback(() => {
+    // Closing is the shutdown path's business: it writes the final journal
+    // itself, and a write queued from here would land after it — or, in a test
+    // or a `SIGTERM`, after the directory it is writing into is gone.
+    if (closingRef.current) return
+    const current = stateRef.current
+    const waiting = { permissions: 0, questions: 0 }
+    for (const entry of interactionsRef.current) {
+      if (entry.kind === "permission") waiting.permissions += 1
+      else waiting.questions += 1
+    }
+    const journal: SessionJournal = {
+      version: SESSION_VERSION,
+      taskStart: taskStartRef.current,
+      ...(queueRef.current.length > 0 ? { queue: [...queueRef.current] } : {}),
+      // Only a turn that is actually running is in flight. Writing one for an
+      // idle console would invent work the next session would then "recover".
+      ...(current.phase === "running" && current.requirement !== undefined
+        ? { inFlight: journalTurn(current, waiting) }
+        : {}),
+    }
+    void saveJournal(config.workDir, journal).catch((err: Error) => {
+      if (mountedRef.current) setNotice(`session not saved: ${err.message}`)
+    })
+  }, [config.workDir])
+
+  // The three transitions that change what a restart would need: a turn starts
+  // (`history` and `phase`), a turn ends (`phase`), the queue changes. Read
+  // through refs for the same reason the history writer does — depending on
+  // `state` would rewrite the journal on every streamed chunk.
+  //
+  // The mount pass is skipped on purpose. It would only rewrite what was just
+  // read, and clearing `inFlight` there would race the write of the restored
+  // turn into `history.json`: a crash in that window would drop the interrupted
+  // turn from both files. Left alone, the journal keeps claiming it until the
+  // next turn starts — and `restoreConsole` drops it as a duplicate once the
+  // history holds it.
+  const journalSettled = useRef(false)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the effect reads the turn through `stateRef`; `state.history` and `state.phase` are listed because they are exactly the fields whose change matters, and `state` itself would fire on every event.
+  useEffect(() => {
+    if (!journalSettled.current) {
+      journalSettled.current = true
+      return
+    }
+    persistSession()
+  }, [state.history, state.phase, queue, persistSession])
+
+  // A long turn would otherwise be journaled only at its boundaries, so a crash
+  // half an hour in would recover the roster and none of the work.
+  useEffect(() => {
+    if (!running) return
+    const timer = setInterval(persistSession, SESSION_SAVE_INTERVAL_MS)
+    return () => clearInterval(timer)
+  }, [running, persistSession])
 
   const startTurn = useCallback(
     async (
@@ -563,8 +661,15 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     clearInteractions()
     await activeTurnRef.current
     await sessionsRef.current?.close()
+    // State already queued for disk has to land before the caller can exit (or,
+    // in a test, remove the workspace). No new write can be queued after
+    // `closingRef`, so this is the whole set.
+    await Promise.all([
+      pendingWrite(historyPath(config.workDir)),
+      pendingWrite(sessionPath(config.workDir)),
+    ])
     if (reporterErrorRef.current) throw reporterErrorRef.current
-  }, [clearInteractions])
+  }, [clearInteractions, config.workDir])
 
   useEffect(() => {
     mountedRef.current = true
@@ -578,6 +683,9 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   const shutdown = useCallback(() => {
     if (shutdownRef.current) return shutdownRef.current
     closingRef.current = true
+    // Captured before the queue is cleared below: those follow-ups were typed by
+    // the user and never ran, so the journal keeps them for the next session.
+    const leftover = [...queueRef.current]
     queuePausedRef.current = true
     setQueuePaused(true)
     setQueue([])
@@ -588,6 +696,15 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
         await cleanup()
         const turns = recordedTurns(stateRef.current).slice(-MAX_HISTORY)
         if (turns.length) await saveHistory(config.workDir, turns)
+        // A deliberate quit is not an interruption. Whatever turn was in flight
+        // ended as a cancellation, and that cancellation is already in the
+        // history above — journaling it as in-flight would greet the next
+        // session with "interrupted by a restart" for a stop the user asked for.
+        await saveJournal(config.workDir, {
+          version: SESSION_VERSION,
+          taskStart: taskStartRef.current,
+          ...(leftover.length > 0 ? { queue: leftover } : {}),
+        })
         exit()
       } catch (err) {
         setError(`shutdown failed: ${(err as Error).message}`)

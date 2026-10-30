@@ -105,6 +105,18 @@ export interface TurnView {
    */
   scroll: number
   success?: boolean
+  /**
+   * Set on a turn that was recovered from a journal after the console died
+   * mid-run.
+   *
+   * Such a turn is `complete` — it is over, and its record is final — but it
+   * did not *finish*, so it must not be reported as a success or a failure.
+   * `cancelled` is deliberately not reused: that means the user stopped the
+   * run, while this one was stopped by the process going away, and the console
+   * has to be able to tell the two apart when the user asks "what happened to
+   * turn 3".
+   */
+  interrupted?: boolean
   acceptance?: AcceptanceResult
   totalDuration?: number
   /**
@@ -547,6 +559,7 @@ function snapshot(state: TuiState): TurnView {
     requirement: state.requirement,
     effectiveRequirement: state.effectiveRequirement,
     cancelled: state.cancelled,
+    interrupted: state.interrupted,
     phase: state.phase,
     startedAt: state.startedAt,
     endedAt: state.endedAt,
@@ -619,6 +632,12 @@ export function recordedTurns(state: TuiState): TurnView[] {
  * Only turns that ended are carried, which makes the call site's timing
  * irrelevant: whether this is read before or after `turn:start` moves the turn
  * on screen into `history`, the set is the same.
+ *
+ * An *interrupted* turn is carried even though it has no reply. A cancelled one
+ * is not: the user chose to abandon it. An interrupted turn was abandoned by
+ * the process, so its requirement is unfinished business — and it is the only
+ * thing that makes a follow-up like "carry on with that" readable after a
+ * restart.
  */
 export function conversationTurns(state: TuiState): TurnRecord[] {
   const turns: TurnRecord[] = []
