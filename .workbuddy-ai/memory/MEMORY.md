@@ -1,11 +1,17 @@
 # multiclaw 项目约定
 
+## 产品定位
+- 用户明确（2026-10-30）：不需要看板；最重要的是多 agent 编排，改进聚焦用户体验与 agent 交互。保持 CLI/TUI 产品定位，不把审查扩成看板或项目管理平台。
+
 ## 构建 / 校验
 - pnpm workspace:core / cli / dashboard + examples/dev-team。
 - CI 顺序固定 **install → lint → build → typecheck → test**。cli、dashboard 的 typecheck 从
   `packages/*/dist/*.d.ts` 解析跨包类型,clean checkout 不先 build 会 TS2307 —— 不要改顺序。
 - 根目录命令:`pnpm verify`(lint+build+typecheck+test,提交前跑)、`pnpm lint`(biome check .)、
   `pnpm lint:fix`、`pnpm format`、`pnpm typecheck`(=`-r typecheck`)、`pnpm test`、`pnpm test:coverage`(CI 用)。
+- **`--filter` 用 package name,不是目录名**:core=`@multiclawcli/core`、dashboard=`@multiclawcli/dashboard`,
+  但 **cli 的 name 是 `multiclaw`**(`pnpm --filter @multiclawcli/cli ...` 静默匹配不到任何包,exit 0 且什么都不跑,
+  2026-10-20 因此白跑了好几轮 CLI 测试)。单跑 CLI 测试:`pnpm --filter multiclaw exec vitest run <file>`。
 - **`pnpm verify` 跑普通 `test`,不查 coverage 门槛**:新增未测的 core 文件会把函数覆盖率压低,
   让 CI 的 `test:coverage` 红(core 需 90/85/90/90)。**新文件要么配测试,要么本地单独跑 `test:coverage` 兜底**
   (2026-10-12 踩坑:`providers/detect.ts` 上线时一度 0% funcs,已补 `detect.test.ts`)。
@@ -116,6 +122,16 @@
   `vitest: command not found` —— **再跑一次 `pnpm install` 自愈**。
 - 增量 install 可能把新平台二进制错写进 `node_modules/.modules.yaml` 的 `skipped`;
   `pnpm install --force` 修好;排查:`grep -n skipped node_modules/.modules.yaml`。
+
+## `multiclaw upgrade`(cli)
+- **不变量:升级必须打到"当前正在运行的那一份"所在的 prefix**。原实现硬编码 `npm install -g`,
+  在 pnpm 全局安装的机器上会装到 npm 的 prefix,`--version` 永远不变(2026-10-21 用户报障,已修)。
+- `findPackageRoot()` 从 `import.meta.url` 向上找 `package.json.name === "multiclaw"`;
+  `detectInstaller(pkgRoot)` 靠路径签名判安装器(pnpm/bun/yarn 的签名要在通用 `/node_modules/` 之前匹配)。
+- 只给 **npm / pnpm** 实现 `view` + `add -g` 命令对;bun/yarn/unknown **明确报错 + 给手动命令,不猜**。
+  registry 查询走安装器自己的 `view`,以尊重 `.npmrc` 镜像(别改成硬编码 fetch)。
+- 装完必须 `readInstalledVersion(pkgRoot)` 复查(readFileSync,不走 require 缓存),不符则退出 1。
+- `runUpgrade(ctx)` 接受注入的 `exec`/`readVersion` → 测试零 mock。
 
 ## 待真机验证(mock 覆盖不了,需真实 API 密钥 / 真实二进制)
 - [ ] `session/request_permission`:同一份「默认 tools + 读 `secret.txt`」配置必须真返回文件内容,不再 `PERMISSION_DENIED`。
