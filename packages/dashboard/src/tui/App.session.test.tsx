@@ -53,6 +53,10 @@ describe("App · caller-owned live sessions", () => {
   let steerCapable: boolean
   let steers: { agentId: string; text: string }[]
   let supplementResult: () => RuntimeSupplementResult
+  /** Makes the fake bridge's delivery throw, as a stuck agent would. */
+  let supplementError: string | undefined
+  /** Runs when a delivery is attempted, so a test can release a held prompt. */
+  let supplementHook: (() => void) | undefined
 
   beforeEach(() => {
     exit.mockReset()
@@ -66,6 +70,8 @@ describe("App · caller-owned live sessions", () => {
     steerCapable = false
     steers = []
     supplementResult = () => ({ status: "injected" })
+    supplementError = undefined
+    supplementHook = undefined
     const runtime: AgentRuntime = {
       name: RUNTIME,
       async describe() {
@@ -105,6 +111,8 @@ describe("App · caller-owned live sessions", () => {
             ? {
                 async supplement(text: string) {
                   steers.push({ agentId, text })
+                  supplementHook?.()
+                  if (supplementError) throw new Error(supplementError)
                   return supplementResult()
                 },
               }
@@ -651,6 +659,41 @@ describe("App · caller-owned live sessions", () => {
       // orchestration scheduled, so the command is refused before it is sent.
       expect(supplement).not.toHaveBeenCalled()
       expect(frame).toContain("/steer only applies while a turn is running")
+    })
+
+    // A delivery that throws is not a message that arrived at the wrong moment.
+    // Reporting it as bad timing would tell the user to wait for a failure.
+    it("reports a failed delivery as a failure, not as bad timing", async () => {
+      steerCapable = true
+      supplementError = "agent is stuck"
+      const runningNow = deferred()
+      const release = deferred()
+      supplementHook = () => release.resolve()
+      respond = async (id) => {
+        if (id === "leader") return RUN
+        runningNow.resolve()
+        await release.promise
+        return DONE
+      }
+      const tracker = turns(1)
+
+      const frame = stripAnsi(
+        await driveFrame(
+          <App config={config()} sessions={sessions} onTurnStart={tracker.start} />,
+          {
+            keys: ["build API", "\r"],
+            ready: runningNow.promise,
+            thenKeys: ["/pause", "\r", "/steer tighten the error handling", "\r"],
+            thenReady: tracker.ready,
+          }
+        )
+      )
+
+      expect(frame).toContain("could not reach architect: agent is stuck — queued as a follow-up")
+      expect(frame).not.toContain("between turns")
+      // The text is still not lost, and still does not start a turn on its own.
+      expect(frame).toContain("tighten the error handling")
+      expect(prompts).toHaveLength(2)
     })
   })
 })

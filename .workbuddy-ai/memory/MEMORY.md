@@ -165,12 +165,18 @@
 - `runUpgrade(ctx)` 接受注入的 `exec`/`readVersion` → 测试零 mock。
 
 ## 待真机验证(mock 覆盖不了,需真实 API 密钥 / 真实二进制)
-- [ ] `session/request_permission`:同一份「默认 tools + 读 `secret.txt`」配置必须真返回文件内容,不再 `PERMISSION_DENIED`。
-- [ ] codex-acp:角色提示词走 AIR 命名空间后的**实际指令遵从度**;工具限制缺失时的实际行为(用于拍板下方开放问题)。
+- [x] `session/request_permission`(2026-10-31 已验):默认 tools 下 Read 成功读到 `secret.txt`,
+  零 `permission_rejected`。**同时推翻了两条旧预期**:默认 allowlist 含 `Bash`,所以 `rm` 不经
+  审批直接删文件、`grep` 类任务直接走 Bash——`tools` 是**审批白名单,不是能力上限**。
+  `docs/provider-verification.md` §3.2/§3.3 已按实测改写。
+- [x] codex-acp AIR `customInstructions` 遵从度(2026-10-31):角色提示词要求"每句以 CODEX-OK 开头",
+  codex 与 claude 都照做。AIR 命名空间这条路可用。
+- [x] `session/load` 跨会话续接(2026-10-31):关掉会话后用同一 sessionId + `resume:"continue"`
+  重开,仍记得上一轮的 7319。
 - [ ] `multiclaw init`:在无 claude CLI 但装了 `claude-agent-acp` 的环境里的表现。
 - [x] steering(claude/codex 两个真 bridge,2026-10-31 已验):`injected` 真被接受且真的影响输出、
   `promptRequired` 在 claude 空闲时真挡住自起 turn、codex 的 `startedNewTurn` 真能 cancel 掉、
-  steer 之后会话仍可继续 prompt。**未验**:opencode(原生 ACP,不确定是否支持该扩展)。
+  steer 之后会话仍可继续 prompt。opencode 不广告该扩展(已验,走 unsupported 分支)。
 
 ## 开放问题
 - **codex 的工具限制**(命名空间分派已实现,此项待拍板):角色提示词已走 AIR 命名空间,但 codex

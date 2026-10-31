@@ -1,3 +1,4 @@
+import type { SupplementReport } from "@multiclawcli/core"
 import stringWidth from "string-width"
 
 /**
@@ -226,4 +227,50 @@ export function formatCost(usd: number): string {
   if (usd === 0) return "$0.00"
   if (usd < 0.01) return "<$0.01"
   return `$${usd.toFixed(2)}`
+}
+
+/**
+ * What to tell the user after a mid-turn message.
+ *
+ * Reports are per agent and each carries its own reason, so the sentence names
+ * agents rather than summarising an outcome: "steered architect · leader was
+ * between turns" tells the user what happened to whom, while "steering failed"
+ * tells them nothing they can act on.
+ *
+ * `error` and `idle` must never be collapsed: the first is a delivery that went
+ * wrong, the second is a message that arrived at the wrong moment. Calling the
+ * first the second would tell the user to simply wait when they should be
+ * looking at a failure.
+ *
+ * When nothing was delivered the caller queues the text, so the sentence says
+ * so — otherwise the user is left believing their message is inside the turn
+ * they are watching.
+ */
+export function describeSteering(reports: readonly SupplementReport[]): string {
+  const names = (list: readonly SupplementReport[]) =>
+    list.map((report) => report.agentId).join(", ")
+  const of = (status: SupplementReport["status"]) =>
+    reports.filter((report) => report.status === status)
+  const injected = of("injected")
+  const idle = of("idle")
+  const unsupported = of("unsupported")
+  const failed = of("error")
+  const why = failed.find((report) => report.error)?.error ?? "unknown error"
+
+  if (injected.length > 0) {
+    const parts = [`steered ${names(injected)}`]
+    if (idle.length > 0) {
+      parts.push(`${names(idle)} ${idle.length === 1 ? "was" : "were"} between turns`)
+    }
+    if (unsupported.length > 0) parts.push(`${names(unsupported)} cannot take mid-turn input`)
+    // No "queued" here on purpose: part of the message did land, so replaying it
+    // as the next turn would say everything twice.
+    if (failed.length > 0) parts.push(`${names(failed)} could not take it: ${why}`)
+    return parts.join(" · ")
+  }
+  if (failed.length > 0) return `could not reach ${names(failed)}: ${why} — queued as a follow-up`
+  if (unsupported.length > 0) {
+    return "no running agent can take mid-turn input — queued as a follow-up"
+  }
+  return "no agent was mid-turn — queued as a follow-up"
 }

@@ -57,7 +57,7 @@ import {
   WelcomePanel,
 } from "./components/panels"
 import { CommandMenu, Prompt } from "./components/prompt"
-import { formatCost, formatDuration } from "./format"
+import { describeSteering, formatCost, formatDuration } from "./format"
 import { exportPath, exportTurn, historyPath, saveHistory } from "./history"
 import { computeLayout } from "./layout"
 import {
@@ -801,25 +801,13 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     }
     if (!mountedRef.current || closingRef.current) return
     const injected = reports.filter((report) => report.status === "injected")
-    if (injected.length > 0) {
-      for (const report of injected) {
-        dispatch({ type: "stream:note", agentId: report.agentId, text: `[steer] ${text}` })
-      }
-      const missed = reports.filter((report) => report.status !== "injected")
-      const steered = injected.map((report) => report.agentId).join(", ")
-      setNotice(
-        missed.length === 0
-          ? `steered ${steered}`
-          : `steered ${steered} · ${missed.map((report) => report.agentId).join(", ")} ${missed.length === 1 ? "was" : "were"} between turns`
-      )
-      return
+    // Queue only when nothing landed. A partial delivery is not a lost message,
+    // and replaying it as the next turn would say everything twice.
+    if (injected.length === 0) setQueue((current) => [...current, text])
+    for (const report of injected) {
+      dispatch({ type: "stream:note", agentId: report.agentId, text: `[steer] ${text}` })
     }
-    setQueue((current) => [...current, text])
-    setNotice(
-      reports.some((report) => report.status === "unsupported")
-        ? "no running agent can take mid-turn input — queued as a follow-up"
-        : "no agent was mid-turn — queued as a follow-up"
-    )
+    setNotice(describeSteering(reports))
   }, [])
 
   const runCommand = useCallback(

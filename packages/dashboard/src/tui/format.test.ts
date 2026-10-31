@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   circled,
+  describeSteering,
   displayWidth,
   elapsedSince,
   formatCost,
@@ -228,5 +229,50 @@ describe("wrapLine", () => {
   it("treats a zero or negative width as one column", () => {
     expect(wrapLine("ab", 0)).toEqual(["a", "b"])
     expect(wrapLine("ab", -5)).toEqual(["a", "b"])
+  })
+})
+
+describe("describeSteering", () => {
+  it("names the agents that took the message", () => {
+    expect(describeSteering([{ agentId: "architect", status: "injected" }])).toBe(
+      "steered architect"
+    )
+  })
+
+  it("says who was between turns without claiming they failed", () => {
+    expect(
+      describeSteering([
+        { agentId: "architect", status: "injected" },
+        { agentId: "leader", status: "idle" },
+      ])
+    ).toBe("steered architect · leader was between turns")
+  })
+
+  // The whole point of the function: a delivery that threw is not a message
+  // that arrived at the wrong moment, and telling the user to wait would hide
+  // the failure.
+  it("reports a failed delivery as a failure, with its reason", () => {
+    expect(
+      describeSteering([{ agentId: "architect", status: "error", error: "agent is stuck" }])
+    ).toBe("could not reach architect: agent is stuck — queued as a follow-up")
+  })
+
+  it("keeps the partial case distinct from the queued one", () => {
+    const notice = describeSteering([
+      { agentId: "architect", status: "injected" },
+      { agentId: "leader", status: "error", error: "no ack" },
+    ])
+    expect(notice).toBe("steered architect · leader could not take it: no ack")
+    expect(notice).not.toContain("queued")
+  })
+
+  it("explains the unsupported bridge and the empty turn differently", () => {
+    expect(describeSteering([{ agentId: "dev", status: "unsupported" }])).toBe(
+      "no running agent can take mid-turn input — queued as a follow-up"
+    )
+    expect(describeSteering([{ agentId: "dev", status: "idle" }])).toBe(
+      "no agent was mid-turn — queued as a follow-up"
+    )
+    expect(describeSteering([])).toBe("no agent was mid-turn — queued as a follow-up")
   })
 })

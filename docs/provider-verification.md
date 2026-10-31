@@ -6,7 +6,7 @@
 >
 > **为什么不在 CI**：需要真实 API key / 登录态 / 特定 PATH 环境，且会消耗真实额度。
 >
-> **怎么用**：按章节逐项验证，把结果记入文末[记录表](#8-结果记录表)。失败的项请带上
+> **怎么用**：按章节逐项验证，把结果记入文末[记录表](#9-结果记录表)。失败的项请带上
 > 「代码落点」一栏的文件名开 issue——那一栏就是该项期望行为的定义处。
 
 ## 0. 前置条件
@@ -53,11 +53,17 @@ bridged：`claude-agent-acp`、`codex-acp`（两者由 multiclaw 自带，用户
 | # | 步骤 | 预期 | 代码落点 |
 | --- | --- | --- | --- |
 | 3.1 | agent 不配 `tools`（用默认三项），任务：「读取 `<workDir>/secret.txt` 并原样汇报内容」；事先放入 `secret.txt` | 运行成功，agent 输出**包含文件内容**；全程无 `PERMISSION_DENIED`、无 `permission_rejected` 事件 | `runtime/AcpRuntime.ts` `decidePermission`（name-first）；`orchestrator/AgentRunner.ts` 默认 tools |
-| 3.2 | 同上配置，任务改为：「删除 `<workDir>/secret.txt`」 | 删除被拒；TUI/日志可见 `permission_rejected`（name 为删除类工具）；文件仍在 | 同上；kind 兜底表 `KIND_TO_TOOLS` |
-| 3.3 | 任务包含需要 `Edit`/`Grep`/`WebFetch` 的步骤 | `Edit`/`Write` 在默认 tools 内被批准；`Grep`/`Glob`/`WebFetch` **不在**三项内 → 被拒（这是预期，fail-closed 的代价） | `KIND_TO_TOOLS`（`search`/`fetch` 仅作 kind 兜底） |
+| 3.2 | 同上配置，任务改为：「用 shell 命令删除 `<workDir>/secret.txt`」 | **记录实际行为**，不要预设被拒：默认 allowlist 含 `Bash`，而 `rm` 是 Bash 内部命令 → 执行成功、文件被删、全程无审批请求 | 同上 |
+| 3.3 | 任务包含需要搜索/抓取的步骤 | **记录实际行为**：模型通常用 `Bash` 或 `Read` 就完成了，不必然以 `Grep`/`WebFetch` 的名义请求；只有真以这些名字请求时才被拒（不在默认三项内） | `KIND_TO_TOOLS`（`search`/`fetch` 仅作 kind 兜底） |
 
 > 3.1 是历史遗留的专项：bridge 早期对某些内置工具的 `name` 传递有问题，曾被误杀成
 > `PERMISSION_DENIED`。若复现，先记录 bridge 版本再开 issue。
+>
+> **3.2/3.3 的原预期在 2026-10-31 实测中被推翻**，两处都已改成「记录实际行为」：默认
+> `tools` 里有 `Bash`，而 `Bash` 能 `rm`、能 `grep`，所以「删除被拒」不会发生。fail-closed
+> 只在**工具名**这一层成立——`tools` 是审批白名单，不是能力上限，更不是沙箱。README 里
+> 「这不是沙箱，也不是细粒度的路径或命令授权」是准确表述；把这里写成「删除会被拒」会让
+> 下一个验证者去报一个不存在的 bug。
 
 ## 4. codex-acp：AIR `customInstructions` 遵从度
 
@@ -97,10 +103,34 @@ diffPatch/subagent 等未映射格式），只发这一个 key。
 prompt 前缀。若环境允许，验证 §4.1 的可观测指令在 cursor 上的遵从度，并确认 `agent --version`
 的 confirm 逻辑（`/cursor/i`）不会把别的 `agent` 二进制误判成 Cursor。
 
-## 8. 结果记录表
+## 8. 中途纠偏（steering）
+
+背景：`_session/steering` 不是 ACP 标准，是两个 bridge 各自实现的扩展，能力靠
+`InitializeResponse._meta.steering.supported === true` 广告（见 `runtime/AcpRuntime.ts` 的
+`advertisesSteering`）。所以「这个 provider 支持不支持」只能实测，不能从文档推。
+
+| # | 步骤 | 预期（记录**实际**行为） | 代码落点 |
+| --- | --- | --- | --- |
+| 8.1 | 开一个会话，**空闲**时调 `session.supplement("…")` | 返回 `{status:"idle"}`，且会话随后仍能正常 `prompt` | `AgentSessionManager.supplement`（只投 `running` 会话）+ `AcpRuntime` 的 `idle` 分支 |
+| 8.2 | 跑一个长任务（如「数到 200，一行一个」），在**第一块流式输出之后**调 `supplement`（例如「停止计数，只回 BANANA」） | 返回 `{status:"injected"}`，且后续输出真的改变 | `AcpRuntime.supplement`（`_session/steering` + `STEER_ACK_MS`） |
+| 8.3 | 用裸 ACP client 绕过 runtime 的守卫，对**空闲**会话直接发 `_session/steering`，带 `_meta.steering.idleBehavior = "promptRequired"` | 记录 `outcome`：`promptRequired` 表示 bridge 没自起 turn；`startedNewTurn` 表示它起了，需要 `session/cancel` 清场 | 同 8.2；`startedNewTurn` 分支 |
+
+> 2026-10-31 实测（claude-agent-acp 0.93.0 + haiku，codex-acp 2.2.2，opencode 1.19.0）：
+> 两个 bridge 都广告 `supported: true`，opencode 不广告（`supplement: false`）。
+> 8.1 三家都符合预期。8.2 都 `injected`，但**送达≠照做**：claude 当场打断（数到 4 就回
+> BANANA），codex 把当前轮跑完才应用（数满 200 之后才回 BANANA）。
+> 8.3 两者相反：claude 回 `{"outcome":"promptRequired","reason":"noRunningTurn"}`（1ms、不起
+> turn、不调模型），codex 回 `{"outcome":"startedNewTurn"}` 并且真的开跑——所以那条守卫是
+> 必需的。清场时 `session/cancel` **必须以通知发出**（按 request 发会被 `-32601` 打回），
+> 发出后流在两个 in-flight chunk 后停住。
+>
+> **未验**：cursor-agent（catalog 里 `meta: undefined`）。
+
+## 9. 结果记录表
 
 | 日期 | 环境（OS / Node / bridge 版本 / provider 版本） | 验证人 | 通过项 | 失败项 | 备注 / issue |
 | --- | --- | --- | --- | --- | --- |
+| 2026-10-31 | macOS 27.0.1 arm64 / Node 22.22.2 / claude-agent-acp 0.93.0 + codex-acp 2.2.2 / claude 2.1.278、codex-cli 0.162.1、opencode 1.19.0 | multiclaw dev session（真实 API 额度） | §3.1、§4.1、§4.2、§6（`session/load` 跨会话续接）、§8.1–8.3 | §3.2/§3.3 **原预期**（已按实测改正，非代码缺陷） | §1.x、§2.x、§5、§6.1–6.3（TUI/CLI 层）、§7 未跑 |
 | _待填_ | | | | | |
 
 **失败时**：先比对「代码落点」一栏确认期望行为是否仍如描述；若描述与行为一致但真机不符，
