@@ -20,6 +20,11 @@
 
 验证任何一项前，先跑 `multiclaw doctor` 确认 provider 状态符合预期（见 §1）。
 
+> **先确认你跑的是哪个二进制。** `resolveExecutable` 优先用 PATH 上的桥，只有找不到才回落到
+> multiclaw 自带的 bundled 版本。开发机上 PATH 里常常已经有一份（比如另一个工具装的
+> `claude-agent-acp`），于是「我以为在验 0.95.0」实际验的是 PATH 上的 0.89.1。开始前先跑
+> `which -a claude-agent-acp codex-acp`，把版本记进结果表。
+
 ## 1. 环境探测：`multiclaw doctor`
 
 Provider 目录见 `packages/core/src/providers/catalog.ts`。native ACP：`opencode`、`cursor-agent`；
@@ -115,14 +120,18 @@ prompt 前缀。若环境允许，验证 §4.1 的可观测指令在 cursor 上�
 | 8.2 | 跑一个长任务（如「数到 200，一行一个」），在**第一块流式输出之后**调 `supplement`（例如「停止计数，只回 BANANA」） | 返回 `{status:"injected"}`，且后续输出真的改变 | `AcpRuntime.supplement`（`_session/steering` + `STEER_ACK_MS`） |
 | 8.3 | 用裸 ACP client 绕过 runtime 的守卫，对**空闲**会话直接发 `_session/steering`，带 `_meta.steering.idleBehavior = "promptRequired"` | 记录 `outcome`：`promptRequired` 表示 bridge 没自起 turn；`startedNewTurn` 表示它起了，需要 `session/cancel` 清场 | 同 8.2；`startedNewTurn` 分支 |
 
-> 2026-10-31 实测（claude-agent-acp 0.93.0 + haiku，codex-acp 2.2.2，opencode 1.19.0）：
-> 两个 bridge 都广告 `supported: true`，opencode 不广告（`supplement: false`）。
-> 8.1 三家都符合预期。8.2 都 `injected`，但**送达≠照做**：claude 当场打断（数到 4 就回
-> BANANA），codex 把当前轮跑完才应用（数满 200 之后才回 BANANA）。
+> 2026-10-31 实测（claude-agent-acp **0.89.1**——PATH 上那份，见 §0 的版本警告——加 haiku；
+> codex-acp 2.2.2；opencode 1.19.0）：两个 bridge 都广告 `supported: true`，opencode 不广告
+> （`supplement: false`）。8.1 三家都符合预期。8.2 都 `injected`，但**送达≠照做**：claude 当场
+> 打断（数到 4 就回 BANANA），codex 把当前轮跑完才应用（数满 200 之后才回 BANANA）。
 > 8.3 两者相反：claude 回 `{"outcome":"promptRequired","reason":"noRunningTurn"}`（1ms、不起
 > turn、不调模型），codex 回 `{"outcome":"startedNewTurn"}` 并且真的开跑——所以那条守卫是
 > 必需的。清场时 `session/cancel` **必须以通知发出**（按 request 发会被 `-32601` 打回），
 > 发出后流在两个 in-flight chunk 后停住。
+>
+> 版本覆盖说明：8.3 的空闲分支是用 bundled 的 **0.93.0** 裸 client 验的；本机随后升到 0.95.0，
+> 但它的原生二进制（122 MB）在这台机器上下载超时、装不出来，所以 0.95.0 只能确认「广告了
+> steering」，**无法确认能建会话**。换个环境复验时把这两行补齐。
 >
 > **未验**：cursor-agent（catalog 里 `meta: undefined`）。
 
@@ -130,7 +139,7 @@ prompt 前缀。若环境允许，验证 §4.1 的可观测指令在 cursor 上�
 
 | 日期 | 环境（OS / Node / bridge 版本 / provider 版本） | 验证人 | 通过项 | 失败项 | 备注 / issue |
 | --- | --- | --- | --- | --- | --- |
-| 2026-10-31 | macOS 27.0.1 arm64 / Node 22.22.2 / claude-agent-acp 0.93.0 + codex-acp 2.2.2 / claude 2.1.278、codex-cli 0.162.1、opencode 1.19.0 | multiclaw dev session（真实 API 额度） | §3.1、§4.1、§4.2、§6（`session/load` 跨会话续接）、§8.1–8.3 | §3.2/§3.3 **原预期**（已按实测改正，非代码缺陷） | §1.x、§2.x、§5、§6.1–6.3（TUI/CLI 层）、§7 未跑 |
+| 2026-10-31 | macOS 27.0.1 arm64 / Node 22.22.2 / claude-agent-acp 0.89.1（PATH）+ codex-acp 2.2.2 / claude 2.1.278、codex-cli 0.162.1、opencode 1.19.0 | multiclaw dev session（真实 API 额度） | §3.1、§4.1、§4.2、§6（`session/load` 跨会话续接）、§8.1–8.3 | §3.2/§3.3 **原预期**（已按实测改正，非代码缺陷） | §1.x、§2.x、§5、§6.1–6.3（TUI/CLI 层）、§7 未跑；bundled claude 桥 0.95.0 本机装不出原生二进制（122 MB 下载超时），只能确认它广告 steering |
 | _待填_ | | | | | |
 
 **失败时**：先比对「代码落点」一栏确认期望行为是否仍如描述；若描述与行为一致但真机不符，

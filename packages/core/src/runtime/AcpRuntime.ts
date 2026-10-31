@@ -824,9 +824,8 @@ export class AcpRuntime extends RuntimeBase {
        *   `_meta.steering.idleBehavior`. Claude honours that and answers
        *   `promptRequired`; Codex ignores unknown meta and answers
        *   `startedNewTurn`, which is why that branch below has to clean up after
-       *   it (measured 2026-10-31 against claude-agent-acp 0.93.0 and
-       *   codex-acp 2.2.2: `session/cancel` sent as a notification does stop the
-       *   turn Codex started this way).
+       *   it (measured 2026-10-31: `session/cancel` sent as a notification does
+       *   stop the turn Codex started this way).
        * - It has a deadline. "Did my message land?" cannot be a guess.
        *
        * `injected` is about delivery, not obedience, and the two providers

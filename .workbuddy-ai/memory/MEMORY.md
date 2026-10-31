@@ -21,8 +21,11 @@
   - 文档:`RELEASING.md` / `RELEASING.zh-CN.md`;改流程要同步这两份 + `CONTRIBUTING.md` + README 入口。
 
 ## 工具链版本(互相约束)
+- 2026-10-31 实测装的是:vitest **5.0.4**、biome **2.6.2**、typescript **7.0.2**、ink **8.0.0**、
+  react **19.3.1**、`@agentclientprotocol/sdk` **2.0.2**。(下面几行写于 vitest 4 时代,版本号会继续漂,
+  以 `node -e "require('./packages/dashboard/node_modules/vitest/package.json').version"` 为准。)
 - dashboard 无 Vite:web 客户端已移除,构建走根 `tsup` → `dist/tui.js` + `dist/tui.d.ts`。
-  但 vite 仍以传递依赖存在:vitest 4 → vite 8(`engines.node ^20.19||>=22.12`)→ 这就是
+  但 vite 仍以传递依赖存在:vitest → vite(`engines.node ^20.19||>=22.12`)→ 这就是
   `devEngines.runtime.version` 下界 22.12 的来源;ink 8 要求 node >= 22。
 - vitest 3 的 peer vite 不含 8,vitest 4 才是 `^6||^7||^8`;`@vitest/coverage-v8` peer 锁死 vitest 精确版本,
   所以三包 vitest 与根 coverage-v8 必须同版本。ink 8 peer:react >= 19.3.0(dashboard 装 19.3.0)。
@@ -63,7 +66,10 @@
   opencode 默认、误报不可用(dev-team 示例即此形态,2026-10-12 修 + 回归测试)。
 
 ## ACP 接入
-- SDK:`@agentclientprotocol/sdk@1.8.0`(peer `zod@4.6.5`,zod ≈8MB)。**必须懒加载**,否则拖垮 CLI 启动。
+- SDK:`@agentclientprotocol/sdk`(**2026-10-31 dependabot 升到 2.0.2**;peer `zod@4.6.7`)。**必须懒加载**,否则拖垮 CLI 启动。
+- **SDK 2.0 改了 dist 布局**:根导出指向 `dist/v1/stable/acp.js`(仍是 `PROTOCOL_VERSION = 1`,
+  `client`/`ndJsonStream`/`methods` 都没变,我们的代码零改动通过)。直接 import
+  `.../sdk/dist/acp.js` 会 `ERR_MODULE_NOT_FOUND`——裸 client 脚本要写 `dist/v1/stable/acp.js`。
 - **两个 ACP 桥(`claude-agent-acp` / `codex-acp`)是 multiclaw 自己的依赖,不是用户全局安装**:
   见 `packages/{core,cli}/package.json`(core + cli 都列)。`providers/bridge.ts` 的 `resolveExecutable()`
   优先用 PATH 上的二进制,否则从 multiclaw 自己的 `node_modules`(`require.resolve` 定位 bin)解析桥的绝对路径再 spawn。
@@ -153,6 +159,13 @@
   `vitest: command not found` —— **再跑一次 `pnpm install` 自愈**。
 - 增量 install 可能把新平台二进制错写进 `node_modules/.modules.yaml` 的 `skipped`;
   `pnpm install --force` 修好;排查:`grep -n skipped node_modules/.modules.yaml`。
+- **本机 PATH 上有两个桥**(`~/.workbuddy-ai/binaries/node/versions/22.22.2-6/bin/`):
+  `claude-agent-acp` **0.89.1**、`codex-acp` **2.2.2**。`resolveExecutable` 优先 PATH,所以
+  **真机验证跑的是 PATH 那份,不是 bundled 的**——2026-10-31 差点把 0.89.1 的结果写成 0.93.0。
+  验证前先 `which -a claude-agent-acp codex-acp`。
+- bundled `claude-agent-acp@0.95.0` 的原生二进制(`@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.309`,
+  **122 MB**)在本机下载超时 → 装不出,`session/new` 报 `Claude native binary not found for darwin-arm64`。
+  `pnpm install --force` 和删 `node_modules` 重装都无效(根因是网络超时,不是状态残留)。换网络后重试。
 
 ## `multiclaw upgrade`(cli)
 - **不变量:升级必须打到"当前正在运行的那一份"所在的 prefix**。原实现硬编码 `npm install -g`,
