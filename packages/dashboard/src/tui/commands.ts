@@ -114,7 +114,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "respond",
     args: "<question id> <JSON object>",
-    description: "Respond to a structured tool question",
+    description: "Answer a question in one line of JSON",
     availability: "always",
   },
   {
@@ -131,14 +131,14 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "approve",
-    args: "<request id> <option number>",
-    description: "Choose an offered permission option explicitly",
+    args: "[id] <number>",
+    description: "Approve the request on screen, or a named one",
     availability: "always",
   },
   {
     name: "deny",
-    args: "<request id>",
-    description: "Deny a pending permission request",
+    args: "[id]",
+    description: "Deny the request on screen, or a named one",
     availability: "always",
   },
   { name: "help", description: "Show the key map", availability: "always" },

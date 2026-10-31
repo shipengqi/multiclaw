@@ -25,6 +25,7 @@ export default defineConfig({
         "src/tui/state.ts",
         "src/tui/format.ts",
         "src/tui/commands.ts",
+        "src/tui/interaction.ts",
         "src/tui/layout.ts",
         "src/tui/history.ts",
       ],

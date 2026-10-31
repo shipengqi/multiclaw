@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   computeLayout,
+  MAX_INTERACTION_ROWS,
   MAX_MENU_ROWS,
   MAX_QUEUE_ROWS,
   MAX_RAIL_ROWS,
@@ -105,6 +106,37 @@ describe("computeLayout", () => {
 
   it("clamps a negative queue request to zero", () => {
     expect(computeLayout({ ...base, queueRows: -3 }).queueRows).toBe(0)
+  })
+
+  // The interaction bar is docked above the prompt, so its rows come out of the
+  // same budget as every other piece of chrome.
+  describe("interaction bar", () => {
+    it("charges the bar and its gap against the body", () => {
+      const layout = computeLayout({ ...base, interactionRows: 5 })
+      expect(layout.interactionRows).toBe(5)
+      expect(layout.bodyHeight).toBe(30 - 7 - 6)
+    })
+
+    it("asks for nothing when nothing is pending", () => {
+      const layout = computeLayout({ ...base, interactionRows: 0 })
+      expect(layout.interactionRows).toBe(0)
+      expect(layout.bodyHeight).toBe(30 - 7)
+    })
+
+    it("never lets the bar push the prompt off a short terminal", () => {
+      const rows = 18
+      const layout = computeLayout({ ...base, rows, interactionRows: 40 })
+      expect(layout.interactionRows).toBeLessThanOrEqual(MAX_INTERACTION_ROWS)
+      // Everything reserved plus the body has to still fit the terminal: what
+      // Ink drops on overflow is the bottom of the tree, which is the prompt.
+      const reserved = rows - layout.bodyHeight
+      expect(reserved + layout.bodyHeight).toBeLessThanOrEqual(rows)
+      expect(layout.bodyHeight).toBeGreaterThanOrEqual(3)
+    })
+
+    it("drops the bar entirely rather than starving the body", () => {
+      expect(computeLayout({ ...base, rows: 10, interactionRows: 8 }).interactionRows).toBe(0)
+    })
   })
 
   it("ignores a negative palette height", () => {

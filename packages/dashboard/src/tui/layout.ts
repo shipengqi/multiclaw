@@ -32,6 +32,25 @@ export const MAX_MENU_ROWS = 7
 /** Queued follow-ups sit above the prompt; more than a few would crowd the stream. */
 export const MAX_QUEUE_ROWS = 3
 
+/**
+ * The most rows the interaction bar is ever allowed to occupy.
+ *
+ * An agent blocked on a permission or a question is the one thing on screen
+ * worth acting on, so its bar is allowed more room than a queue or a palette —
+ * but not unlimited: it is docked *beside* the stream, and a bar tall enough to
+ * push the stream out would undo the reason it was docked.
+ */
+export const MAX_INTERACTION_ROWS = 10
+
+/**
+ * The fewest rows worth docking the bar for.
+ *
+ * Header, title, one option and the hint is the least that can be read and acted
+ * on. Below that the bar would be a header with no choices under it, which is
+ * worse than leaving the stream alone and deciding by command.
+ */
+export const MIN_INTERACTION_ROWS = 4
+
 /** Rows that must survive the budget no matter how small the terminal is. */
 const MIN_BODY_ROWS = 3
 
@@ -46,6 +65,14 @@ export interface LayoutInput {
   menuRows: number
   /** Rows the queued follow-ups are asking for. */
   queueRows?: number
+  /**
+   * Rows the interaction bar is asking for.
+   *
+   * It docks above the prompt rather than replacing the body, so its rows come
+   * out of the same budget as every other piece of chrome — an unbudgeted row
+   * here would show up as a stream pane that silently loses its last line.
+   */
+  interactionRows?: number
   /**
    * Rows the prompt is asking for.
    *
@@ -94,6 +121,7 @@ export interface Layout {
   streamWidth: number
   menuRows: number
   queueRows: number
+  interactionRows: number
 }
 
 /**
@@ -143,10 +171,11 @@ export function computeLayout(input: LayoutInput): Layout {
     ? Math.min(MAX_RAIL_ROWS, Math.max(1, measureRailRows(input.railCells, columns)))
     : 0
 
-  // Every row the chrome takes, so the body can be given whatever is left. This
-  // has to be exact: when the column overflows, Yoga shrinks whichever child it
-  // can, and an unbudgeted row shows up as a header that silently vanishes.
-  const reserved =
+  // Everything except the interaction bar, so the bar can be given only what is
+  // actually left. Without this clamp a tall bar on a short terminal pushes the
+  // total past `rows`, and what Ink drops is the bottom of the tree — the prompt
+  // and the hint bar, which are the two rows the user is typing into.
+  const chrome =
     1 + // header
     1 + // rule under the header
     (railRows > 0 ? railRows + 1 : 0) + // pipeline rail plus the gap above it
@@ -157,6 +186,16 @@ export function computeLayout(input: LayoutInput): Layout {
     menuRows +
     promptRows +
     1 // hint bar
+  const barRoom = Math.max(0, rows - chrome - MIN_BODY_ROWS - 1) // -1 for the gap above it
+  const interactionRows =
+    barRoom < MIN_INTERACTION_ROWS
+      ? 0
+      : Math.min(Math.max(0, input.interactionRows ?? 0), MAX_INTERACTION_ROWS, barRoom)
+
+  // Every row the chrome takes, so the body can be given whatever is left. This
+  // has to be exact: when the column overflows, Yoga shrinks whichever child it
+  // can, and an unbudgeted row shows up as a header that silently vanishes.
+  const reserved = chrome + (interactionRows > 0 ? interactionRows + 1 : 0)
 
   const bodyHeight = Math.max(MIN_BODY_ROWS, rows - reserved)
   const showTeam = !compact
@@ -182,5 +221,6 @@ export function computeLayout(input: LayoutInput): Layout {
     streamWidth,
     menuRows,
     queueRows,
+    interactionRows,
   }
 }

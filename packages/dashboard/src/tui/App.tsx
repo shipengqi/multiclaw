@@ -24,6 +24,7 @@ import {
   argQuery,
   canRun,
   completeAgents,
+  isCommandLine,
   matchCommands,
   menuQuery,
   type PaletteRow,
@@ -40,14 +41,8 @@ import {
   Rule,
   railCellWidths,
 } from "./components/chrome"
-import {
-  HelpOverlay,
-  HistoryOverlay,
-  listWindowStart,
-  PermissionOverlay,
-  QuestionOverlay,
-  questionLines,
-} from "./components/overlays"
+import { PermissionBar, QuestionForm } from "./components/interaction"
+import { HelpOverlay, HistoryOverlay, listWindowStart } from "./components/overlays"
 import {
   Divider,
   ErrorPanel,
@@ -59,6 +54,25 @@ import {
 import { CommandMenu, MARKER_WIDTH, Prompt, promptRowCount } from "./components/prompt"
 import { describeSteering, formatCost, formatDuration } from "./format"
 import { exportPath, exportTurn, historyPath, saveHistory } from "./history"
+import {
+  clean,
+  commitField,
+  type FormState,
+  focusField,
+  formComplete,
+  formContent,
+  formFields,
+  initialForm,
+  interactionRows,
+  jumpCursor,
+  jumpPick,
+  moveCursor,
+  movePick,
+  permissionChoices,
+  toggleBoolean,
+  toggleChoice,
+  withDraft,
+} from "./interaction"
 import { computeLayout, MIN_COLUMNS } from "./layout"
 import {
   journalTurn,
@@ -334,7 +348,20 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   const mountedRef = useRef(true)
   const interactionsRef = useRef<PendingInteraction[]>([])
   const [interactions, setInteractions] = useState<PendingInteraction[]>([])
-  const [questionScroll, setQuestionScroll] = useState({ id: "", offset: 0 })
+  // Which option the user has pointed at, and whether they have asked for the
+  // keyboard back. Keyed by the alias of the request it belongs to, so a new
+  // request starts with nothing selected and nothing released — derived rather
+  // than reset in an effect, so no frame is ever drawn with the previous
+  // request's highlight sitting on the current one.
+  const [permissionMenu, setPermissionMenu] = useState<{
+    id: string
+    cursor: number | undefined
+    released: boolean
+  }>({ id: "", cursor: undefined, released: false })
+  const [formEntry, setFormEntry] = useState<{ id: string; state: FormState }>({
+    id: "",
+    state: initialForm(),
+  })
 
   const requestPermission = useCallback<RuntimePermissionHandler>((request, signal) => {
     if (closingRef.current || signal.aborted) return Promise.resolve(undefined)
@@ -764,6 +791,32 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   const argOpen = !helpOpen && !historyOpen && arg !== undefined && argRows.length > 0
   const paletteOpen = menuOpen || argOpen
 
+  // The request the console is asking about, and the two pieces of state that
+  // belong to it. Both are keyed by the alias so a decision made on one request
+  // cannot be read as a decision about the next.
+  const front = interactions[0]
+  const menu =
+    front?.kind === "permission" && permissionMenu.id === front.shortId
+      ? permissionMenu
+      : { id: front?.shortId ?? "", cursor: undefined, released: false }
+  const frontQuestion = front?.kind === "question" ? front : undefined
+  const questionFields = useMemo(
+    () => (frontQuestion ? formFields(frontQuestion.request) : []),
+    [frontQuestion]
+  )
+  const form =
+    frontQuestion !== undefined && formEntry.id === frontQuestion.shortId
+      ? formEntry.state
+      : initialForm()
+  // A text field is edited in the prompt, which already owns the caret, the
+  // wrapping and the paste handling. The placeholder names the field so the
+  // line does not look like it is still taking a follow-up.
+  const formField = frontQuestion === undefined ? undefined : questionFields[form.field]
+  const editingField =
+    formField !== undefined && (formField.kind === "text" || formField.kind === "number")
+      ? formField
+      : undefined
+
   // The prompt wraps, so a long input makes it taller than one row — and every
   // row it takes is a row the body cannot have. Measured here, before the
   // layout, for the same reason `railCells` is: Ink cannot be asked how tall a
@@ -781,6 +834,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     overlay: helpOpen || historyOpen,
     menuRows: paletteOpen ? paletteTotal : 0,
     queueRows: queue.length,
+    interactionRows: interactionRows(interactions, Math.max(MIN_COLUMNS, columns)),
     promptRows,
     notice: notice !== undefined || (queuePaused && queue.length > 0),
     viewing: state.view !== undefined,
@@ -889,25 +943,48 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
         }
         case "approve":
         case "deny": {
-          const [id, number] = args
-          if (!id || (name === "approve" ? args.length !== 2 : args.length !== 1)) {
+          // The alias is optional. The request on screen is the default target,
+          // so `/approve 1` and a bare `/deny` are the shapes the bar itself
+          // advertises; naming the id is only how you reach a request behind
+          // the one on screen.
+          const onScreen = interactionsRef.current[0]
+          const byId = (id: string): PendingInteraction | undefined => {
+            const found = interactionsRef.current.filter(
+              (item) => item.request.requestId === id || item.shortId === id
+            )
+            if (found.length !== 1) setNotice(`unknown or stale permission request: ${id}`)
+            return found.length === 1 ? found[0] : undefined
+          }
+
+          let entry: PendingInteraction | undefined
+          let number: string | undefined
+          if (name === "approve" && args.length === 1 && /^\d+$/.test(args[0])) {
+            number = args[0]
+            entry = onScreen
+          } else if (name === "approve" && args.length === 2) {
+            number = args[1]
+            entry = byId(args[0])
+          } else if (name === "deny" && args.length === 0) {
+            entry = onScreen
+          } else if (name === "deny" && args.length === 1) {
+            entry = byId(args[0])
+          } else {
             setNotice(
-              name === "approve"
-                ? "usage: /approve <request id> <option number>"
-                : "usage: /deny <request id>"
+              name === "approve" ? "usage: /approve [id] <option number>" : "usage: /deny [id]"
             )
             return
           }
-          const matches = interactionsRef.current.filter(
-            (entry) => entry.request.requestId === id || entry.shortId === id
-          )
-          if (matches.length !== 1) {
-            setNotice(`unknown or stale permission request: ${id}`)
+
+          if (entry === undefined) {
+            // `byId` has already said why when an id was given; a bare command
+            // with nothing on screen has to say so itself.
+            if (args.length === 0 || /^\d+$/.test(args[0] ?? "")) {
+              setNotice("no permission request on screen")
+            }
             return
           }
-          const entry = matches[0]
           if (entry.kind !== "permission") {
-            setNotice(`not a permission request: ${id}`)
+            setNotice("the request on screen is a question, not a permission")
             return
           }
           if (name === "deny") {
@@ -925,7 +1002,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
             return
           }
           entry.settle(option.optionId)
-          setNotice(`selected ${option.name} for ${entry.shortId}`)
+          setNotice(`selected ${clean(option.name)} for ${entry.shortId}`)
           return
         }
         case "task": {
@@ -1329,7 +1406,13 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       return
     }
 
-    if (key.tab) {
+    // A form owns `tab`: moving between its fields is what tab means while one
+    // is on screen, and cycling the roster behind it is not something the user
+    // can act on while the turn is stopped on their answer. A command line is
+    // exempt so `/respond` and `/dismiss` stay reachable.
+    const formFront = front?.kind === "question" && !isCommandLine(line.text) ? front : undefined
+
+    if (key.tab && formFront === undefined) {
       dispatch({ type: "focus:cycle", delta: key.shift ? -1 : 1 })
       return
     }
@@ -1359,22 +1442,133 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       }
     }
 
-    if (
-      interactions[0]?.kind === "question" &&
-      (key.upArrow || key.downArrow || key.pageUp || key.pageDown)
-    ) {
-      const entry = interactions[0]
-      const capacity = Math.max(1, layout.bodyHeight - 4)
-      const maxOffset = Math.max(0, questionLines(entry.request, layout.columns).length - capacity)
-      const delta = key.pageDown ? capacity : key.pageUp ? -capacity : key.downArrow ? 1 : -1
-      setQuestionScroll((scroll) => ({
-        id: entry.shortId,
-        offset: Math.min(
-          maxOffset,
-          Math.max(0, (scroll.id === entry.shortId ? scroll.offset : 0) + delta)
-        ),
-      }))
-      return
+    // An agent blocked on the user owns the bare keys while the prompt is empty.
+    // The turn is stopped, so nothing typed here can start and a follow-up would
+    // only queue behind a decision that has not been made — the one state where
+    // spending the prompt's keys costs nothing. `esc` gives them back, which is
+    // what keeps "the prompt always has focus" true rather than merely asserted.
+    if (front?.kind === "permission" && line.text === "" && !menu.released) {
+      const total = permissionChoices(front.request).length
+      if (key.upArrow || key.downArrow) {
+        setPermissionMenu({
+          id: front.shortId,
+          cursor: moveCursor(menu.cursor, key.upArrow ? -1 : 1, total),
+          released: false,
+        })
+        return
+      }
+      if (/^[1-9]$/.test(char) && !key.ctrl && !key.meta) {
+        const cursor = jumpCursor(char, total)
+        if (cursor !== undefined) {
+          setPermissionMenu({ id: front.shortId, cursor, released: false })
+          return
+        }
+      }
+      if (key.return) {
+        // Nothing highlighted means nothing to confirm. An `enter` on a fresh
+        // request must not be able to grant a tool the user has not read, so the
+        // selection is what makes `enter` mean anything.
+        const choice =
+          menu.cursor === undefined ? undefined : permissionChoices(front.request)[menu.cursor]
+        if (choice !== undefined) {
+          front.settle(choice.optionId)
+          setNotice(`chose ${choice.label} · ${clean(front.request.agentId)}`)
+        }
+        return
+      }
+    }
+
+    // The form, meanwhile, always owns `enter`: every field advances through it,
+    // including the text ones, whose characters go to the prompt below.
+    if (formFront !== undefined) {
+      const front = formFront
+      const total = questionFields.length
+      const field = questionFields[form.field]
+      const committed = withDraft(questionFields, form, line.text)
+      const save = (state: FormState, draft?: string) => {
+        setFormEntry({ id: front.shortId, state })
+        if (draft !== undefined) setLine({ text: draft, cursor: draft.length })
+      }
+      // The state to carry forward is an argument, not the closure's copy: a
+      // choice is committed by `advance`, and reading the pre-commit state here
+      // would drop exactly the value that was just picked.
+      const moveFocus = (index: number, state: FormState = committed) => {
+        const next = focusField(questionFields, state, index)
+        save(next.state, next.draft)
+      }
+      const submit = (state: FormState) => {
+        if (!formComplete(questionFields, state)) {
+          const missing = questionFields.findIndex((item) => !formComplete([item], state))
+          if (missing >= 0) {
+            setNotice(`${questionFields[missing].title} still needs a value`)
+            if (missing !== form.field) moveFocus(missing, state)
+          }
+          return
+        }
+        const content = formContent(questionFields, state)
+        if (!validateRuntimeQuestionContent(front.request.requestedSchema, content)) {
+          setNotice("answer does not match the question schema")
+          return
+        }
+        front.settle({ action: "accept", content })
+        setFormEntry({ id: "", state: initialForm() })
+        setLine(EMPTY_LINE)
+        setNotice(`answered ${front.shortId}`)
+      }
+      const advance = (state: FormState) => {
+        if (form.field >= total - 1) submit(state)
+        else moveFocus(form.field + 1, state)
+      }
+
+      if (field === undefined) {
+        // A schema with no fields is still a question; `enter` answers it.
+        if (key.return) submit(committed)
+        return
+      }
+      if (key.tab) {
+        moveFocus(key.shift ? form.field - 1 : form.field + 1)
+        return
+      }
+      if (field.choices.length > 0 && (key.upArrow || key.downArrow)) {
+        save(movePick(committed, field, key.upArrow ? -1 : 1))
+        return
+      }
+      if (field.choices.length > 0 && (key.leftArrow || key.rightArrow)) {
+        save(movePick(committed, field, key.leftArrow ? -1 : 1))
+        return
+      }
+      // No choices to pick from: the vertical keys move between fields instead,
+      // which is what they mean on a row that is only text.
+      if (key.upArrow || key.downArrow) {
+        moveFocus(key.upArrow ? form.field - 1 : form.field + 1)
+        return
+      }
+      if (char === " " && field.kind === "multi") {
+        save(toggleChoice(committed, field))
+        return
+      }
+      if (field.kind === "boolean" && (char === " " || key.leftArrow || key.rightArrow)) {
+        save(toggleBoolean(committed, field))
+        return
+      }
+      if (field.choices.length > 0 && /^[1-9]$/.test(char) && !key.ctrl && !key.meta) {
+        save(jumpPick(committed, field, char))
+        return
+      }
+      if (key.return) {
+        advance(field.kind === "choice" ? commitField(questionFields, committed) : committed)
+        return
+      }
+      if (key.escape) {
+        // Escape clears the field being edited, not the form: dropping the whole
+        // question is `/dismiss`, which is a different decision and says so.
+        if (field.kind === "text" || field.kind === "number") {
+          save({ ...committed, values: { ...committed.values, [field.key]: "" } })
+          setLine(EMPTY_LINE)
+        }
+        return
+      }
+      // Everything else is text for the focused field, which the prompt owns.
     }
 
     // In a single-line input the vertical keys are free, and scrolling the
@@ -1456,6 +1650,12 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
         dispatch({ type: "view:close" })
         return
       }
+      // The bar's own escape: hand the keyboard back without deciding anything.
+      // The request stays pending, so `/approve` and `/deny` still reach it —
+      // and a new request starts unreleased, because the alias is part of the key.
+      if (front !== undefined) {
+        setPermissionMenu({ id: front.shortId, cursor: undefined, released: true })
+      }
       setLine(EMPTY_LINE)
       setNotice(undefined)
       return
@@ -1494,15 +1694,40 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
           ? "↑↓ select · enter run · esc close"
           : running
             ? interactions.length > 0
-              ? interactions[0].kind === "question"
-                ? "/respond <id> <JSON> · /skip <id> · /dismiss <id>"
-                : "/approve <id> <number> · /deny <id> · ctrl+c cancel"
+              ? layout.interactionRows === 0
+                ? // Too short to dock the bar, so the commands are the only way in.
+                  "decide with /approve 1 · /deny · /respond"
+                : interactions[0].kind === "question"
+                  ? "tab field · ↑↓ pick · enter next · /dismiss"
+                  : menu.released
+                    ? "/approve 1 and /deny still reach it"
+                    : "↑↓ or 1-9 choose · enter confirm · esc to type"
               : "enter queues · ctrl+c cancel"
             : state.view
               ? "esc live · tab agent · ? help"
               : state.reply
                 ? "enter sends · / commands · ? help"
                 : "tab switch · / commands · ? help"
+
+  // The prompt names what it is editing. While a form is up that is a field and
+  // not a follow-up — it is the same line either way, so it has to say which.
+  // While a permission is pending it says the opposite: typing here is *not* the
+  // way to answer, and the default "type to queue a follow-up" invites exactly
+  // the action that does nothing.
+  const placeholder =
+    frontQuestion !== undefined
+      ? formField === undefined
+        ? "enter to answer"
+        : editingField !== undefined
+          ? `${editingField.title}${editingField.required ? " *" : ""} — enter for the next field`
+          : `${formField.title} — ↑↓ to pick · enter for the next field`
+      : front?.kind === "permission" && !menu.released
+        ? "choose above · esc to type here instead"
+        : running
+          ? RUNNING_PLACEHOLDER
+          : awaitingAnswer
+            ? "answer the leader… · /task starts a new task"
+            : INPUT_PLACEHOLDER
 
   return (
     <Box flexDirection="column" height={layout.rows}>
@@ -1570,23 +1795,6 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
             width={layout.columns}
             maxRows={layout.bodyHeight}
           />
-        ) : interactions[0]?.kind === "question" ? (
-          <QuestionOverlay
-            request={interactions[0].request}
-            shortId={interactions[0].shortId}
-            queued={interactions.length}
-            width={layout.columns}
-            maxRows={layout.bodyHeight}
-            offset={questionScroll.id === interactions[0].shortId ? questionScroll.offset : 0}
-          />
-        ) : interactions[0]?.kind === "permission" ? (
-          <PermissionOverlay
-            request={interactions[0].request}
-            shortId={interactions[0].shortId}
-            queued={interactions.length}
-            width={layout.columns}
-            maxRows={layout.bodyHeight}
-          />
         ) : layout.welcome ? (
           <WelcomePanel turn={state} width={layout.columns} />
         ) : error ? (
@@ -1632,6 +1840,50 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       ) : null}
       <QueueStrip items={queue} max={layout.queueRows} />
 
+      {/* Docked above the prompt rather than replacing the body: an approval is a
+          decision *about* the stream, so the stream has to stay on screen. The
+          height is the budget's and the bar clips into it, the same contract the
+          rail uses — a bar that could grow without limit would push out the
+          context it exists to be judged against. */}
+      {front === undefined || layout.interactionRows === 0 ? null : (
+        <>
+          {/* A rule rather than a gap: the bar is docked *below* the stream, and
+              without a boundary the two read as one region — the request would
+              look like something an agent had printed. It costs the same row the
+              gap did. */}
+          <Rule width={layout.columns} />
+          <Box
+            height={layout.interactionRows}
+            overflow="hidden"
+            flexShrink={0}
+            flexDirection="column"
+          >
+            {front.kind === "permission" ? (
+              <PermissionBar
+                request={front.request}
+                others={interactions
+                  .slice(1)
+                  .flatMap((entry) => (entry.kind === "permission" ? [entry.request] : []))}
+                cursor={menu.cursor}
+                released={menu.released}
+                width={layout.columns}
+              />
+            ) : (
+              <QuestionForm
+                request={front.request}
+                others={interactions
+                  .slice(1)
+                  .flatMap((entry) => (entry.kind === "question" ? [entry.request] : []))}
+                fields={questionFields}
+                form={form}
+                draft={line.text}
+                width={layout.columns}
+              />
+            )}
+          </Box>
+        </>
+      )}
+
       {paletteOpen ? <CommandMenu rows={paletteWindow} selected={paletteSelected} /> : null}
 
       <Prompt
@@ -1639,13 +1891,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
         cursor={line.cursor}
         caretVisible={caretOn}
         width={layout.columns}
-        placeholder={
-          running
-            ? RUNNING_PLACEHOLDER
-            : awaitingAnswer
-              ? "answer the leader… · /task starts a new task"
-              : INPUT_PLACEHOLDER
-        }
+        placeholder={placeholder}
       />
 
       <HintBar

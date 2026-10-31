@@ -67,7 +67,8 @@
 - Ink，exports 只有 `"./tui"`；`startTui` 用 alternate screen，非 TTY 抛错。
 - 状态两层：`TurnView` 与 `TuiState extends TurnView { name; history; view? }`；面板只吃 `TurnView`，prop 叫 `turn`。`history` 只存被顶替的轮次（上限 20）；`snapshot()` 逐字段写出；`view` 是 detached copy。
 - 文字结束（reply/ask）→ `ReplyPanel` 接管 body，状态行 `✓ answered`/`? needs your input`，绝不写 done。
-- keymap：提示符永远持有焦点 → 裸键让位于打字，只有 `?` 与 `/` 两个裸键。运行中提交=入队；取消（ctrl+c / /cancel）连队列一起清。
+- keymap：提示符持有焦点 → 裸键让位于打字；`?`/`/` 是裸键，**外加"请求挂起且输入行为空"时的审批菜单**（见下）。运行中提交=入队；取消（ctrl+c / /cancel）连队列一起清。
+- **交互条**（2026-10-31）：`request_permission` 与 `elicitation/create` 不再替换 body，改为 dock 在 prompt 上方（`Rule` 分隔）。行数走 `computeLayout({interactionRows})`，被 `barRoom = rows - chrome - MIN_BODY_ROWS - 1` 夹住，否则短终端上 Ink 会从树底部裁掉 prompt；`< MIN_INTERACTION_ROWS(4)` 就整块不画、hint 退回命令式。权限=菜单：`↑↓`/`1-9` 移光标、`enter` 提交、`esc` 交还键盘（`released` 按 shortId 键控，新请求自动复位）；**无默认选中**，所以 enter 单按永不会批准。问题=逐字段表单，文本/数字字段复用 prompt 当编辑器（换字段时 `withDraft` 存、`focusField` 取）；`enter` 逐字段前进并在最后一格提交。纯逻辑全在 `tui/interaction.ts`（已进覆盖率 include）。
 - 流里 tool 行：`\n› Name <summary>\n`（kind `tool`）+ `  ✓/✗ <首行>`（成功是 `tool-detail`，只有 /verbose 显示；失败必显示）。summary 走 `utils/toolSummary.ts`（首行 + 120 列截断，永不抛）。
 - 测试：渲染集成测试不能轮询 stdout → 用 `onTurnStart` 拿 eventBus；按键分块写入。
 - `conversationTurns(state)` 从 `history` + 当前轮派生，只收 `phase==="complete"`；`App.startTurn` 经 `stateRef` 读（deps 不含 state，直读会 stale）。**dashboard 测的是 `dist`**：改了 core 先 `pnpm build`。
@@ -79,6 +80,7 @@
 - PATH 上有两个桥（`~/.workbuddy-ai/binaries/node/versions/22.22.2-6/bin/`）：`claude-agent-acp` 0.89.1、`codex-acp` 2.2.2。`resolveExecutable` 优先 PATH → 真机验证跑的是 PATH 那份，验证前先 `which -a`。
 - bundled `claude-agent-acp@0.95.0` 的原生二进制（darwin-arm64，122MB）本机下载超时 → `session/new` 报 `Claude native binary not found`；doctor 能报版本不代表会话能跑。
 - 本机全局 multiclaw 是 npm 装的 **0.6.3**，仓库是 0.6.2 → 解释线上行为前先核对版本。
+- **并行全量跑 dashboard 会稳定红 2 个**（`App.sessions` 的 "reuses the leader handle after ask"、`App.session` 的 "/quit does not claim successful cleanup"）：两者都是 `settleMs: 300` 固定等待后读磁盘/读帧，机器 load 5+ 时不够。干净 HEAD 上同样红，与改动无关；`--no-file-parallelism` 全绿。别把它当成自己改坏的回溯信号。
 
 ## `multiclaw upgrade` / `doctor`
 - 升级必须打到"当前运行的那一份"所在 prefix（原实现硬编码 `npm install -g`，pnpm 全局装的机器上白升，2026-10-21 报障已修）。`findPackageRoot()` 从 `import.meta.url` 向上找 `name === "multiclaw"`；`detectInstaller()` 靠路径签名（pnpm/bun/yarn 签名要在通用 `/node_modules/` 之前匹配）。只给 npm/pnpm 实现 `view` + `add -g`，bun/yarn/unknown 报错给手动命令；registry 查询走安装器自己的 `view`（尊重 .npmrc 镜像）；装完 `readInstalledVersion()` 复查。`runUpgrade` 接受注入 `exec`/`readVersion` → 测试零 mock。
