@@ -22,6 +22,12 @@ export type RuntimeEvent =
   | (RuntimeEventBase & { type: "run_started"; model?: string })
   | (RuntimeEventBase & { type: "message_delta"; role: "agent" | "thought" | "user"; text: string })
   | (RuntimeEventBase & { type: "message"; role: "agent" | "thought" | "user"; text: string })
+  /**
+   * A tool call. The same `id` may arrive more than once: providers announce a
+   * call before its arguments have streamed, so the first event can carry an
+   * empty `input` and a later one the completed arguments. Consumers should key
+   * on `id` and render a row once.
+   */
   | (RuntimeEventBase & { type: "tool_call"; id: string; name: string; input: unknown })
   | (RuntimeEventBase & { type: "tool_result"; id: string; output: string; isError: boolean })
   | (RuntimeEventBase & { type: "plan"; entries: string[] })

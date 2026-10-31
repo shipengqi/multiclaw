@@ -189,7 +189,7 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `modelTier` | `"strong"` \| `"balanced"` \| `"fast"` | | Declares the capability this agent needs; the catalog maps each tier to a provider-specific model id. Ignored when `model` is set. |
 | `model` | string | | Override the model id for this agent (provider-specific, e.g. `"opus"`, `"sonnet"`, `"haiku"` for Claude). Takes precedence over `modelTier` and `models`. |
 | `models` | Record<string, string> | | Map of provider id (or the legacy `"acp"`) to a model id, e.g. `{ claude: "sonnet", opencode: "opencode/big-pickle" }`. Used when `model`/`modelTier` are unset. |
-| `tools` | string[] | | Allowed tools. Default: `["Read", "Write", "Bash"]`. Explicit restrictions require runtime enforcement support (see below). |
+| `tools` | string[] | | Allowed tools. Case-insensitive globs, where `*` matches any run of characters (`mcp__graft__*`). Default: `["Read", "Write", "Bash"]`. Explicit restrictions require runtime enforcement support (see below). |
 | `dependsOn` | string[] | | Agent ids that must complete before this agent starts. |
 | `timeout` | number | | Per-agent timeout in ms. Default: `600000` (10 min). |
 | `retries` | number | | Number of retry attempts on failure. Default: `0`. |
@@ -364,13 +364,15 @@ follow-up and never grants approval.
 - `/approve p1 1` selects option 1 for request `p1`; `/deny p1` cancels that request.
 - Request aliases do not repeat within the console session. Stale ids and invalid
   option numbers cannot decide another request.
-- Approval cannot enable a tool outside the agent's configured `tools` policy.
+- A tool the agent's `tools` policy already covers runs without asking; the
+  console only asks about the tools it does not cover.
 - Waiting counts toward the agent's existing timeout. Cancel, quit, and session
   cleanup release outstanding decisions; they do not leave agents waiting forever.
 
 For headless runs and direct core callers, the default remains automatic matching
-against `tools`. Set `permissions: { mode: "ask" }` to deny unless a caller supplies
-`permissions.onRequest`, or `permissions: { mode: "deny" }` to deny requests.
+against `tools`: a listed tool runs, anything else is refused. `permissions: { mode: "ask" }`
+keeps that for listed tools and escalates everything else to `permissions.onRequest`
+(refused when no handler is supplied); `permissions: { mode: "deny" }` refuses every request.
 Permission handlers are turn-local, not saved in reusable provider sessions.
 
 **This handles requests the provider actually sends, not every tool invocation.**

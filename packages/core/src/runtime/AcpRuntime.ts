@@ -19,6 +19,7 @@ import type {
 } from "../types/runtime"
 import { abortError } from "../utils/abort"
 import { PermanentError } from "../utils/errors"
+import { hasToolArgs } from "../utils/toolSummary"
 import { RuntimeBase } from "./RuntimeBase"
 
 /** Model ids advertised by each command's session/new response. */
@@ -133,24 +134,49 @@ interface RejectedPermission {
   title?: string
 }
 
-function toolPermitted(params: AcpPermissionRequest, tools: string[]): boolean {
-  const allowed = new Set(tools.map((tool) => tool.toLowerCase()))
-  const name = params.toolCall.name ?? undefined
-  return name !== undefined
-    ? allowed.has(name.toLowerCase())
-    : (KIND_TO_TOOLS[params.toolCall.kind ?? ""] ?? []).some((tool) =>
-        allowed.has(tool.toLowerCase())
-      )
+/**
+ * Match one allowlist entry against a tool name.
+ *
+ * Entries are case-insensitive globs: `*` stands for any run of characters, so
+ * `mcp__graft__*` covers a whole MCP server instead of every tool it exposes.
+ * Nothing else is special — no character classes, no ranges, no `?` — because
+ * an allowlist nobody can read at a glance is an allowlist nobody audits.
+ */
+function matchesTool(pattern: string, name: string): boolean {
+  if (!pattern.includes("*")) return pattern === name
+  const source = pattern
+    .split("*")
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".*")
+  return new RegExp(`^${source}$`).test(name)
 }
 
-/** Approve named tools only; unidentified requests fail closed. */
+function toolPermitted(params: AcpPermissionRequest, tools: string[]): boolean {
+  const allowed = tools.map((tool) => tool.toLowerCase())
+  const name = params.toolCall.name ?? undefined
+  if (name !== undefined) {
+    const candidate = name.toLowerCase()
+    return allowed.some((pattern) => matchesTool(pattern, candidate))
+  }
+  return (KIND_TO_TOOLS[params.toolCall.kind ?? ""] ?? []).some((tool) => {
+    const candidate = tool.toLowerCase()
+    return allowed.some((pattern) => matchesTool(pattern, candidate))
+  })
+}
+
+/**
+ * The client's answer to a permission request, decided without a human.
+ *
+ * `approved` is the part the caller needs: an allowlisted tool runs without
+ * asking, and only the ones outside the list can be escalated to a person.
+ */
 function decidePermission(
   params: AcpPermissionRequest,
   tools: string[],
   sessionId: string | undefined
-): { response: AcpPermissionResponse; rejected?: RejectedPermission } {
+): { response: AcpPermissionResponse; approved: boolean; rejected?: RejectedPermission } {
   if (sessionId !== undefined && params.sessionId !== sessionId) {
-    return { response: { outcome: { outcome: "cancelled" } } }
+    return { response: { outcome: { outcome: "cancelled" } }, approved: false }
   }
   const name = params.toolCall.name ?? undefined
   const kind = params.toolCall.kind ?? undefined
@@ -162,9 +188,10 @@ function decidePermission(
   const response: AcpPermissionResponse = option
     ? { outcome: { outcome: "selected", optionId: option.optionId } }
     : { outcome: { outcome: "cancelled" } }
-  if (approved) return { response }
+  if (approved) return { response, approved }
   return {
     response,
+    approved,
     rejected: {
       toolCallId: params.toolCall.toolCallId,
       name,
@@ -455,6 +482,16 @@ export class AcpRuntime extends RuntimeBase {
       let closeResolve: (() => void) | undefined
       let closeReject: ((error: Error) => void) | undefined
       let connection: import("@agentclientprotocol/sdk").ClientConnection | undefined
+      /**
+       * Tool calls whose arguments have already been reported.
+       *
+       * ACP announces a tool call before its input has finished streaming, so
+       * the first `tool_call` carries an empty object. The arguments arrive on a
+       * later update; without this set every progress ping would re-emit them.
+       */
+      const argsSurfaced = new Set<string>()
+      /** Names by tool-call id: a refinement is not required to repeat the name. */
+      const toolNames = new Map<string, string>()
 
       const killTree = (signal: NodeJS.Signals) => {
         if (child.pid !== undefined) {
@@ -597,15 +634,27 @@ export class AcpRuntime extends RuntimeBase {
             }
             break
           }
-          case "tool_call":
-            emit({
-              type: "tool_call",
-              id: update.toolCallId,
-              name: update.name ?? update.title,
-              input: update.rawInput,
-            })
+          case "tool_call": {
+            const name = update.name ?? update.title
+            toolNames.set(update.toolCallId, name)
+            if (hasToolArgs(update.rawInput)) argsSurfaced.add(update.toolCallId)
+            emit({ type: "tool_call", id: update.toolCallId, name, input: update.rawInput })
             break
-          case "tool_call_update":
+          }
+          case "tool_call_update": {
+            // The first `tool_call` could not carry the arguments — they were
+            // still streaming. Replay the completed input as a second
+            // `tool_call` for the same id so a consumer can render one row that
+            // says what the tool was asked to do instead of a bare `{}`.
+            if (!argsSurfaced.has(update.toolCallId) && hasToolArgs(update.rawInput)) {
+              argsSurfaced.add(update.toolCallId)
+              emit({
+                type: "tool_call",
+                id: update.toolCallId,
+                name: update.name ?? toolNames.get(update.toolCallId) ?? update.title ?? "",
+                input: update.rawInput,
+              })
+            }
             emit({
               type: "tool_result",
               id: update.toolCallId,
@@ -613,6 +662,7 @@ export class AcpRuntime extends RuntimeBase {
               isError: update.status === "failed",
             })
             break
+          }
           case "plan":
             emit({ type: "plan", entries: update.entries.map((entry) => entry.content) })
             break
@@ -652,24 +702,37 @@ export class AcpRuntime extends RuntimeBase {
         )
           return cancelled
         const mode = turn.options.permissionMode ?? "auto"
-        const { response, rejected } = decidePermission(params, options.tools, sessionId)
-        if (rejected) {
-          warn("Tool permission denied by the configured tools policy.")
-          emit({
-            type: "raw",
-            vendor: "acp",
-            payload: { type: "permission_rejected", ...rejected },
-          })
-          return response
+        const { response, approved, rejected } = decidePermission(params, options.tools, sessionId)
+        // The allowlist is the policy, not the prompt. A listed tool runs
+        // without asking in every mode but `deny`; `ask` exists to escalate the
+        // tools the list does *not* cover, which is the only case where a
+        // question can change the outcome.
+        if (approved) {
+          if (mode !== "deny") return response
+          warn("Tool permission denied by the configured approval mode.")
+          return cancelled
         }
-        if (mode === "auto") return response
-        if (mode !== "ask" || !turn.options.onPermission) {
+        const askable = mode === "ask" && turn.options.onPermission !== undefined
+        if (!askable) {
+          const label =
+            rejected?.name ?? rejected?.kind ?? rejected?.toolCallId ?? "an unnamed tool"
+          // Two different refusals, and only one of them is actionable: "not on
+          // the list" is a configuration decision, "no handler" is a wiring bug.
           warn(
             mode === "ask"
-              ? "Tool permission cancelled: no approval handler is available."
-              : "Tool permission denied by the configured approval mode."
+              ? `Tool permission cancelled: no approval handler is available (${label}).`
+              : `Tool permission denied by the configured tools policy: ${label}.`
           )
-          return cancelled
+          if (rejected) {
+            emit({
+              type: "raw",
+              vendor: "acp",
+              payload: { type: "permission_rejected", ...rejected },
+            })
+          }
+          // `deny` refuses outright; every other mode answers with the policy's
+          // reject option when the provider offered one.
+          return mode === "deny" ? cancelled : response
         }
         const signal = AbortSignal.any([turn.decisions.signal, context.signal])
         const offered = new Set(params.options.map((option) => option.optionId))
@@ -700,9 +763,21 @@ export class AcpRuntime extends RuntimeBase {
             aborted,
           ])
           if (signal.aborted || active !== turn || state !== "running") return cancelled
-          return optionId !== undefined && offered.has(optionId)
-            ? ({ outcome: { outcome: "selected", optionId } } as AcpPermissionResponse)
-            : cancelled
+          const chosen = params.options.find((option) => option.optionId === optionId)
+          if (optionId === undefined || chosen === undefined || !offered.has(optionId)) {
+            return cancelled
+          }
+          // A refusal chosen by a person leaves the same trace a policy denial
+          // does, so the stream can still say which call was refused — `source`
+          // separates "the list does not cover it" from "a person said no".
+          if (chosen.kind.startsWith("reject") && rejected) {
+            emit({
+              type: "raw",
+              vendor: "acp",
+              payload: { type: "permission_rejected", ...rejected, source: "user" },
+            })
+          }
+          return { outcome: { outcome: "selected", optionId } } as AcpPermissionResponse
         } catch {
           return cancelled
         } finally {

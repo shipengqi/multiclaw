@@ -40,9 +40,25 @@ function firstLineTruncated(value: unknown): string {
   return `${firstLine.slice(0, MAX_SUMMARY_COLUMNS - 1)}…`
 }
 
+/**
+ * Whether a tool call was given any arguments.
+ *
+ * "No arguments yet" reaches us as `{}` (or missing) rather than as
+ * `undefined`: ACP announces a call before its input has finished streaming.
+ * Both mean the same thing to a reader — there is nothing to show yet — so the
+ * two are collapsed here instead of at every call site.
+ */
+export function hasToolArgs(input: unknown): boolean {
+  if (input === undefined || input === null) return false
+  if (typeof input !== "object" || Array.isArray(input)) return true
+  return Object.keys(input).length > 0
+}
+
 /** One-line summary of a tool call's input. `input` is untrusted and may be circular. */
 export function summarizeToolInput(input: unknown): string {
-  return firstLineTruncated(input)
+  // An empty object would render as the literal `{}`, which tells a reader
+  // nothing and reads as a bug. Empty means "say nothing".
+  return hasToolArgs(input) ? firstLineTruncated(input) : ""
 }
 
 /** One-line summary of a tool result's output, which may be a string or a value. */

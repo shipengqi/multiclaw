@@ -30,7 +30,8 @@
 ## Agent 定义（core）
 - `description` 静态角色（12 preset 各一句 ≤24 字符小写动词短语，`agents/index.test.ts` it.each 卡住）vs `taskTitle`（per-turn，由 leader 的 task-plan.json 就地覆写）；首屏 `taskTitle ?? description`。
 - leader 三态路由器 run/reply/ask。`run` 的 id 永远是配置子集，未知 id 丢弃，命中零个 → `finishEmpty`（失败）。reply/ask 轮：`success:true`、`agentResults:[]`、有 `reply`，**不发 `orchestration:start`**。
-- preset 默认 `tools` 是**审批白名单，不是能力上限**：默认含 Bash → `rm` 不经审批直接删文件；不含任何 `mcp__*` → MCP 工具一律被拒。`toolPermitted` 只做 name 小写**精确匹配无通配**，name 缺失才退回 kind（`KIND_TO_TOOLS`: read/edit/execute/search/fetch）。code-reviewer=`["Read","Write"]`、leader=`["Read","Bash"]`。
+- preset 默认 `tools` 是**审批白名单，不是能力上限**：默认含 Bash → `rm` 不经审批直接删文件；不含任何 `mcp__*` → MCP 工具一律被拒。`toolPermitted` 是 name 优先的**大小写不敏感通配**（`matchesTool`：`*` = 任意串，`mcp__graft__*` 覆盖整个 server；其余字符按字面量，无字符类），name 缺失才退回 kind（`KIND_TO_TOOLS`: read/edit/execute/search/fetch）。code-reviewer=`["Read","Write"]`、leader=`["Read","Bash"]`。
+- **权限模式语义（2026-10-31 用户拍板，反转旧规则）**：`auto`（默认）= 白名单内放行、外拒绝；`ask` = 白名单内**直接放行不问**、外**交给 `onPermission` 问人**（无 handler 时 fail-closed 选 `reject_once`）；`deny` = 全拒。旧规则「ask 也会为白名单内工具弹窗、且人工同意不能超出白名单」已废弃；README 中英 + `docs/provider-verification.md` §3 已同步。
 
 ## Runtime（core）
 - `AgentRuntime` 是已发布导出 → 加宽是破坏性变更。`describe(): Promise<RuntimeInfo>`；`capabilities` 只描述适配器真实现了什么。
@@ -44,8 +45,8 @@
 - `BRIDGES` 按 basename 分派 `_meta` 与 `tools` 能力位；未登记 bridge 无 `meta` → 角色提示词降级为 prompt 前缀。**投递互斥**：只有 `meta === undefined` 才前缀。
 - `_meta`：claude = `_meta.systemPrompt` + `_meta.claudeCode.options.tools`（`tools: true`；可用性 ≠ `--allowedTools` 预授权）；codex = `_meta.jetbrains.air.customInstructions` → `developerInstructions`（无条件读取，非 string 静默忽略；**无工具限制落点** → `tools: false`，allowlist 丢弃）。刻意不声明 AIR 客户端能力（会把输出切成 diffPatch/subagent/asyncTasks，都没映射）。
 - `describe().capabilities.tools` 随 command 变化；`permissions` 恒 true。
-- `session/request_permission`：name 优先 → kind 启发式 → 拒绝（fail-closed），`delete`/`move`/`think`/`switch_mode`/`other` 一律拒。**流里 `✗ User refused permission to run tool` 是桥 `deny()` 的默认文案，不是真有人点拒绝**；我们只发 `permission_rejected` raw + 一句 policy 警告。
-- 工具参数**迟到且被丢**：桥先发 `tool_call`（input 空 `{}`），随后 `tool_call_update` 补 `rawInput`；`AcpRuntime` 把 update 一律映射成 `tool_result`（只看 `rawOutput`/`content`），**丢弃 rawInput** → TUI 只显示 `› Read {}`。要修就在 update 带非空 `rawInput` 时补发一次 tool_call。
+- `session/request_permission`：name 优先 → kind 启发式 → 拒绝（fail-closed），`delete`/`move`/`think`/`switch_mode`/`other` 一律拒。**流里 `✗ User refused permission to run tool` 是桥 `deny()` 的默认文案，不是真有人点拒绝**；我们发 `permission_rejected` raw（人工拒绝时带 `source: "user"`）+ 一句点名工具的警告。
+- 工具参数**迟到但已不再丢**：桥先发 `tool_call`（input 空 `{}`），随后 `tool_call_update` 补 `rawInput`。`AcpRuntime` 现在在 update 首次带非空 `rawInput` 时**补发一次同 id 的 `tool_call`**（`argsSurfaced` 去重）；`AgentRunner` 按 id 只打一行，空参数时**延后**到参数到达（或结果）再打，所以不会再出现 `› Read {}`。`summarizeToolInput({})` 返回 `""`（`hasToolArgs`）。
 - `usage_update` → `usage` + `cost` 事件（contextTokens/contextSize/amount/currency）。
 
 ## 中途纠偏 steering

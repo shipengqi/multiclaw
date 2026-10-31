@@ -169,7 +169,7 @@ export default defineConfig({
 | `modelTier` | `"strong"` \| `"balanced"` \| `"fast"` | | 声明此 Agent 所需的能力层级；目录会把每个层级映射到该 Provider 对应的具体模型 id。设置了 `model` 时此项被忽略。 |
 | `model` | string | | 指定此 Agent 的模型 id（与 Provider 相关，例如 Claude 的 `"opus"`、`"sonnet"`、`"haiku"`）。优先级高于 `modelTier` 和 `models`。 |
 | `models` | Record<string, string> | | Provider id（或旧别名 `"acp"`）到模型 id 的映射，例如 `{ claude: "sonnet", opencode: "opencode/big-pickle" }`。当未设置 `model`/`modelTier` 时使用。 |
-| `tools` | string[] | | 允许使用的工具列表，默认 `["Read", "Write", "Bash"]`。显式限制要求运行时支持执行该限制，见下文。 |
+| `tools` | string[] | | 允许使用的工具列表，大小写不敏感、支持 `*` 通配（`mcp__graft__*`），默认 `["Read", "Write", "Bash"]`。显式限制要求运行时支持执行该限制，见下文。 |
 | `dependsOn` | string[] | | 必须在此 Agent 启动前完成的 Agent id 列表。 |
 | `timeout` | number | | 单个 Agent 超时时间（毫秒），默认 `600000`（10 分钟）。 |
 | `retries` | number | | 失败后的重试次数，默认 `0`。 |
@@ -295,10 +295,10 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 
 - `/approve p1 1` 为请求 `p1` 选择第 1 个选项；`/deny p1` 取消该请求。
 - 请求别名在同一次控制台会话中不重复。过期 ID 或无效选项不能误答另一条请求。
-- 人工同意也不能启用该 Agent 的 `tools` 配置之外的工具。
+- 已在 `tools` 白名单内的工具直接放行、不弹审批；控制台只对白名单覆盖不到的工具发问。
 - 等待人工操作计入 Agent 原有超时。取消、退出和会话清理都会解除未决请求，不让 Agent 永久等待。
 
-无头运行和直接调用 core 时，默认仍按 `tools` 自动决策。配置 `permissions: { mode: "ask" }` 后，若调用方没有提供 `permissions.onRequest`，请求将被拒绝；`permissions: { mode: "deny" }` 则拒绝权限请求。回调属于当前轮次，不保存在复用的 provider 会话中。
+无头运行和直接调用 core 时，默认仍按 `tools` 自动决策：命中的工具直接放行，其余拒绝。`permissions: { mode: "ask" }` 对白名单内的工具保持不变，把白名单外的交给 `permissions.onRequest`（调用方没提供回调时仍然拒绝）；`permissions: { mode: "deny" }` 则拒绝所有权限请求。回调属于当前轮次，不保存在复用的 provider 会话中。
 
 **这处理的是 provider 实际发出的审批请求，不是拦截每一次工具调用。** Claude 可能直接允许读取文件或安全命令，provider 自己的权限设置仍然生效。这不是沙箱，也不是细粒度的路径或命令授权。`allow_always` 的范围以 provider 展示的说明为准，不是 multiclaw 全局授权缓存，也可能修改 provider 设置。自动策略只选择单次授权，不会静默授予长期权限。拒绝工具不必然让 Agent 轮次失败；需要验证任务真正完成时，应使用可选的交付验收门禁。
 

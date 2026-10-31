@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { summarizeToolInput, summarizeToolOutput } from "./toolSummary"
+import { hasToolArgs, summarizeToolInput, summarizeToolOutput } from "./toolSummary"
 
 describe("summarizeToolInput", () => {
   it("renders an object as one JSON line", () => {
@@ -28,6 +28,27 @@ describe("summarizeToolInput", () => {
   it("treats absent input as an empty summary", () => {
     expect(summarizeToolInput(undefined)).toBe("")
     expect(summarizeToolInput(null)).toBe("")
+  })
+
+  it("treats an empty object as no arguments rather than the literal {}", () => {
+    // ACP announces a tool call before its input has streamed, so `{}` is what
+    // "not yet" looks like. Rendering it as `› Read {}` reads as a bug.
+    expect(summarizeToolInput({})).toBe("")
+  })
+})
+
+describe("hasToolArgs", () => {
+  it("is false for a missing or empty argument list", () => {
+    expect(hasToolArgs(undefined)).toBe(false)
+    expect(hasToolArgs(null)).toBe(false)
+    expect(hasToolArgs({})).toBe(false)
+  })
+
+  it("is true once any argument has arrived", () => {
+    expect(hasToolArgs({ file_path: "src/App.tsx" })).toBe(true)
+    // A non-object input is an argument in its own right, not an absence.
+    expect(hasToolArgs("pnpm test")).toBe(true)
+    expect(hasToolArgs([])).toBe(true)
   })
 })
 

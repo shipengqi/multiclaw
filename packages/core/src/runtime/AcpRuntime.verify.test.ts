@@ -144,6 +144,96 @@ describe("AcpRuntime · schema fidelity (verification)", () => {
     })
   })
 
+  it("replays arguments that arrive after the tool_call as a refinement", async () => {
+    const child = new FakeChild()
+    const { events, onEvent } = collect()
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        // The bridge announces the call with `{}` and sends the input later.
+        await notifyUpdate(ctx, {
+          sessionUpdate: "tool_call",
+          toolCallId: "c5",
+          name: "Read",
+          title: "Read src/App.tsx",
+          rawInput: {},
+        })
+        await notifyUpdate(ctx, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "c5",
+          rawInput: { file_path: "src/App.tsx" },
+        })
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { onEvent })
+
+    const calls = events.filter((e) => e.type === "tool_call")
+    expect(calls).toHaveLength(2)
+    // Same id: a consumer prints one row, not two.
+    expect(calls[1]).toMatchObject({
+      id: "c5",
+      name: "Read",
+      input: { file_path: "src/App.tsx" },
+    })
+  })
+
+  it("replays the arguments once, not on every later progress update", async () => {
+    const child = new FakeChild()
+    const { events, onEvent } = collect()
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        await notifyUpdate(ctx, {
+          sessionUpdate: "tool_call",
+          toolCallId: "c6",
+          name: "Bash",
+          title: "Bash pnpm test",
+          rawInput: {},
+        })
+        for (const status of ["in_progress", "completed"]) {
+          await notifyUpdate(ctx, {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "c6",
+            status,
+            rawInput: { command: "pnpm test" },
+          })
+        }
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { onEvent })
+
+    expect(events.filter((e) => e.type === "tool_call")).toHaveLength(2)
+  })
+
+  it("adds no refinement when the tool_call already carried its arguments", async () => {
+    const child = new FakeChild()
+    const { events, onEvent } = collect()
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        await notifyUpdate(ctx, {
+          sessionUpdate: "tool_call",
+          toolCallId: "c7",
+          name: "Bash",
+          title: "Bash ls",
+          rawInput: { command: "ls" },
+        })
+        await notifyUpdate(ctx, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "c7",
+          status: "completed",
+          rawInput: { command: "ls" },
+        })
+        return { stopReason: "end_turn" }
+      },
+    })
+
+    await runWith(child, { onEvent })
+
+    expect(events.filter((e) => e.type === "tool_call")).toHaveLength(1)
+  })
+
   it.each(["pending", "in_progress", "completed"])(
     "does not flag a %s tool_call_update as an error",
     async (status) => {

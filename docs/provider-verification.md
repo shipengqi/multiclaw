@@ -51,9 +51,21 @@ bridged：`claude-agent-acp`、`codex-acp`（两者由 multiclaw 自带，用户
 
 ## 3. `session/request_permission` 真机（claude-agent-acp）
 
-背景：权限应答是 **name-first + fail-closed**——工具名在 `task.tools` 里才批准，其余一律拒绝；
-默认 `tools = ["Read", "Write", "Bash"]`（未显式配置时）。拒绝会以 `raw`/`acp` 事件
-（payload `{ type: "permission_rejected", … }`）显式暴露，不是静默失败。
+背景：权限应答是 **name-first + fail-closed**——工具名命中 `task.tools` 才批准，其余一律拒绝；
+默认 `tools = ["Read", "Write", "Bash"]`（未显式配置时）。条目按**大小写不敏感的通配**匹配
+（`*` = 任意串，`mcp__graft__*` 覆盖整个 MCP server），其余字符按字面量比较，不支持字符类。
+拒绝会以 `raw`/`acp` 事件（payload `{ type: "permission_rejected", … }`）显式暴露，不是静默失败，
+并且警告行会点名是哪个工具被拒。
+
+`permissions.mode` 决定**谁能推翻白名单**，而不是谁需要被问：
+
+| mode | 白名单内 | 白名单外 |
+| --- | --- | --- |
+| `auto`（默认） | 直接放行 | 直接拒绝 |
+| `ask` | 直接放行（不问） | 交给 `onPermission` 问人；拒绝时记 `source: "user"` |
+| `deny` | 拒绝 | 拒绝 |
+
+`ask` 是唯一的升级路径，必须显式打开；没有 handler 时白名单外仍然 fail-closed。
 
 | # | 步骤 | 预期 | 代码落点 |
 | --- | --- | --- | --- |

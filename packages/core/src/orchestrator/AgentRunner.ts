@@ -98,6 +98,19 @@ export class AgentRunner {
                 prompt = `## Current task\n${requirement}\n\n${prompt}`
               }
               if (instruction) prompt += `\n\n${instruction}`
+              // One row per tool call, printed once it can say what the tool was
+              // asked to do. ACP announces a call before its arguments have
+              // finished streaming, so the first sighting usually carries none;
+              // holding the row until they arrive is what turns `› Read {}` into
+              // `› Read {"file_path":"src/App.tsx"}`.
+              const toolRows = new Set<string>()
+              const toolNames = new Map<string, string>()
+              const printToolRow = (id: string, name: string, input: unknown) => {
+                if (toolRows.has(id)) return
+                toolRows.add(id)
+                const summary = summarizeToolInput(input)
+                this.emitOutput(agent.id, `\n› ${name}${summary ? ` ${summary}` : ""}\n`, "tool")
+              }
               const task: AgentTask = {
                 agentId: agent.id,
                 systemPrompt: agent.systemPrompt,
@@ -148,15 +161,17 @@ export class AgentRunner {
                     return
                   }
                   if (e.type === "tool_call") {
-                    const summary = summarizeToolInput(e.input)
-                    this.emitOutput(
-                      agent.id,
-                      `\n› ${e.name}${summary ? ` ${summary}` : ""}\n`,
-                      "tool"
-                    )
+                    toolNames.set(e.id, e.name)
+                    // No arguments yet: the row would read `› Read {}`, so wait
+                    // for the refinement instead of printing a placeholder.
+                    if (summarizeToolInput(e.input)) printToolRow(e.id, e.name, e.input)
                     return
                   }
                   if (e.type === "tool_result") {
+                    // A call whose arguments never arrived still happened; show
+                    // the bare name rather than dropping the row entirely.
+                    const name = toolNames.get(e.id)
+                    if (name !== undefined) printToolRow(e.id, name, undefined)
                     const summary = summarizeToolOutput(e.output)
                     // A failed tool is a summary line the user needs; a
                     // successful one is detail, shown only in verbose mode.

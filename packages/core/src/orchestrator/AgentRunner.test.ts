@@ -543,6 +543,79 @@ describe("AgentRunner.run", () => {
     expect(outputs[3].payload.chunk).toContain("✗")
   })
 
+  it("holds a tool row until its arguments arrive, then prints exactly one", async () => {
+    handler = async (task) => {
+      // ACP announces a call before its input has streamed, so the first
+      // sighting carries nothing and the arguments follow on a refinement.
+      task.onEvent?.({
+        runId: "r1",
+        agentId: "a",
+        seq: 0,
+        type: "tool_call",
+        id: "t",
+        name: "Read",
+        input: {},
+      })
+      task.onEvent?.({
+        runId: "r1",
+        agentId: "a",
+        seq: 1,
+        type: "tool_call",
+        id: "t",
+        name: "Read",
+        input: { file_path: "src/App.tsx" },
+      })
+      return { output: "done", exitCode: 0 }
+    }
+
+    await makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME }))
+
+    const rows = events.filter(
+      (e): e is Extract<MultiClawEvent, { type: "agent:output" }> =>
+        e.type === "agent:output" && e.payload.kind === "tool"
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0].payload.chunk).toContain("Read")
+    expect(rows[0].payload.chunk).toContain("src/App.tsx")
+    // A row the user cannot act on — `› Read {}` — must never reach the pane.
+    expect(rows[0].payload.chunk).not.toContain("{}")
+  })
+
+  it("still prints a row for a tool that never reports arguments", async () => {
+    handler = async (task) => {
+      task.onEvent?.({
+        runId: "r1",
+        agentId: "a",
+        seq: 0,
+        type: "tool_call",
+        id: "t",
+        name: "Bash",
+        input: {},
+      })
+      task.onEvent?.({
+        runId: "r1",
+        agentId: "a",
+        seq: 1,
+        type: "tool_result",
+        id: "t",
+        output: "ok",
+        isError: false,
+      })
+      return { output: "done", exitCode: 0 }
+    }
+
+    await makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME }))
+
+    const rows = events.filter(
+      (e): e is Extract<MultiClawEvent, { type: "agent:output" }> =>
+        e.type === "agent:output" && e.payload.kind === "tool"
+    )
+    // The call happened, so it gets a row; it simply has no arguments to show.
+    expect(rows).toHaveLength(1)
+    expect(rows[0].payload.chunk).toContain("Bash")
+    expect(rows[0].payload.chunk).not.toContain("{}")
+  })
+
   it("carries the runtime's usage, cost and model into the result", async () => {
     handler = async () => ({
       output: "ok",
