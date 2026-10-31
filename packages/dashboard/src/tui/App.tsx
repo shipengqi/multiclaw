@@ -1476,7 +1476,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     // exempt so `/respond` and `/dismiss` stay reachable.
     const formFront = front?.kind === "question" && !isCommandLine(line.text) ? front : undefined
 
-    if (key.tab && formFront === undefined) {
+    if (key.tab && formFront === undefined && !paletteOpen) {
       dispatch({ type: "focus:cycle", delta: key.shift ? -1 : 1 })
       return
     }
@@ -1484,6 +1484,19 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     // While the palette is open the arrows belong to it, not to the stream —
     // the same contract every fuzzy finder uses.
     if (paletteOpen) {
+      if (key.tab) {
+        // Tab completes the highlighted row into the prompt: a command name for
+        // the command palette, or an agent id for the argument palette. A
+        // trailing space is appended so the user can keep typing arguments.
+        if (arg) {
+          const completed = `/${arg.command.name} ${allRows[selected].key} `
+          setLine({ text: completed, cursor: completed.length })
+        } else {
+          const completed = `/${matches[selected].name} `
+          setLine({ text: completed, cursor: completed.length })
+        }
+        return
+      }
       if (key.upArrow) {
         setMenuCursor({ query: paletteKey, index: (menuIndex - 1 + paletteTotal) % paletteTotal })
         return
@@ -1753,9 +1766,9 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     : historyOpen
       ? "↑↓ select · enter open · esc close"
       : argOpen
-        ? `↑↓ select · enter ${arg?.command.name} · esc close`
+        ? `↑↓ select · tab complete · enter ${arg?.command.name} · esc close`
         : menuOpen
-          ? "↑↓ select · enter run · esc close"
+          ? "↑↓ select · tab complete · enter run · esc close"
           : running
             ? interactions.length > 0
               ? layout.interactionRows === 0
