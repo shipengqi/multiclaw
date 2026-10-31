@@ -1,3 +1,4 @@
+import { markPresetTools } from "../config/toolsPolicy"
 import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
@@ -43,17 +44,20 @@ Perform a thorough code review of all implementation in the current directory an
 Start by reading implementation-notes.md (if present), then read source and test files.`
 
 export function codeReviewer(overrides?: Overrides): AgentDefinition {
-  return {
-    id: "code-reviewer",
-    name: "Code Reviewer",
-    icon: "⊗",
-    description: "reviews the code",
-    runtime: "acp",
-    models: { acp: "haiku" },
-    modelTier: "fast",
-    systemPrompt: SYSTEM,
-    taskPrompt: TASK,
-    tools: ["Read", "Write"],
-    ...overrides,
-  }
+  return markPresetTools(
+    {
+      id: "code-reviewer",
+      name: "Code Reviewer",
+      icon: "⊗",
+      description: "reviews the code",
+      runtime: "acp",
+      models: { acp: "haiku" },
+      modelTier: "fast",
+      systemPrompt: SYSTEM,
+      taskPrompt: TASK,
+      tools: ["Read", "Write"],
+      ...overrides,
+    },
+    overrides
+  )
 }

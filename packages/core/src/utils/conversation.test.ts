@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { TurnRecord } from "../types/config"
+import type { TurnOutcome, TurnRecord } from "../types/config"
 import { MAX_CONVERSATION_CHARS, MAX_CONVERSATION_TURNS, renderConversation } from "./conversation"
 
 /** The block's heading, which is charged on top of the character budget. */
@@ -39,6 +39,146 @@ describe("renderConversation", () => {
 
     expect(block).toContain("1. user: add a --json flag")
     expect(block).not.toContain("you ")
+  })
+
+  it.each<TurnOutcome["execution"]>(["success", "failed", "cancelled", "interrupted", "unknown"])(
+    "renders execution %s without a reply",
+    (execution) => {
+      const block = renderConversation([
+        {
+          requirement: "run the pipeline",
+          outcome: { execution, completedAgents: ["builder", "tester"], failedAgents: [] },
+        },
+      ])
+
+      expect(block).toContain(`   execution: ${execution}\n`)
+      expect(block).toContain("   completed: builder, tester\n")
+      expect(block).toContain("   failed: none\n")
+      expect(block).toContain("   acceptance: not configured\n")
+    }
+  )
+
+  it.each<NonNullable<TurnOutcome["acceptance"]>["status"]>([
+    "approved",
+    "changes_required",
+    "failed",
+    "cancelled",
+  ])("renders acceptance %s separately from agent failures", (status) => {
+    const block = renderConversation([
+      {
+        requirement: "run the pipeline",
+        outcome: {
+          execution: "failed",
+          completedAgents: [],
+          failedAgents: [{ agentId: "builder", reason: "compile error" }, { agentId: "tester" }],
+          acceptance: { status, reason: "review reason" },
+        },
+      },
+    ])
+
+    expect(block).toContain("   completed: none\n")
+    expect(block).toContain("   failed: builder (compile error), tester\n")
+    expect(block).toContain(`   acceptance: ${status} (review reason)\n`)
+    expect(block.split("\n").find((line) => line.includes("failed:"))).not.toContain(
+      "review reason"
+    )
+    expect(block.split("\n").find((line) => line.includes("acceptance:"))).not.toContain(
+      "compile error"
+    )
+  })
+
+  it("renders acceptance without a reason", () => {
+    expect(
+      renderConversation([
+        {
+          requirement: "done",
+          outcome: {
+            execution: "success",
+            completedAgents: [],
+            failedAgents: [],
+            acceptance: { status: "approved" },
+          },
+        },
+      ])
+    ).toContain("   acceptance: approved\n")
+  })
+
+  it.each([asked, answered])("preserves reply output even when an outcome exists", (reply) => {
+    const original = turn("  hello  ", reply)
+    expect(
+      renderConversation([
+        {
+          ...original,
+          outcome: { execution: "failed", completedAgents: ["builder"], failedAgents: [] },
+        },
+      ])
+    ).toBe(renderConversation([original]))
+  })
+
+  it("preserves the exact legacy output without an outcome", () => {
+    expect(renderConversation([turn("  build  "), turn("hello", answered)])).toBe(
+      "\n## Conversation so far\n\nEarlier turns of this session, oldest first:\n\n" +
+        "1. user: build\n2. user: hello\n   you answered: there is no database yet\n"
+    )
+  })
+
+  it("clips combined ids and reasons and keeps the newest outcome within the existing budgets", () => {
+    const history: TurnRecord[] = Array.from({ length: MAX_CONVERSATION_TURNS + 2 }, (_, i) => ({
+      requirement: `turn-${i + 1} ${"r".repeat(5000)}`,
+      outcome: {
+        execution: "interrupted",
+        completedAgents: Array.from({ length: 2000 }, (_, j) => `agent-${j}-${"c".repeat(1000)}`),
+        failedAgents: Array.from({ length: 2000 }, (_, j) => ({
+          agentId: `failed-${j}-${"f".repeat(400)}`,
+          reason: `failure-${"e".repeat(1000)}`,
+        })),
+        acceptance: { status: "failed", reason: `acceptance-${"a".repeat(5000)}` },
+      },
+    }))
+    const block = renderConversation(history)
+    const summaryLines = block
+      .split("\n")
+      .filter((line) => /^ {3}(execution|completed|failed|acceptance):/.test(line))
+
+    expect(summaryLines.length).toBeGreaterThanOrEqual(4)
+    for (const line of summaryLines) expect(line.length).toBeLessThanOrEqual(600)
+    for (const label of ["completed", "failed", "acceptance"]) {
+      expect(
+        summaryLines
+          .filter((line) => line.startsWith(`   ${label}:`))
+          .every((line) => line.endsWith("…"))
+      ).toBe(true)
+    }
+    expect(block.length).toBeLessThan(MAX_CONVERSATION_CHARS + HEADING)
+    expect(block.split("\n\n").pop()?.trim().length).toBeLessThanOrEqual(4000)
+    expect(block).toContain("8. user: turn-8")
+    expect(block).not.toContain("turn-1")
+    expect(block).not.toContain("agent-1999")
+    expect(block).not.toContain("failed-1999")
+    expect(block).toContain("   acceptance: failed (acceptance-")
+    expect(MAX_CONVERSATION_TURNS).toBe(6)
+    expect(MAX_CONVERSATION_CHARS).toBe(4000)
+  })
+
+  it("bounds summaries made from many short agent ids", () => {
+    const block = renderConversation([
+      {
+        requirement: "many agents",
+        outcome: {
+          execution: "success",
+          completedAgents: Array.from({ length: 10000 }, (_, i) => `agent-${i}`),
+          failedAgents: Array.from({ length: 10000 }, (_, i) => ({ agentId: `failed-${i}` })),
+        },
+      },
+    ])
+    for (const label of ["completed", "failed"]) {
+      const line = block.split("\n").find((line) => line.startsWith(`   ${label}:`))
+      expect(line).toBeDefined()
+      expect(line?.length).toBeLessThanOrEqual(600)
+      expect(line?.endsWith("…")).toBe(true)
+    }
+    expect(block).not.toContain("agent-9999")
+    expect(block).not.toContain("failed-9999")
   })
 
   it("keeps only the most recent turns", () => {

@@ -1,3 +1,4 @@
+import { markPresetTools } from "../config/toolsPolicy"
 import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
@@ -49,17 +50,20 @@ Create ui-design.md covering:
 Be concrete. Reference API endpoints where components bind to data. Flag any UX decision that needs product clarification.`
 
 export function uiDesigner(overrides?: Overrides): AgentDefinition {
-  return {
-    id: "ui-designer",
-    name: "UI Designer",
-    icon: "▣",
-    description: "specs the interface",
-    runtime: "acp",
-    models: { acp: "sonnet" },
-    modelTier: "balanced",
-    systemPrompt: SYSTEM,
-    taskPrompt: TASK,
-    tools: ["Read", "Write"],
-    ...overrides,
-  }
+  return markPresetTools(
+    {
+      id: "ui-designer",
+      name: "UI Designer",
+      icon: "▣",
+      description: "specs the interface",
+      runtime: "acp",
+      models: { acp: "sonnet" },
+      modelTier: "balanced",
+      systemPrompt: SYSTEM,
+      taskPrompt: TASK,
+      tools: ["Read", "Write"],
+      ...overrides,
+    },
+    overrides
+  )
 }

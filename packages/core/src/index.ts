@@ -1,5 +1,6 @@
 export { agents } from "./agents"
 export { defineConfig } from "./config/defineConfig"
+export { hasExplicitTools, validateToolsPolicy } from "./config/toolsPolicy"
 export { EventBus } from "./event/EventBus"
 export { AgentSessionManager, type SupplementReport } from "./orchestrator/AgentSessionManager"
 export { Orchestrator } from "./orchestrator/Orchestrator"

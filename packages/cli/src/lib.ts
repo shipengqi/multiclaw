@@ -1,9 +1,11 @@
 import {
   detectProviders,
+  hasExplicitTools,
   type MultiClawConfig,
   presentProviders,
   resolveCommand,
   runtimeRegistry,
+  validateToolsPolicy,
 } from "@multiclawcli/core"
 
 export type { AgentDefinition, MultiClawConfig } from "@multiclawcli/core"
@@ -23,7 +25,13 @@ export async function assertRuntimesAvailable(config: MultiClawConfig): Promise<
   // both use `runtime: "acp"` while naming different binaries (`opencode` vs
   // `codex-acp`), and both must be checked.
   const checked = new Set<string>()
-  for (const agent of config.agents) {
+  // An unrestricted leader may fail into the existing worker fallback. Explicit
+  // policy must instead be validated before that leader or any worker can start.
+  const agents =
+    config.leader && config.useLeader !== false && hasExplicitTools(config.leader)
+      ? [config.leader, ...config.agents]
+      : config.agents
+  for (const agent of agents) {
     const name = agent.runtime ?? "acp"
     if (!runtimeRegistry.has(name)) {
       const supported = runtimeRegistry.list().join(", ")
@@ -50,6 +58,12 @@ export async function assertRuntimesAvailable(config: MultiClawConfig): Promise<
       )
       process.exit(1)
     }
+  }
+  try {
+    await validateToolsPolicy(config)
+  } catch (error) {
+    console.error(`\x1b[31mError: ${error instanceof Error ? error.message : String(error)}\x1b[0m`)
+    process.exit(1)
   }
 }
 

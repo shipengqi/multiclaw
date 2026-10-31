@@ -183,8 +183,7 @@
 - **version 列存的是解析后的数字,不是 `--version` 的整行**。`providers/detect.ts: parseVersion()`
   在存值时裁出 `\d+\.\d+\.\d+`;但 `versionFor()` 必须返回**原始行**,因为 `spec.confirm`
   (cursor 的 `agent`)靠词确认身份——两处一起裁会让 cursor 变 missing。
-- 表格的 `cell()` **补白就是列分隔符**,超宽值会与下一列粘连(0.6.0 的 `2.5.0bundled`)。
-  超宽时裁到 `width-1` + `…`,保证至少一个空格。
+- doctor 已改为 provider 分组与 version/source/models/auth 标签行，不再用定宽表格或裁短版本；配置工具告警复用 `hasExplicitTools`，不误报 preset 默认值或禁用 leader。
 - 渲染实测(本机):`OpenCode 1.19.0 path / Claude 0.89.1 path / Codex 2.2.2 path`。
 
 ## 待真机验证(mock 覆盖不了,需真实 API 密钥 / 真实二进制)
@@ -202,10 +201,6 @@
   steer 之后会话仍可继续 prompt。opencode 不广告该扩展(已验,走 unsupported 分支)。
 
 ## 开放问题
-- **codex 的工具限制**(命名空间分派已实现,此项待拍板):角色提示词已走 AIR 命名空间,但 codex
-  **无工具限制落点**,当前是 `tools: false` + 丢弃 allowlist(**不报错**)。
-  要改成「显式配置 `tools` 时硬报错」必须先给 `AgentTask` 加字段区分显式配置与默认值 ——
-  `AgentRunner.ts:50` 恒给 `tools` 兜底 `["Read","Write","Bash"]`,运行时**分不出来**,
-  直接报错会把 opencode/codex 全打死。
-- **跑过流水线的轮次不记结果**:`TurnRecord` 只有 requirement + leader 的话,没有 success/失败摘要。
-  「上一轮到底跑成了没」leader 得自己去 workspace 看。若发现它常判断错,再给 `TurnRecord` 加一行摘要。
+- 用户已同意（2026-10-31）：先补跨轮事实摘要，再加显式工具限制启动前检查；不增加模型调用、弹窗或命令，不隐式批准/重试/切换 provider/放宽权限。
+- 工具来源设计：12 个工厂保留默认 tools，以 enumerable `Symbol.for("multiclaw.toolsProvenance")` 保存原数组引用及冻结快照；对象展开保留来源，显式 override、替换数组和改变内容视为显式。同引用且内容未变的赋值不可观测。不改 `AgentRuntime` 必选契约；core run/preview 及 CLI 共用实际 command 的 capability 检查。
+- 跨轮 `TurnRecord.outcome?`：execution 与 acceptance 分离，TUI 从历史事实派生；旧记录不足则 unknown。成功 leader 不算完成的 worker，审查进程失败不等于 worker 执行失败，leader 失败后 fallback 成功不能标执行失败。取消不进上下文，中断保持 interrupted。

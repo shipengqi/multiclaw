@@ -189,7 +189,7 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `modelTier` | `"strong"` \| `"balanced"` \| `"fast"` | | Declares the capability this agent needs; the catalog maps each tier to a provider-specific model id. Ignored when `model` is set. |
 | `model` | string | | Override the model id for this agent (provider-specific, e.g. `"opus"`, `"sonnet"`, `"haiku"` for Claude). Takes precedence over `modelTier` and `models`. |
 | `models` | Record<string, string> | | Map of provider id (or the legacy `"acp"`) to a model id, e.g. `{ claude: "sonnet", opencode: "opencode/big-pickle" }`. Used when `model`/`modelTier` are unset. |
-| `tools` | string[] | | Allowed tools. Default: `["Read", "Write", "Bash"]`. |
+| `tools` | string[] | | Allowed tools. Default: `["Read", "Write", "Bash"]`. Explicit restrictions require runtime enforcement support (see below). |
 | `dependsOn` | string[] | | Agent ids that must complete before this agent starts. |
 | `timeout` | number | | Per-agent timeout in ms. Default: `600000` (10 min). |
 | `retries` | number | | Number of retry attempts on failure. Default: `0`. |
@@ -338,6 +338,22 @@ never dropped.
 > **No TTY?** The console needs an interactive terminal. In CI, in a pipe, or over a non-TTY SSH
 > session it exits with a message pointing at `multiclaw run`, which runs the same pipeline headless.
 
+### Explicit tool restrictions
+
+An explicit `tools` setting, including `tools: []`, is checked against the runtime's
+capability for the **resolved command** before any leader, worker, reviewer, or repair
+agent starts. Unsupported restrictions fail with the agent and command named: choose
+an enforcing provider or remove the explicit setting. multiclaw never silently removes
+the restriction or changes providers. The same check protects dry-run previews and retries.
+
+Built-in presets keep their existing implicit tool defaults and remain usable with
+providers that cannot enforce allowlists. Factory overrides, replacement arrays (even
+with the same values), and changed array contents count as explicit settings. Ordinary
+spreads preserve preset defaults; a same-reference, unchanged-array assignment cannot
+be distinguished from an unchanged preset. These defaults are **not** an enforcement
+guarantee on unsupported providers. Tool policy is not a sandbox: allowing `Bash` does
+not restrict its commands or filesystem paths.
+
 ### Human approvals and agent questions
 
 The console defaults to **ask** for ACP tool-permission requests. It shows the
@@ -415,6 +431,14 @@ the last 20 finished turns.
 Finished turns are written to `workDir/.multiclaw/console/history.json`, so closing the console and
 reopening it restores the list — and the turn numbering carries on from where it left off rather than
 restarting at one.
+
+The next leader turn also receives compact execution facts from completed pipeline
+turns: completed agents, failures and their reasons, and acceptance status separately.
+Successful execution is not the same as approved delivery. Interrupted turns remain
+interrupted; cancelled turns are excluded from dialogue context. Older records without
+enough facts are not relabeled as successful. This uses no additional model call and
+stays within the existing six-turn / 4,000-character conversation budget. A follow-up
+such as “continue” does not implicitly approve tools or automatically retry failures.
 
 ### Restarting
 

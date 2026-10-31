@@ -1320,6 +1320,316 @@ describe("conversationTurns", () => {
     })
   }
 
+  function completed(patch: Partial<TuiState> = {}): TuiState {
+    return {
+      ...createInitialState(config()),
+      phase: "complete",
+      turn: 1,
+      requirement: "build it",
+      ...patch,
+    }
+  }
+
+  function statuses(values: Record<string, AgentView["status"]>): Record<string, AgentView> {
+    return Object.fromEntries(
+      Object.entries(values).map(([id, status]) => [id, { id, name: id, status, logs: "" }])
+    )
+  }
+
+  it("projects successful workers without the successful leader or unscheduled roster", () => {
+    expect(
+      conversationTurns(
+        completed({
+          success: true,
+          agents: statuses({ leader: "success", architect: "success", dev: "pending" }),
+          stages: [stage(0, ["architect"])],
+        })
+      )
+    ).toEqual([
+      {
+        requirement: "build it",
+        outcome: { execution: "success", completedAgents: ["architect"], failedAgents: [] },
+      },
+    ])
+  })
+
+  it("keeps success when only workers outside the selected pipeline were skipped", () => {
+    expect(
+      conversationTurns(
+        completed({
+          success: true,
+          agents: statuses({ architect: "success", dev: "skipped" }),
+          stages: [stage(0, ["architect"])],
+        })
+      )[0]
+    ).toEqual({
+      requirement: "build it",
+      outcome: { execution: "success", completedAgents: ["architect"], failedAgents: [] },
+    })
+  })
+
+  it("projects only completed workers and factual failure reasons", () => {
+    const agents = statuses({
+      architect: "success",
+      dev: "failed",
+      qa: "skipped",
+      spare: "pending",
+    })
+    agents.dev.error = "compile error"
+    expect(conversationTurns(completed({ success: false, agents }))).toEqual([
+      {
+        requirement: "build it",
+        outcome: {
+          execution: "failed",
+          completedAgents: ["architect"],
+          failedAgents: [{ agentId: "dev", reason: "compile error" }],
+        },
+      },
+    ])
+  })
+
+  it.each([true, false])(
+    "keeps successful fallback worker execution separate from failed leader (turn success %s)",
+    (success) => {
+      const agents = statuses({ leader: "failed", architect: "success" })
+      agents.leader.error = "leader fallback"
+      const acceptance = success
+        ? undefined
+        : { status: "failed" as const, reviewer: "qa", repairRounds: 0, reviews: [] }
+      expect(conversationTurns(completed({ success, agents, acceptance }))[0]).toEqual({
+        requirement: "build it",
+        outcome: {
+          execution: "success",
+          completedAgents: ["architect"],
+          failedAgents: [],
+          ...(acceptance ? { acceptance: { status: "failed" } } : {}),
+        },
+      })
+    }
+  )
+
+  it("keeps only worker failures when execution continued after leader fallback", () => {
+    const agents = statuses({ leader: "failed", architect: "failed" })
+    agents.architect.error = "worker error"
+    expect(conversationTurns(completed({ success: false, agents }))[0]).toEqual({
+      requirement: "build it",
+      outcome: {
+        execution: "failed",
+        completedAgents: [],
+        failedAgents: [{ agentId: "architect", reason: "worker error" }],
+      },
+    })
+  })
+
+  it("keeps cancelled fallback execution separate from a failed leader", () => {
+    expect(
+      conversationTurns(
+        completed({
+          success: false,
+          agents: statuses({ leader: "failed", architect: "cancelled" }),
+        })
+      )[0]
+    ).toEqual({
+      requirement: "build it",
+      outcome: { execution: "cancelled", completedAgents: [], failedAgents: [] },
+    })
+  })
+
+  it("includes a failed preflight leader without inventing a worker completion", () => {
+    const agents = statuses({ leader: "failed", architect: "pending" })
+    agents.leader.error = "cannot plan"
+    expect(conversationTurns(completed({ success: false, agents }))[0]).toEqual({
+      requirement: "build it",
+      outcome: {
+        execution: "failed",
+        completedAgents: [],
+        failedAgents: [{ agentId: "leader", reason: "cannot plan" }],
+      },
+    })
+  })
+
+  it.each(["approved", "changes_required", "failed", "cancelled"] as const)(
+    "keeps acceptance %s separate from successful worker execution",
+    (status) => {
+      const acceptance = {
+        status,
+        reviewer: "qa",
+        repairRounds: 0,
+        reviews: [],
+        reason: "review reason",
+      }
+      const agents = statuses({
+        leader: "success",
+        architect: "success",
+        qa: status === "failed" ? "failed" : "success",
+      })
+      agents.qa.error = "review process error"
+      expect(
+        conversationTurns(completed({ success: status === "approved", agents, acceptance }))[0]
+      ).toEqual({
+        requirement: "build it",
+        outcome: {
+          execution: "success",
+          completedAgents: ["architect"],
+          failedAgents: [],
+          acceptance: { status, reason: "review reason" },
+        },
+      })
+    }
+  )
+
+  it("preserves worker failures separately from acceptance reasons", () => {
+    const agents = statuses({ architect: "failed", qa: "failed" })
+    agents.architect.error = "worker error"
+    const acceptance = {
+      status: "failed" as const,
+      reviewer: "qa",
+      repairRounds: 0,
+      reviews: [],
+      reason: "review unavailable",
+    }
+    expect(conversationTurns(completed({ success: false, agents, acceptance }))[0]).toEqual({
+      requirement: "build it",
+      outcome: {
+        execution: "failed",
+        completedAgents: [],
+        failedAgents: [{ agentId: "architect", reason: "worker error" }],
+        acceptance: { status: "failed", reason: "review unavailable" },
+      },
+    })
+  })
+
+  it.each([undefined, true])("keeps empty legacy success %s unknown", (success) => {
+    expect(conversationTurns(completed({ success, agents: {} }))[0]).toEqual({
+      requirement: "build it",
+      outcome: { execution: "unknown", completedAgents: [], failedAgents: [] },
+    })
+  })
+
+  it("identifies pre-start failure even with no observed agents", () => {
+    expect(conversationTurns(completed({ success: false }))[0]).toEqual({
+      requirement: "build it",
+      outcome: { execution: "failed", completedAgents: [], failedAgents: [] },
+    })
+  })
+
+  it("does not convert acceptance-only empty failure into execution failure", () => {
+    const acceptance = { status: "failed" as const, reviewer: "qa", repairRounds: 0, reviews: [] }
+    expect(conversationTurns(completed({ success: false, acceptance }))[0]).toEqual({
+      requirement: "build it",
+      outcome: {
+        execution: "unknown",
+        completedAgents: [],
+        failedAgents: [],
+        acceptance: { status: "failed" },
+      },
+    })
+  })
+
+  it.each(["pending", "running", "retrying", "skipped", undefined] as const)(
+    "does not claim success while a stage-selected worker is %s",
+    (status) => {
+      const agents = statuses({ architect: "success", ...(status ? { dev: status } : {}) })
+      expect(
+        conversationTurns(
+          completed({ success: true, agents, stages: [stage(0, ["architect", "dev"])] })
+        )[0]
+      ).toEqual({
+        requirement: "build it",
+        outcome: { execution: "unknown", completedAgents: ["architect"], failedAgents: [] },
+      })
+    }
+  )
+
+  it("does not count skipped workers as completed or invent an all-skipped success", () => {
+    expect(
+      conversationTurns(completed({ success: true, agents: statuses({ architect: "skipped" }) }))[0]
+    ).toEqual({
+      requirement: "build it",
+      outcome: { execution: "unknown", completedAgents: [], failedAgents: [] },
+    })
+  })
+
+  it("projects cancelled worker execution without counting cancellation as failure", () => {
+    expect(
+      conversationTurns(
+        completed({ success: false, agents: statuses({ architect: "cancelled" }) })
+      )[0]
+    ).toEqual({
+      requirement: "build it",
+      outcome: { execution: "cancelled", completedAgents: [], failedAgents: [] },
+    })
+  })
+
+  it("preserves interruption over cancelled or failed worker execution", () => {
+    expect(
+      conversationTurns(
+        completed({
+          interrupted: true,
+          agents: statuses({ architect: "success", dev: "cancelled", qa: "failed" }),
+        })
+      )[0]
+    ).toEqual({
+      requirement: "build it",
+      outcome: {
+        execution: "interrupted",
+        completedAgents: ["architect"],
+        failedAgents: [{ agentId: "qa" }],
+      },
+    })
+  })
+
+  it("keeps latest worker facts after a frozen failed stage is repaired", () => {
+    const frozen = {
+      ...stage(0, ["architect"]),
+      outcome: "failed" as const,
+      memberStatuses: { architect: "failed" as const },
+    }
+    expect(
+      conversationTurns(
+        completed({
+          success: true,
+          agents: statuses({ architect: "success" }),
+          stages: [frozen, stage(1, ["architect"])],
+        })
+      )[0]
+    ).toEqual({
+      requirement: "build it",
+      outcome: { execution: "success", completedAgents: ["architect"], failedAgents: [] },
+    })
+  })
+
+  it.each(["ask", "reply"] as const)("preserves exact raw %s without adding an outcome", (mode) => {
+    const reply = { mode, message: "  exact reply\n" }
+    expect(
+      conversationTurns(completed({ requirement: "  raw request  ", success: false, reply }))
+    ).toEqual([{ requirement: "  raw request  ", reply }])
+  })
+
+  it("projects historical and live outcomes in absolute turn order without changing records", () => {
+    const older: TurnView = {
+      ...completed({ agents: statuses({ architect: "failed" }), success: false }),
+      turn: 42,
+    }
+    const state = completed({ turn: 43, agents: statuses({ dev: "success" }), history: [older] })
+    expect(conversationTurns(state)).toEqual([
+      {
+        requirement: "build it",
+        outcome: {
+          execution: "failed",
+          completedAgents: [],
+          failedAgents: [{ agentId: "architect" }],
+        },
+      },
+      {
+        requirement: "build it",
+        outcome: { execution: "success", completedAgents: ["dev"], failedAgents: [] },
+      },
+    ])
+    expect(recordedTurns(state).map((turn) => turn.turn)).toEqual([42, 43])
+    expect(older.agents.architect.status).toBe("failed")
+  })
+
   it("carries nothing before the first turn has run", () => {
     expect(conversationTurns(createInitialState(config()))).toEqual([])
   })
@@ -1338,7 +1648,12 @@ describe("conversationTurns", () => {
   it("leaves out the leader line for a turn that ran the team", () => {
     const state = ran(createInitialState(config()), "add a --json flag")
 
-    expect(conversationTurns(state)).toEqual([{ requirement: "add a --json flag" }])
+    expect(conversationTurns(state)).toEqual([
+      {
+        requirement: "add a --json flag",
+        outcome: { execution: "unknown", completedAgents: [], failedAgents: [] },
+      },
+    ])
   })
 
   it("keeps every finished turn, oldest first", () => {
@@ -1414,7 +1729,12 @@ describe("conversationTurns", () => {
       },
     })
     expect(recordedTurns(done)[0].effectiveRequirement).toBe("Build the web app with Postgres")
-    expect(conversationTurns(done)).toEqual([{ requirement: "Postgres" }])
+    expect(conversationTurns(done)).toEqual([
+      {
+        requirement: "Postgres",
+        outcome: { execution: "unknown", completedAgents: [], failedAgents: [] },
+      },
+    ])
   })
 })
 

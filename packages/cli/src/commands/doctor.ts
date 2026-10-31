@@ -1,6 +1,7 @@
 import {
   type DetectedProvider,
   detectProviders,
+  hasExplicitTools,
   type ModelSelectionMode,
   type MultiClawConfig,
   type ProviderSource,
@@ -72,7 +73,7 @@ export function buildDoctorReport(
     const defaultsProviderOk = !defaultsProvider || present.includes(defaultsProvider)
 
     const agents = [...config.agents]
-    if (config.leader) agents.push(config.leader)
+    if (config.leader && config.useLeader !== false) agents.push(config.leader)
     const agentsWithMissingProvider = agents
       .map((a) => ({ id: a.id, intended: resolveProvider(a, config) }))
       .filter((a) => !present.includes(a.intended))
@@ -81,9 +82,9 @@ export function buildDoctorReport(
       .map((a) => {
         const command = resolveCommand(a, config)
         const spec = specForCommand(command) ?? specForProvider(resolveProvider(a, config))
-        return { id: a.id, spec, tools: a.tools }
+        return { id: a.id, spec, explicitTools: hasExplicitTools(a) }
       })
-      .filter((a) => a.spec && !a.spec.tools && a.tools !== undefined)
+      .filter((a) => a.spec && !a.spec.tools && a.explicitTools)
       .map((a) => a.id)
 
     configReport = {

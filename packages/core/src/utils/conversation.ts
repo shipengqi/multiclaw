@@ -31,6 +31,24 @@ function clip(text: string, max: number): string {
   return `${trimmed.slice(0, Math.max(0, max - 1)).trimEnd()}${ELLIPSIS}`
 }
 
+/** Stop consuming agent lists once the whole summary line reaches its budget. */
+function agentSummary<T>(
+  label: string,
+  agents: readonly T[],
+  format: (agent: T) => string
+): string {
+  let text = `${label}: `
+  if (agents.length === 0) text += "none"
+  for (let i = 0; i < agents.length; i++) {
+    text += `${i > 0 ? ", " : ""}${clip(format(agents[i]), MAX_ENTRY_CHARS)}`
+    if (text.length >= MAX_ENTRY_CHARS - 3) {
+      if (i < agents.length - 1) text += ELLIPSIS
+      break
+    }
+  }
+  return `   ${clip(text, MAX_ENTRY_CHARS - 3)}`
+}
+
 /**
  * One turn, addressed from the leader's point of view.
  *
@@ -43,6 +61,19 @@ function entry(turn: TurnRecord, index: number): string {
   if (turn.reply) {
     const verb = turn.reply.mode === "ask" ? "asked" : "answered"
     lines.push(`   you ${verb}: ${clip(turn.reply.message, MAX_ENTRY_CHARS)}`)
+  } else if (turn.outcome) {
+    const { execution, completedAgents, failedAgents, acceptance } = turn.outcome
+    lines.push(
+      `   ${clip(`execution: ${execution}`, MAX_ENTRY_CHARS - 3)}`,
+      agentSummary("completed", completedAgents, (agentId) => agentId),
+      agentSummary("failed", failedAgents, ({ agentId, reason }) =>
+        reason ? `${agentId} (${reason})` : agentId
+      ),
+      `   ${clip(
+        `acceptance: ${acceptance ? `${acceptance.status}${acceptance.reason ? ` (${acceptance.reason})` : ""}` : "not configured"}`,
+        MAX_ENTRY_CHARS - 3
+      )}`
+    )
   }
   return lines.join("\n")
 }

@@ -15,6 +15,16 @@ export interface TurnRecord {
   requirement: string
   /** How the turn ended in words, when it ended that way. */
   reply?: LeaderMessage
+  /** Observed execution and acceptance facts; absent in older caller-provided history. */
+  outcome?: TurnOutcome
+}
+
+/** Compact facts for the next leader turn, not a model-generated summary or retry instruction. */
+export interface TurnOutcome {
+  execution: "success" | "failed" | "cancelled" | "interrupted" | "unknown"
+  completedAgents: string[]
+  failedAgents: { agentId: string; reason?: string }[]
+  acceptance?: { status: AcceptanceResult["status"]; reason?: string }
 }
 
 export interface ReviewPolicy {

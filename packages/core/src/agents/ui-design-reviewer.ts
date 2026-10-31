@@ -1,3 +1,4 @@
+import { markPresetTools } from "../config/toolsPolicy"
 import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
@@ -36,17 +37,20 @@ Review the UI design specification above and output ui-review.md:
 Reference specific component names or section titles when citing issues.`
 
 export function uiDesignReviewer(overrides?: Overrides): AgentDefinition {
-  return {
-    id: "ui-design-reviewer",
-    name: "UI Design Reviewer",
-    icon: "◎",
-    description: "reviews the UI design",
-    runtime: "acp",
-    models: { acp: "haiku" },
-    modelTier: "fast",
-    systemPrompt: SYSTEM,
-    taskPrompt: TASK,
-    tools: ["Read", "Write"],
-    ...overrides,
-  }
+  return markPresetTools(
+    {
+      id: "ui-design-reviewer",
+      name: "UI Design Reviewer",
+      icon: "◎",
+      description: "reviews the UI design",
+      runtime: "acp",
+      models: { acp: "haiku" },
+      modelTier: "fast",
+      systemPrompt: SYSTEM,
+      taskPrompt: TASK,
+      tools: ["Read", "Write"],
+      ...overrides,
+    },
+    overrides
+  )
 }

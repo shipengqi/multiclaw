@@ -1,7 +1,7 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { AcpRuntime, type RuntimeInfo } from "@multiclawcli/core"
+import { AcpRuntime, agents, type RuntimeInfo } from "@multiclawcli/core"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { assertRuntimesAvailable, type MultiClawConfig } from "./lib"
 
@@ -97,6 +97,67 @@ describe("assertRuntimesAvailable", () => {
       expect(describeSpy).toHaveBeenCalledTimes(2)
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("checks the active leader, but ignores a disabled leader", async () => {
+    const exit = spyOnExit()
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    const config = acpConfig([])
+    config.leader = {
+      ...acpConfig([undefined]).agents[0],
+      runtime: "missing-leader-runtime",
+      tools: [],
+    }
+    await expect(assertRuntimesAvailable(config)).rejects.toThrow()
+    expect(exit).toHaveBeenCalledWith(1)
+    expect(stderr()).toContain('Unknown runtime "missing-leader-runtime"')
+    await assertRuntimesAvailable({ ...config, useLeader: false })
+  })
+
+  it.each([false, true])("preserves implicit leader fallback (resume: %s)", async (resume) => {
+    const config = acpConfig([])
+    config.leader = { ...acpConfig([undefined]).agents[0], runtime: "unused-resume-leader" }
+    if (resume) config.resume = { agents: [] }
+    await assertRuntimesAvailable(config)
+  })
+
+  it("rejects explicit tools even after an implicit preset on the same command", async () => {
+    const exit = spyOnExit()
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    const describeSpy = vi.spyOn(AcpRuntime.prototype, "describe").mockResolvedValue({
+      name: "acp",
+      available: true,
+      capabilities: {
+        streaming: true,
+        sessions: true,
+        resume: true,
+        permissions: true,
+        tools: false,
+        models: false,
+        images: false,
+        usage: true,
+        cost: true,
+        sandbox: false,
+      },
+    })
+    const config: MultiClawConfig = {
+      name: "policy",
+      workDir: "/tmp/work",
+      agents: [
+        agents.tester({ id: "implicit", provider: "codex" }),
+        agents.tester({ id: "restricted", provider: "codex", tools: [] }),
+      ],
+    }
+    try {
+      await expect(assertRuntimesAvailable(config)).rejects.toThrow()
+      expect(exit).toHaveBeenCalledWith(1)
+      expect(stderr()).toContain("restricted")
+      expect(stderr()).toContain("codex-acp")
+      expect(stderr()).toContain("explicit tools")
+      await assertRuntimesAvailable({ ...config, agents: [config.agents[0]] })
+    } finally {
+      describeSpy.mockRestore()
     }
   })
 

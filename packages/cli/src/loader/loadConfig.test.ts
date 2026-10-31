@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { hasExplicitTools } from "@multiclawcli/core"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { loadConfig } from "./loadConfig"
 
@@ -97,6 +98,25 @@ export default defineConfig({ name: "x", workDir: "./w", agents: [agents.tester(
     const config = await loadConfig(p)
     expect(config.agents).toHaveLength(1)
   })
+
+  it.each(["multiclaw", "@multiclawcli/core"])(
+    "preserves default and explicit tool provenance through %s config imports",
+    async (packageName) => {
+      const p = write(
+        "multiclaw.config.ts",
+        `import { defineConfig, agents } from "${packageName}"
+const preset = agents.tester()
+export default defineConfig({ name: "policy", workDir: "./w", agents: [
+  preset,
+  { ...preset, id: "spread" },
+  agents.tester({ id: "empty", tools: [] }),
+  { ...preset, id: "replaced", tools: ["Read", "Write", "Bash"] },
+] })`
+      )
+      const config = await loadConfig(p)
+      expect(config.agents.map(hasExplicitTools)).toEqual([false, false, true, true])
+    }
+  )
 
   // Regression: the loader used to inherit the project's module system, so any
   // project whose package.json lacked "type": "module" (the Node default) died

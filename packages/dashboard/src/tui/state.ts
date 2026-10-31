@@ -7,6 +7,7 @@ import type {
   MultiClawConfig,
   MultiClawEvent,
   StageInfo,
+  TurnOutcome,
   TurnRecord,
 } from "@multiclawcli/core"
 import { wrapLine } from "./format"
@@ -656,10 +657,74 @@ export function conversationTurns(state: TuiState): TurnRecord[] {
     turns.push(
       turn.reply
         ? { requirement: turn.requirement, reply: turn.reply }
-        : { requirement: turn.requirement }
+        : { requirement: turn.requirement, outcome: conversationOutcome(turn) }
     )
   }
   return turns
+}
+
+function conversationOutcome(turn: TurnView): TurnOutcome {
+  const reviewer = turn.acceptance?.reviewer
+  const isWorker = (id: string) => id !== reviewer && !turn.leaderIds.includes(id)
+  const workers = Object.values(turn.agents).filter((agent) => isWorker(agent.id))
+  const completedAgents = workers
+    .filter((agent) => agent.status === "success")
+    .map((agent) => agent.id)
+  // A failed leader can fall back to the workers; it only explains execution
+  // failure when no worker actually ran.
+  const observed = workers.filter(
+    (agent) => agent.status !== "pending" && agent.status !== "skipped"
+  )
+  const failedAgents = Object.values(turn.agents)
+    .filter(
+      (agent) =>
+        agent.id !== reviewer &&
+        agent.status === "failed" &&
+        (isWorker(agent.id) || observed.length === 0)
+    )
+    .map((agent) => ({
+      agentId: agent.id,
+      ...(agent.error !== undefined ? { reason: agent.error } : {}),
+    }))
+  const selected = turn.stages
+    .flatMap((stage) => stage.agents)
+    .filter((agent) => isWorker(agent.id))
+  const unresolved = selected.some((agent) => {
+    const status = turn.agents[agent.id]?.status
+    return (
+      status === undefined ||
+      status === "pending" ||
+      status === "running" ||
+      status === "retrying" ||
+      status === "skipped"
+    )
+  })
+  // Seeded pending agents are not execution facts. Repeated runs use the latest
+  // worker status, not a frozen stage outcome from an earlier attempt.
+  let execution: TurnOutcome["execution"] = "unknown"
+  if (turn.interrupted) execution = "interrupted"
+  else if (failedAgents.length > 0) execution = "failed"
+  else if (observed.some((agent) => agent.status === "cancelled")) execution = "cancelled"
+  else if (
+    observed.length > 0 &&
+    observed.every((agent) => agent.status === "success") &&
+    !unresolved
+  )
+    execution = "success"
+  else if (observed.length === 0 && turn.success === false && !turn.acceptance) execution = "failed"
+  return {
+    execution,
+    completedAgents,
+    failedAgents,
+    ...(turn.acceptance
+      ? {
+          acceptance: {
+            status: turn.acceptance.status,
+            ...(turn.acceptance.reason !== undefined ? { reason: turn.acceptance.reason } : {}),
+          },
+        }
+      : {}),
+  }
 }
 
 export function tuiReducer(state: TuiState, action: TuiAction): TuiState {

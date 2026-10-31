@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { validateToolsPolicy } from "../config/toolsPolicy"
 import { EventBus } from "../event/EventBus"
 import { resolveModel } from "../providers/resolve"
 import type { AgentDefinition, AgentResult, TaskPlan } from "../types/agent"
@@ -62,8 +63,19 @@ export class Orchestrator {
   }
 
   async preview(options: { signal?: AbortSignal } = {}): Promise<OrchestrationPreview> {
+    if (options.signal?.aborted)
+      return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
     const policyError = this.reviewPolicyError()
     if (policyError) throw new Error(policyError)
+    try {
+      await validateToolsPolicy(this.config, options)
+    } catch (error) {
+      if (options.signal?.aborted)
+        return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
+      throw error
+    }
+    if (options.signal?.aborted)
+      return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
     this.clearStaleTaskPlan()
     const resolution = await this.resolveTurn(options.signal)
     if (resolution.kind === "cancelled" || options.signal?.aborted) {
@@ -109,6 +121,14 @@ export class Orchestrator {
       })
       return result
     }
+    try {
+      await validateToolsPolicy(this.config, options)
+    } catch (error) {
+      if (options.signal?.aborted) return this.finishCancelled(startTime)
+      this.warn(errorMessage(error))
+      return this.finishEmpty(startTime, undefined, false)
+    }
+    if (options.signal?.aborted) return this.finishCancelled(startTime)
     this.clearStaleTaskPlan()
     const resolution = await this.resolveTurn(options.signal)
     if (resolution.kind === "cancelled" || options.signal?.aborted) {
@@ -861,9 +881,13 @@ export class Orchestrator {
    * only honest outcome is to say that none was done. Running the whole team
    * instead would contradict the leader's explicit choice.
    */
-  private finishEmpty(startTime: Date, acceptance?: AcceptanceResult): OrchestratorResult {
+  private finishEmpty(
+    startTime: Date,
+    acceptance?: AcceptanceResult,
+    warnEmpty = true
+  ): OrchestratorResult {
     const usedLeader = this.config.leader !== undefined && this.config.useLeader !== false
-    if (!acceptance?.reason)
+    if (warnEmpty && !acceptance?.reason)
       this.warn(
         usedLeader
           ? "The leader selected none of the configured agents — nothing to run."

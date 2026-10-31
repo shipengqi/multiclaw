@@ -1,3 +1,4 @@
+import { markPresetTools } from "../config/toolsPolicy"
 import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
@@ -41,17 +42,20 @@ Verify the implementation code in the current directory:
 Start immediately. Verify actual behavior — do not just review code.`
 
 export function tester(overrides?: Overrides): AgentDefinition {
-  return {
-    id: "tester",
-    name: "Tester",
-    icon: "⊙",
-    description: "verifies the behaviour",
-    runtime: "acp",
-    models: { acp: "sonnet" },
-    modelTier: "balanced",
-    systemPrompt: SYSTEM,
-    taskPrompt: TASK,
-    tools: ["Read", "Write", "Bash"],
-    ...overrides,
-  }
+  return markPresetTools(
+    {
+      id: "tester",
+      name: "Tester",
+      icon: "⊙",
+      description: "verifies the behaviour",
+      runtime: "acp",
+      models: { acp: "sonnet" },
+      modelTier: "balanced",
+      systemPrompt: SYSTEM,
+      taskPrompt: TASK,
+      tools: ["Read", "Write", "Bash"],
+      ...overrides,
+    },
+    overrides
+  )
 }

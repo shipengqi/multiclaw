@@ -7,6 +7,7 @@ import {
   type AgentTask,
   agents,
   type MultiClawConfig,
+  type MultiClawEvent,
   type RuntimePromptOptions,
   type RuntimeSession,
   runtimeRegistry,
@@ -224,6 +225,126 @@ describe("App · reusable live sessions", () => {
     expect(handles.map((handle) => handle.agentId)).toEqual(["leader", "architect"])
     expect(handles.map((handle) => handle.prompts.length)).toEqual([2, 2])
     expect(execute).not.toHaveBeenCalled()
+  })
+
+  it.each(["success", "failed"] as const)(
+    "carries the first worker execution %s into the next leader prompt",
+    async (execution) => {
+      config.agents[0].retries = 0
+      respond = async (handle) => ({
+        output: handle.agentId === "leader" ? PLAN : "worker result",
+        exitCode: handle.agentId === "architect" && execution === "failed" ? 1 : 0,
+      })
+      const done = completions()
+      await driveFrame(<App config={config} onTurnStart={done.onTurnStart} />, {
+        keys: ["first task", "\r"],
+        ready: done.ready,
+        thenKeys: ["second task", "\r"],
+        settleMs: 300,
+      })
+      const prompt = handles.find((handle) => handle.agentId === "leader")?.prompts[1]
+      expect(prompt).toContain("1. user: first task")
+      expect(prompt).toContain(`   execution: ${execution}\n`)
+      expect(prompt).toContain(`   completed: ${execution === "success" ? "architect" : "none"}\n`)
+      expect(prompt).toContain(`   failed: ${execution === "failed" ? "architect" : "none"}`)
+      expect(prompt).toContain("   acceptance: not configured\n")
+      expect(prompt).not.toContain("   completed: leader")
+    }
+  )
+
+  it("carries successful fallback workers instead of the failed leader into the next prompt", async () => {
+    if (!config.leader) throw new Error("test config requires a leader")
+    config.leader.retries = 0
+    respond = async (handle) => ({
+      output: handle.agentId === "leader" ? PLAN : "done",
+      exitCode: handle.agentId === "leader" && handle.prompts.length === 1 ? 1 : 0,
+    })
+    const done = completions()
+    await driveFrame(<App config={config} onTurnStart={done.onTurnStart} />, {
+      keys: ["first task", "\r"],
+      ready: done.ready,
+      thenKeys: ["second task", "\r"],
+      settleMs: 300,
+    })
+    const prompt = handles.find((handle) => handle.agentId === "leader")?.prompts[1]
+    expect(prompt).toContain("   execution: success\n")
+    expect(prompt).toContain("   completed: architect\n")
+    expect(prompt).toContain("   failed: none\n")
+  })
+
+  it.each(["changes_required", "failed"] as const)(
+    "carries acceptance %s separately from successful workers into the next leader prompt",
+    async (status) => {
+      config.agents.push(agents.codeReviewer({ runtime: RUNTIME, retries: 0 }))
+      config.review = { reviewer: "code-reviewer", repairAgents: ["architect"], maxRepairRounds: 0 }
+      respond = async (handle) => ({
+        output:
+          handle.agentId === "leader"
+            ? PLAN
+            : handle.agentId === "code-reviewer"
+              ? '{"verdict":"changes_required","summary":"Checked","issues":["Fix validation"]}'
+              : "done",
+        exitCode: handle.agentId === "code-reviewer" && status === "failed" ? 1 : 0,
+      })
+      const done = completions()
+      await driveFrame(<App config={config} onTurnStart={done.onTurnStart} />, {
+        keys: ["first task", "\r"],
+        ready: done.ready,
+        thenKeys: ["second task", "\r"],
+        settleMs: 300,
+      })
+      const prompt = handles.find((handle) => handle.agentId === "leader")?.prompts[1]
+      expect(prompt).toContain("   execution: success\n")
+      expect(prompt).toContain("   completed: architect\n")
+      expect(prompt).toContain("   failed: none\n")
+      expect(prompt).toContain(`   acceptance: ${status}`)
+      expect(prompt).not.toContain("   failed: code-reviewer")
+    }
+  )
+
+  it("rejects unsupported explicit tools before sessions and retains failed input with the queue paused", async () => {
+    config.agents[0].tools = []
+    const runtime = runtimeRegistry.get(RUNTIME)
+    const describe = runtime.describe
+    if (!describe) throw new Error("test runtime must report capabilities")
+    const gate = deferred()
+    vi.spyOn(runtime, "describe").mockImplementation(async (...args) => {
+      await gate.promise
+      return describe.apply(runtime, args)
+    })
+    const events: MultiClawEvent[] = []
+    const openSession = vi.spyOn(runtime, "openSession")
+    const done = completions()
+    const tui = await mount((bus, logDir) => {
+      bus.subscribe((event) => events.push(event))
+      done.onTurnStart(bus, logDir)
+    })
+    await tui.send("restricted task", "\r", "retained follow-up", "\r")
+    gate.resolve()
+    await done.ready
+    await vi.waitFor(() => {
+      const history = loadHistory(workDir)
+      expect(history).toHaveLength(1)
+      expect(history[0].requirement).toBe("restricted task")
+      expect(history[0].phase).toBe("complete")
+      expect(history[0].success).toBe(false)
+    })
+    tui.app.unmount()
+    await tui.exit
+    expect(tui.output()).toContain("queue paused")
+    expect(tui.output()).toContain("retained follow-up")
+    expect(done.count()).toBe(1)
+    expect(execute).not.toHaveBeenCalled()
+    expect(openSession).not.toHaveBeenCalled()
+    expect(handles).toHaveLength(0)
+    const warning = events.find((event) => event.type === "orchestration:warning")
+    expect(warning?.payload.message).toContain("architect")
+    expect(warning?.payload.message).toContain("tools")
+    expect(warning?.payload.message).toContain("explicit")
+    expect(warning?.payload.message).toMatch(/remove|omit|support/i)
+    expect(events.find((event) => event.type === "orchestration:complete")?.payload.success).toBe(
+      false
+    )
   })
 
   it("/task closes old handles and starts a fresh conversation", async () => {

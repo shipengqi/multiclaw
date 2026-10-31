@@ -1,3 +1,4 @@
+import { markPresetTools } from "../config/toolsPolicy"
 import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
@@ -44,17 +45,20 @@ Implement complete frontend code following the UI design specification, architec
 Follow ui-design.md exactly. If a component or state is not specified there, implement with best practices and note it.`
 
 export function frontendDeveloper(overrides?: Overrides): AgentDefinition {
-  return {
-    id: "frontend-developer",
-    name: "Frontend Developer",
-    icon: "◇",
-    description: "builds the interface",
-    runtime: "acp",
-    models: { acp: "sonnet" },
-    modelTier: "balanced",
-    systemPrompt: SYSTEM,
-    taskPrompt: TASK,
-    tools: ["Read", "Write", "Bash"],
-    ...overrides,
-  }
+  return markPresetTools(
+    {
+      id: "frontend-developer",
+      name: "Frontend Developer",
+      icon: "◇",
+      description: "builds the interface",
+      runtime: "acp",
+      models: { acp: "sonnet" },
+      modelTier: "balanced",
+      systemPrompt: SYSTEM,
+      taskPrompt: TASK,
+      tools: ["Read", "Write", "Bash"],
+      ...overrides,
+    },
+    overrides
+  )
 }

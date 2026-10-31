@@ -169,7 +169,7 @@ export default defineConfig({
 | `modelTier` | `"strong"` \| `"balanced"` \| `"fast"` | | 声明此 Agent 所需的能力层级；目录会把每个层级映射到该 Provider 对应的具体模型 id。设置了 `model` 时此项被忽略。 |
 | `model` | string | | 指定此 Agent 的模型 id（与 Provider 相关，例如 Claude 的 `"opus"`、`"sonnet"`、`"haiku"`）。优先级高于 `modelTier` 和 `models`。 |
 | `models` | Record<string, string> | | Provider id（或旧别名 `"acp"`）到模型 id 的映射，例如 `{ claude: "sonnet", opencode: "opencode/big-pickle" }`。当未设置 `model`/`modelTier` 时使用。 |
-| `tools` | string[] | | 允许使用的工具列表，默认 `["Read", "Write", "Bash"]`。 |
+| `tools` | string[] | | 允许使用的工具列表，默认 `["Read", "Write", "Bash"]`。显式限制要求运行时支持执行该限制，见下文。 |
 | `dependsOn` | string[] | | 必须在此 Agent 启动前完成的 Agent id 列表。 |
 | `timeout` | number | | 单个 Agent 超时时间（毫秒），默认 `600000`（10 分钟）。 |
 | `retries` | number | | 失败后的重试次数，默认 `0`。 |
@@ -283,6 +283,12 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 
 控制台在备用屏幕缓冲区（alternate screen buffer）中渲染，因此终端的 scrollback 不会被破坏。
 
+### 显式工具限制
+
+显式配置 `tools`（包括 `tools: []`）时，multiclaw 会在任何 leader、工作 Agent、审查或修复 Agent 启动之前，检查**实际解析出的命令**对应运行时能否执行该限制。不支持时会明确指出 Agent 和命令：请改用支持限制的 provider，或移除显式设置。不会静默删除限制或切换 provider；dry-run 预览与重试也受同一检查保护。
+
+内置预设保留原有的隐式工具默认值，仍可搭配不支持 allowlist 的 provider 使用。通过工厂参数覆盖、替换数组（即使值相同）或改变数组内容，都视为显式设置；普通对象展开会保留默认值语义。同引用且内容未变的数组赋值，无法与未修改的预设区分。不支持限制的 provider 上，这些默认值**不构成强制执行保证**。工具策略也不是沙箱：允许 `Bash` 不代表限制其中的命令或文件路径。
+
 ### 人工审批与 Agent 提问
 
 控制台默认以 **ask** 模式处理 ACP 工具权限请求，展示请求的 Agent、工具输入和 provider 提供的选项。并发请求按顺序排队，各自有唯一别名；普通输入仍只会加入后续需求队列，绝不会自动授权。
@@ -319,6 +325,8 @@ leader 澄清是独立机制：`/answer <text>` 回答已经结束的 leader `as
 当前屏幕上那一轮不会被列出——它已经在你眼前了。控制台保留最近 20 个已完成的轮次。
 
 已完成的轮次会写入 `workDir/.multiclaw/console/history.json`，因此关掉控制台再打开，历史列表会原样恢复，轮次编号也从上次继续，而不是从 1 重新开始。
+
+下一轮 leader 也会收到已结束流水线的简短执行事实：完成的 Agent、失败与原因，以及单独列出的验收状态。执行成功不等于交付获批；中断保持为中断，用户取消的轮次不进入对话上下文，缺少事实的旧记录不会被认定为成功。这不增加模型调用，仍受最近 6 轮、4,000 字符的既有预算限制。输入“继续”也不会自动批准工具或自动重试失败任务。
 
 ### 重启之后
 
