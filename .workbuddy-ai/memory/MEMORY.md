@@ -80,7 +80,7 @@
 - PATH 上有两个桥（`~/.workbuddy-ai/binaries/node/versions/22.22.2-6/bin/`）：`claude-agent-acp` 0.89.1、`codex-acp` 2.2.2。`resolveExecutable` 优先 PATH → 真机验证跑的是 PATH 那份，验证前先 `which -a`。
 - bundled `claude-agent-acp@0.95.0` 的原生二进制（darwin-arm64，122MB）本机下载超时 → `session/new` 报 `Claude native binary not found`；doctor 能报版本不代表会话能跑。
 - 本机全局 multiclaw 是 npm 装的 **0.6.3**，仓库是 0.6.2 → 解释线上行为前先核对版本。
-- **并行全量跑 dashboard 会稳定红 2 个**（`App.sessions` 的 "reuses the leader handle after ask"、`App.session` 的 "/quit does not claim successful cleanup"）：两者都是 `settleMs: 300` 固定等待后读磁盘/读帧，机器 load 5+ 时不够。干净 HEAD 上同样红，与改动无关；`--no-file-parallelism` 全绿。别把它当成自己改坏的回溯信号。
+- **渲染集成测试不要用固定 sleep 等异步副作用**。非交互模式下 Ink 只在 unmount 时写帧（`stdout` 在此之前是空串，polling 输出行不通），所以只能：① `driveFrame` 的 `ready`/`thenReady` 等 app 自己给的 promise；② `vi.waitFor` 轮询外部事实（history 文件、session 已关）。曾经 `App.sessions` "reuses the leader handle after ask" 与 `App.session` "/quit does not claim successful cleanup" 并行全量稳定红，就是 `settleMs` 去撞落盘/落帧；2026-10-31 改成等事实后连跑全绿。
 
 ## `multiclaw upgrade` / `doctor`
 - 升级必须打到"当前运行的那一份"所在 prefix（原实现硬编码 `npm install -g`，pnpm 全局装的机器上白升，2026-10-21 报障已修）。`findPackageRoot()` 从 `import.meta.url` 向上找 `name === "multiclaw"`；`detectInstaller()` 靠路径签名（pnpm/bun/yarn 签名要在通用 `/node_modules/` 之前匹配）。只给 npm/pnpm 实现 `view` + `add -g`，bun/yarn/unknown 报错给手动命令；registry 查询走安装器自己的 `view`（尊重 .npmrc 镜像）；装完 `readInstalledVersion()` 复查。`runUpgrade` 接受注入 `exec`/`readVersion` → 测试零 mock。
