@@ -828,11 +828,11 @@ export class AcpRuntime extends RuntimeBase {
        *   stop the turn Codex started this way).
        * - It has a deadline. "Did my message land?" cannot be a guess.
        *
-       * `injected` is about delivery, not obedience, and the two providers
-       * differ: Claude stops the response it was writing and answers the new
-       * instruction, while Codex finishes the turn it is in and applies the
-       * message before that turn ends. Callers should word their notices
-       * accordingly — the text was delivered either way.
+       * `injected` is about delivery, not obedience. Counting probes stopped
+       * before their original target with Claude bridges 0.89.1 / 0.95.0 and
+       * codex-acp 2.5.0, but reached the target first with codex-acp 2.2.2.
+       * These observations do not guarantee timing for other tasks or versions.
+       * Callers should acknowledge delivery, not promise immediate obedience.
        */
       const supplement = async (
         text: string,

@@ -105,14 +105,15 @@
 - **最危险的一条:两个 bridge 在空闲会话上收到 steer 都会自己开一个新 turn**。那样起的 turn 没有
   `prompt()` owner,没人 settle/归因/取消。所以:① 只给 `state === "running"` 的会话发;
   ② 万一回了 `startedNewTurn`,立刻发 `session/cancel` 清场。
-- **2026-10-31 真机实测(claude-agent-acp 0.93.0 + codex-acp 2.2.2)**:
-  - 两者都真的广告 `_meta.steering.supported=true` → 我们协商出的 `capabilities.supplement` 是 true。
-  - 空闲发 steer:claude 回 `{outcome:"promptRequired", reason:"noRunningTurn"}`(1ms,不起 turn);
-    codex 回 `{outcome:"startedNewTurn"}` 并且**真的开跑**(所以那条守卫不是防御性写法,是必需的)。
-  - codex 的 `startedNewTurn` 清场有效:`session/cancel` **以通知发出**(按 request 发会回
-    `Method not found -32601`)→ 流在两个 in-flight chunk 后停住,8s 无新增。
-  - 送达到≠照做,而且两家不一样:claude 会**打断**当前回答直接回应新指令(数到 4 就变 BANANA);
-    codex 会**跑完当前轮次**再应用(数满 200 之后才 BANANA)。README 已按实测写清,提示语只能说"送达"。
+- **2026-10-31 真机实测（严格区分版本与路径）**:
+  - Claude 0.89.1 / 0.95.0、Codex 2.2.2 / 2.5.0 广告 steering；OpenCode 1.19.0 不广告。
+  - 裸 ACP 空闲请求仅测 Claude 0.93.0 与 Codex 2.2.2：带 idleBehavior 时前者回
+    `{outcome:"promptRequired",reason:"noRunningTurn"}`，后者回 `startedNewTurn` 并真的开跑。
+  - Codex 2.2.2 的清场：`session/cancel` 必须以通知发出（request 会 -32601），流随后停止。
+    **没有在 Claude 0.95.0 / Codex 2.5.0 重跑裸空闲请求与取消路径**。
+  - 计数 probe：Claude 0.89.1 / 0.95.0 数到 4 / 36、Codex 2.5.0 数到 6 后改回 BANANA；
+    Codex 2.2.2 数满 200 才回。是特定任务与版本的观测，不是普遍保证；提示只能说“送达”。
+  - 最新 probe 使用本地 core dist + npx 安装的 multiclaw 0.6.1 bridge，不是发布 CLI 实任务端到端验证。
 - `RuntimeSession.capabilities.supplement` **是协商结果**,不是常量:initialize 晚于会话对象创建,
   所以用 getter 暴露。`AgentSessionManager.supplement()` 返回 `SupplementReport[]`
   (`injected|idle|unsupported|error`,每 agent 独立,一个失败不影响其他);没有 running 会话 → `[]`。
@@ -165,7 +166,8 @@
   验证前先 `which -a claude-agent-acp codex-acp`。
 - bundled `claude-agent-acp@0.95.0` 的原生二进制(`@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.309`,
   **122 MB**)在本机下载超时 → 装不出,`session/new` 报 `Claude native binary not found for darwin-arm64`。
-  `pnpm install --force` 和删 `node_modules` 重装都无效(根因是网络超时,不是状态残留)。换网络后重试。
+  `pnpm install --force` 和重装无效（网络超时）；随后 npx 安装的 0.6.1 副本可成功建会话。
+  doctor 的检测与版本输出本身不能证明会话能运行。
 
 ## `multiclaw upgrade`(cli)
 - **不变量:升级必须打到"当前正在运行的那一份"所在的 prefix**。原实现硬编码 `npm install -g`,

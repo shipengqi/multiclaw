@@ -120,18 +120,22 @@ prompt 前缀。若环境允许，验证 §4.1 的可观测指令在 cursor 上�
 | 8.2 | 跑一个长任务（如「数到 200，一行一个」），在**第一块流式输出之后**调 `supplement`（例如「停止计数，只回 BANANA」） | 返回 `{status:"injected"}`，且后续输出真的改变 | `AcpRuntime.supplement`（`_session/steering` + `STEER_ACK_MS`） |
 | 8.3 | 用裸 ACP client 绕过 runtime 的守卫，对**空闲**会话直接发 `_session/steering`，带 `_meta.steering.idleBehavior = "promptRequired"` | 记录 `outcome`：`promptRequired` 表示 bridge 没自起 turn；`startedNewTurn` 表示它起了，需要 `session/cancel` 清场 | 同 8.2；`startedNewTurn` 分支 |
 
-> 2026-10-31 实测（claude-agent-acp **0.89.1**——PATH 上那份，见 §0 的版本警告——加 haiku；
-> codex-acp 2.2.2；opencode 1.19.0）：两个 bridge 都广告 `supported: true`，opencode 不广告
-> （`supplement: false`）。8.1 三家都符合预期。8.2 都 `injected`，但**送达≠照做**：claude 当场
-> 打断（数到 4 就回 BANANA），codex 把当前轮跑完才应用（数满 200 之后才回 BANANA）。
-> 8.3 两者相反：claude 回 `{"outcome":"promptRequired","reason":"noRunningTurn"}`（1ms、不起
+> 2026-10-31 实测（claude-agent-acp **0.89.1 / 0.95.0** 加 haiku；codex-acp **2.2.2 / 2.5.0**；
+> opencode 1.19.0）：两个 bridge 都广告 `supported: true`，opencode 不广告（`supplement: false`）。
+> 8.1 三家都符合预期。支持 steering 的两家在 8.2 都返回 `injected`，但**送达≠照做**：
+> claude 0.89.1 / 0.95.0 在数到 4 / 36 时停止计数并回 BANANA；codex 2.2.2 数满 200 才回，
+> 2.5.0 数到 6 就回。这些是特定任务与版本的观测，不保证其他任务或后续版本的生效时机。
+> 8.3 在 claude bridge 0.93.0 与 codex-acp 2.2.2 上结果相反：claude 回 `{"outcome":"promptRequired","reason":"noRunningTurn"}`（1ms、不起
 > turn、不调模型），codex 回 `{"outcome":"startedNewTurn"}` 并且真的开跑——所以那条守卫是
 > 必需的。清场时 `session/cancel` **必须以通知发出**（按 request 发会被 `-32601` 打回），
 > 发出后流在两个 in-flight chunk 后停住。
 >
-> 版本覆盖说明：8.3 的空闲分支是用 bundled 的 **0.93.0** 裸 client 验的；本机随后升到 0.95.0，
-> 但它的原生二进制（122 MB）在这台机器上下载超时、装不出来，所以 0.95.0 只能确认「广告了
-> steering」，**无法确认能建会话**。换个环境复验时把这两行补齐。
+> 版本覆盖说明：8.3 的裸 ACP 空闲请求与取消路径仅验证了 Claude **0.93.0** 和 Codex **2.2.2**，
+> 没有在 0.95.0 / 2.5.0 上重跑。8.1/8.2 验证了 Claude 0.89.1（PATH）、0.95.0（`npx` 安装的
+> multiclaw 0.6.1 所带 bridge）以及 Codex 2.2.2 / 2.5.0；Codex 2.5.0 steering 后的下一次 READY
+> prompt 也成功。最新 probe 使用本地构建的 core 与 npm 安装的 bridge，**不是已发布 CLI 的完整
+> 实任务端到端测试**。仓库 pnpm 安装的 Claude 原生二进制下载超时，但 `npx` 安装的副本可建会话；
+> 复验时应明确选中实际使用的 bridge 路径与版本。
 >
 > **未验**：cursor-agent（catalog 里 `meta: undefined`）。
 
@@ -139,7 +143,7 @@ prompt 前缀。若环境允许，验证 §4.1 的可观测指令在 cursor 上�
 
 | 日期 | 环境（OS / Node / bridge 版本 / provider 版本） | 验证人 | 通过项 | 失败项 | 备注 / issue |
 | --- | --- | --- | --- | --- | --- |
-| 2026-10-31 | macOS 27.0.1 arm64 / Node 22.22.2 / claude-agent-acp 0.89.1（PATH）+ codex-acp 2.2.2 / claude 2.1.278、codex-cli 0.162.1、opencode 1.19.0 | multiclaw dev session（真实 API 额度） | §3.1、§4.1、§4.2、§6（`session/load` 跨会话续接）、§8.1–8.3 | §3.2/§3.3 **原预期**（已按实测改正，非代码缺陷） | §1.x、§2.x、§5、§6.1–6.3（TUI/CLI 层）、§7 未跑；bundled claude 桥 0.95.0 本机装不出原生二进制（122 MB 下载超时），只能确认它广告 steering |
+| 2026-10-31 | macOS 27.0.1 arm64 / Node 22.22.2 / claude-agent-acp 0.89.1（PATH）、0.93.0（§8.3 裸 ACP）+ 0.95.0（npm 装出的 0.6.1）+ codex-acp 2.2.2 / 2.5.0 / claude 2.1.278、codex-cli 0.162.1、opencode 1.19.0 | multiclaw dev session（真实 API 额度） | §3.1、§4.1、§4.2、§6（`session/load` 跨会话续接）、§8.1/8.2（Claude 0.89.1 / 0.95.0、Codex 2.2.2 / 2.5.0）；§8.3（仅 Claude 0.93.0、Codex 2.2.2） | §3.2/§3.3 **原预期**（已按实测改正，非代码缺陷） | §1.x、§2.x、§5、§6.1–6.3（TUI/CLI 层）、§7 未跑；steering 的生效时机随 codex-acp 版本变（2.2.2 跑完再应用、2.5.0 当场打断） |
 | _待填_ | | | | | |
 
 **失败时**：先比对「代码落点」一栏确认期望行为是否仍如描述；若描述与行为一致但真机不符，

@@ -227,13 +227,26 @@ describe("App · reusable live sessions", () => {
   })
 
   it("/task closes old handles and starts a fresh conversation", async () => {
-    const done = completions()
-    await driveFrame(<App config={config} onTurnStart={done.onTurnStart} />, {
-      keys: ["old task", "\r"],
-      ready: done.ready,
-      thenKeys: ["/task fresh task", "\r"],
-      settleMs: 300,
+    const first = completions()
+    const second = completions(2)
+    const tui = await mount((bus, logDir) => {
+      first.onTurnStart(bus, logDir)
+      second.onTurnStart(bus, logDir)
     })
+    await tui.send("old task", "\r")
+    await first.ready
+    await tui.send("/task fresh task", "\r")
+    await second.ready
+    // Completion precedes React's persistence effect and its atomic disk write.
+    // Wait for the saved invariant while mounted, not a fixed render delay.
+    await vi.waitFor(() =>
+      expect(loadHistory(workDir).map((turn) => turn.requirement)).toEqual([
+        "old task",
+        "fresh task",
+      ])
+    )
+    await tui.send("/quit", "\r")
+    await tui.exit
     expect(handles.map((handle) => handle.agentId)).toEqual([
       "leader",
       "architect",
