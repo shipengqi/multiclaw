@@ -210,7 +210,10 @@ describe("App · reusable live sessions", () => {
     expect(handles.find((handle) => handle.agentId === "architect")?.prompts[0]).toContain(
       "Build a web app with Postgres"
     )
-    expect(loadHistory(workDir)[1]?.requirement).toBe("Postgres")
+    // Completion precedes React's persistence effect and its atomic disk write,
+    // so the answer turn being visible in memory is not the same as the history
+    // having landed. Wait for the saved invariant rather than a fixed delay.
+    await vi.waitFor(() => expect(loadHistory(workDir)[1]?.requirement).toBe("Postgres"))
     expect(execute).not.toHaveBeenCalled()
   })
 

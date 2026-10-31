@@ -427,6 +427,13 @@ describe("App · caller-owned live sessions", () => {
 
   it("/quit does not claim successful cleanup after a reporter disposer rejects", async () => {
     const disposed = deferred()
+    // Both sessions being closed is the last step of the shutdown this test can
+    // observe from the outside, and polling for it is what makes the frame
+    // assertion deterministic: after it, the only work left is an already
+    // settled write and the render that reports the failure. A fixed delay had
+    // to cover the whole turn teardown as well, which is why it failed on a
+    // loaded machine.
+    const settled = vi.waitFor(() => expect(closed).toHaveLength(2))
     const frame = stripAnsi(
       await driveFrame(
         <App
@@ -441,6 +448,7 @@ describe("App · caller-owned live sessions", () => {
           keys: ["first task", "\r"],
           ready: disposed.promise,
           thenKeys: ["/quit", "\r"],
+          thenReady: settled,
         }
       )
     )
