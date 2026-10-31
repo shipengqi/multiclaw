@@ -124,7 +124,7 @@ describe("formatDoctorReport", () => {
   it("includes a present marker and a runnable verdict without color", () => {
     const report: DoctorReport = buildDoctorReport(detected(["opencode"], ["claude"]))
     const out = formatDoctorReport(report, false)
-    expect(out).toContain("present")
+    expect(out).toContain("available")
     expect(out).toContain("1 of 2 providers available")
   })
 
@@ -136,10 +136,7 @@ describe("formatDoctorReport", () => {
     expect(colored).toContain(ESC)
   })
 
-  // The padding *is* the separator, so a value wider than its column used to
-  // run straight into the next one: a codex bridge reporting
-  // "@agentclientprotocol/codex-acp 2.5.0" produced "2.5.0bundled".
-  it("clips an over-long value instead of fusing it with the next column", () => {
+  it("prints provider details as readable labeled lines without truncating versions", () => {
     const report: DoctorReport = buildDoctorReport(
       detected(
         ["codex"],
@@ -148,12 +145,12 @@ describe("formatDoctorReport", () => {
         { codex: "@agentclientprotocol/codex-acp 2.5.0" }
       )
     )
-    const row = formatDoctorReport(report, false)
-      .split("\n")
-      .find((line) => line.includes("✓ present"))
-    expect(row).toBeDefined()
-    expect(row).not.toContain("0bundled")
-    expect(row).toMatch(/…\s+bundled/)
+    const out = formatDoctorReport(report, false)
+    expect(out).toContain("✓ available  codex")
+    expect(out).toContain("  version: @agentclientprotocol/codex-acp 2.5.0")
+    expect(out).toContain("  source: bundled")
+    expect(out).not.toContain("2.5.0bundled")
+    expect(out).not.toContain("provider    status")
   })
 
   it("prints install hints for missing providers", () => {
@@ -183,12 +180,12 @@ describe("formatDoctorReport", () => {
     const out = formatDoctorReport(report, false)
     expect(out).toContain("source")
     expect(out).toContain("bundled")
-    expect(out).toContain("bundled bridge: /opt/multiclaw/claude/bin.js")
+    expect(out).toContain("bridge: /opt/multiclaw/claude/bin.js")
   })
 
   it("prints no bridge line for a provider that resolved on PATH", () => {
     const report = buildDoctorReport(detected(["opencode"], ["claude", "codex", "cursor"]))
     const out = formatDoctorReport(report, false)
-    expect(out).not.toContain("bundled bridge:")
+    expect(out).not.toContain("bridge:")
   })
 })

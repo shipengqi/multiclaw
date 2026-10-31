@@ -109,9 +109,6 @@ const YELLOW = "\x1b[33m"
 const DIM = "\x1b[2m"
 const RESET = "\x1b[0m"
 
-// Matches SGR escape sequences so visible width can be measured for column padding.
-const ANSI_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g")
-
 function color(enabled: boolean, code: string, text: string): string {
   return enabled ? `${code}${text}${RESET}` : text
 }
@@ -120,44 +117,37 @@ function color(enabled: boolean, code: string, text: string): string {
 export function formatDoctorReport(report: DoctorReport, useColor = true): string {
   const lines: string[] = []
   const c = (code: string, text: string) => color(useColor, code, text)
-  // Pad by *visible* width so ANSI codes do not shift columns.
-  const cell = (text: string, width: number, code?: string) => {
-    const plain = text.replace(ANSI_RE, "")
-    // The padding *is* the separator between columns, so a value wider than its
-    // column fuses with the next one — which is how `2.5.0bundled` happened.
-    // Clip to `width - 1` so at least one space always survives.
-    const clipped = plain.length > width - 1 ? `${plain.slice(0, Math.max(0, width - 2))}…` : plain
-    const rendered = code ? color(useColor, code, clipped) : clipped
-    return rendered + " ".repeat(Math.max(0, width - clipped.length))
-  }
+  const statusLabel = (status: ProviderStatus) =>
+    status === "present" ? c(GREEN, "✓ available") : c(RED, "✗ missing")
+
+  const detail = (label: string, value: string, code?: string) =>
+    `  ${c(DIM, `${label}:`)} ${code ? c(code, value) : value}`
 
   lines.push("")
   lines.push(c(DIM, "multiclaw doctor — environment check"))
   lines.push("")
+  lines.push(c(DIM, "Providers"))
 
-  // Provider table.
-  lines.push(
-    `${cell("provider", 12)}${cell("status", 10)}${cell("version", 14)}${cell("source", 9)}models  auth`
-  )
   for (const p of report.providers) {
-    const mark = p.status === "present" ? "✓ present" : "✗ missing"
-    const markCode = p.status === "present" ? GREEN : RED
-    const version = p.version ?? (p.status === "present" ? "" : "—")
-    const source = p.source ?? "—"
-    const sourceCode = p.source === "bundled" ? YELLOW : undefined
-    const models = p.modelSelection === "none" ? "n/a" : String(p.modelCount)
-    const auth = p.authHint ? c(DIM, p.authHint) : ""
-    lines.push(
-      `${cell(p.label, 12)}${cell(mark, 10, markCode)}${cell(version, 14)}${cell(source, 9, sourceCode)}${cell(models, 7)}${auth}`
-    )
+    const title = `${statusLabel(p.status)}  ${p.label}`
+    lines.push(title)
+
+    if (p.version) lines.push(detail("version", p.version))
+    if (p.source) {
+      lines.push(detail("source", p.source, p.source === "bundled" ? YELLOW : undefined))
+    }
+    const models = p.modelSelection === "none" ? "not supported" : String(p.modelCount)
+    lines.push(detail("models", models))
+    if (p.authHint) lines.push(detail("auth", p.authHint))
+    if (p.status === "missing" && p.installHint) {
+      lines.push(detail("install", p.installHint, YELLOW))
+    }
     // A bundled bridge is how a provider can be "present" on a machine that
     // never installed it — so say which file multiclaw will actually spawn.
     if (p.status === "present" && p.source === "bundled" && p.resolvedPath) {
-      lines.push(c(DIM, `    bundled bridge: ${p.resolvedPath}`))
+      lines.push(detail("bridge", p.resolvedPath))
     }
-    if (p.status === "missing" && p.installHint) {
-      lines.push(c(YELLOW, `  install: ${p.installHint}`))
-    }
+    lines.push("")
   }
 
   // Config sanity.
