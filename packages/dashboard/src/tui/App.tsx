@@ -8,6 +8,7 @@ import type {
   RuntimeQuestionHandler,
   RuntimeQuestionRequest,
   RuntimeQuestionResponse,
+  SupplementReport,
 } from "@multiclawcli/core"
 import {
   AgentSessionManager,
@@ -776,6 +777,51 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     railCells: railCellWidths(shown),
   })
 
+  /**
+   * Deliver a mid-turn message to whatever is running right now.
+   *
+   * The text is never dropped. A steer only works if an agent is between the
+   * start and end of a turn at that instant; when none is, the intent ("do this
+   * too") survives the turn boundary, so the text becomes a queued follow-up and
+   * the notice says the timing changed rather than the request being lost.
+   */
+  const steerRunningAgents = useCallback(async (text: string) => {
+    const manager = sessionsRef.current
+    if (!manager) {
+      setNotice("no live sessions to steer")
+      return
+    }
+    setNotice("steering…")
+    let reports: SupplementReport[]
+    try {
+      reports = await manager.supplement(text)
+    } catch (error) {
+      if (mountedRef.current) setNotice(`steering failed: ${(error as Error).message}`)
+      return
+    }
+    if (!mountedRef.current || closingRef.current) return
+    const injected = reports.filter((report) => report.status === "injected")
+    if (injected.length > 0) {
+      for (const report of injected) {
+        dispatch({ type: "stream:note", agentId: report.agentId, text: `[steer] ${text}` })
+      }
+      const missed = reports.filter((report) => report.status !== "injected")
+      const steered = injected.map((report) => report.agentId).join(", ")
+      setNotice(
+        missed.length === 0
+          ? `steered ${steered}`
+          : `steered ${steered} · ${missed.map((report) => report.agentId).join(", ")} ${missed.length === 1 ? "was" : "were"} between turns`
+      )
+      return
+    }
+    setQueue((current) => [...current, text])
+    setNotice(
+      reports.some((report) => report.status === "unsupported")
+        ? "no running agent can take mid-turn input — queued as a follow-up"
+        : "no agent was mid-turn — queued as a follow-up"
+    )
+  }, [])
+
   const runCommand = useCallback(
     (name: string, args: string[], rawText?: string) => {
       setLine(EMPTY_LINE)
@@ -902,6 +948,15 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
             return
           }
           void startTurn(text)
+          return
+        }
+        case "steer": {
+          const text = args.join(" ")
+          if (!text) {
+            setNotice("usage: /steer <text> — delivered to the agents running now")
+            return
+          }
+          void steerRunningAgents(text)
           return
         }
         case "pause":
@@ -1134,6 +1189,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       running,
       state,
       startTurn,
+      steerRunningAgents,
     ]
   )
 

@@ -40,6 +40,8 @@ interface AgentHandlers {
   setConfigOption?: (params: unknown) => unknown
   prompt?: (ctx: AgentPromptContext) => unknown
   cancel?: (params: unknown) => void
+  /** `_session/steering`: the bridge's mid-turn input extension. */
+  steering?: (params: unknown) => unknown
 }
 
 interface AgentPromptContext {
@@ -101,6 +103,14 @@ function attachAgent(child: FakeChild, handlers: AgentHandlers): void {
   app.onNotification("session/cancel", ((ctx: { params: unknown }) => {
     handlers.cancel?.(ctx.params)
   }) as never)
+  // A custom method needs an explicit params parser: the SDK only knows the
+  // methods the spec generates a schema for.
+  app.onRequest(
+    "_session/steering" as never,
+    ((value: unknown) => value) as never,
+    ((ctx: { params: unknown }) =>
+      handlers.steering?.(ctx.params) ?? { outcome: "injected" }) as never
+  )
   app.connect(stream)
 }
 
@@ -954,6 +964,143 @@ describe("AcpRuntime.openSession", () => {
       new AcpRuntime().openSession(makeTask({ sessionId: "saved", resume: "fork" }))
     ).rejects.toThrow(/fork/i)
     expect(spawnMock).not.toHaveBeenCalled()
+  })
+})
+
+describe("AcpRuntime · mid-turn input", () => {
+  /**
+   * An agent that can advertise steering and holds one prompt open.
+   *
+   * The prompt is deliberately long-lived: a steer is only meaningful while a
+   * turn is running, so the test has to own that window rather than race it.
+   */
+  function steeringAgent(options: { advertised?: boolean; outcome?: string } = {}) {
+    const child = new FakeChild()
+    const started = deferred<void>()
+    const finish = deferred<void>()
+    const steers: Array<Record<string, unknown>> = []
+    const cancels: unknown[] = []
+    attachAgent(child, {
+      initialize: () => ({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        ...(options.advertised === false ? {} : { _meta: { steering: { supported: true } } }),
+      }),
+      steering: (params) => {
+        steers.push(params as Record<string, unknown>)
+        return { outcome: options.outcome ?? "injected" }
+      },
+      cancel: (params) => {
+        cancels.push(params)
+      },
+      prompt: async () => {
+        started.resolve()
+        await finish.promise
+        return { stopReason: "end_turn" }
+      },
+    })
+    return { child, started, finish, steers, cancels }
+  }
+
+  it("advertises the capability only when the agent did, and injects into the live turn", async () => {
+    const agent = steeringAgent()
+    const session = await openWith(agent.child)
+    try {
+      expect(session.capabilities).toEqual({ continuation: true, supplement: true })
+      const turn = session.prompt("long task")
+      await agent.started.promise
+
+      const result = await session.supplement?.("use postgres, not sqlite")
+
+      expect(result).toEqual({ status: "injected" })
+      expect(agent.steers).toHaveLength(1)
+      // The exact wire contract the two bridges agreed on: the text as a content
+      // block, scoped to this session, and an explicit "do not start a turn".
+      expect(agent.steers[0]).toEqual({
+        sessionId: "sess-1",
+        prompt: [{ type: "text", text: "use postgres, not sqlite" }],
+        _meta: { steering: { idleBehavior: "promptRequired" } },
+      })
+      agent.finish.resolve()
+      await turn
+    } finally {
+      await session.close()
+    }
+  })
+
+  it("never asks the agent to steer an idle session", async () => {
+    // Both bridges start a turn from a steer when nothing is running, and a turn
+    // this adapter never started has no owner: nothing settles it, its output
+    // belongs to no turn, and the caller cannot cancel it. So the answer is
+    // "idle" and the caller keeps its text.
+    const agent = steeringAgent()
+    const session = await openWith(agent.child)
+    try {
+      expect(await session.supplement?.("too late")).toEqual({ status: "idle" })
+      expect(agent.steers).toEqual([])
+    } finally {
+      await session.close()
+    }
+  })
+
+  it("cancels a turn the agent started on its own when the steer raced the end", async () => {
+    const agent = steeringAgent({ outcome: "startedNewTurn" })
+    const session = await openWith(agent.child)
+    try {
+      const turn = session.prompt("long task")
+      await agent.started.promise
+
+      expect(await session.supplement?.("raced")).toEqual({ status: "idle" })
+      // Nothing owns that turn, so it must not be left running.
+      await vi.waitFor(() => expect(agent.cancels).toHaveLength(1))
+      expect(agent.cancels[0]).toEqual({ sessionId: "sess-1" })
+      agent.finish.resolve()
+      await turn
+    } finally {
+      await session.close()
+    }
+  })
+
+  it("treats a refused idle steer as idle rather than a failure", async () => {
+    // Claude answers `promptRequired` when asked not to start a turn; Codex has
+    // no such refusal and is covered by the `startedNewTurn` case above.
+    const agent = steeringAgent({ outcome: "promptRequired" })
+    const session = await openWith(agent.child)
+    try {
+      const turn = session.prompt("long task")
+      await agent.started.promise
+      expect(await session.supplement?.("nope")).toEqual({ status: "idle" })
+      expect(agent.cancels).toEqual([])
+      agent.finish.resolve()
+      await turn
+    } finally {
+      await session.close()
+    }
+  })
+
+  it("reports an agent that cannot take mid-turn input instead of sending the method", async () => {
+    const agent = steeringAgent({ advertised: false })
+    const session = await openWith(agent.child)
+    try {
+      expect(session.capabilities).toEqual({ continuation: true, supplement: false })
+      await expect(session.supplement?.("hello")).rejects.toThrow(/mid-turn input/i)
+      expect(agent.steers).toEqual([])
+    } finally {
+      await session.close()
+    }
+  })
+
+  it("rejects when the agent says it could not apply the message", async () => {
+    const agent = steeringAgent({ outcome: "failed" })
+    const session = await openWith(agent.child)
+    try {
+      const turn = session.prompt("long task")
+      await agent.started.promise
+      await expect(session.supplement?.("hello")).rejects.toThrow(/could not apply/i)
+      agent.finish.resolve()
+      await turn
+    } finally {
+      await session.close()
+    }
   })
 })
 

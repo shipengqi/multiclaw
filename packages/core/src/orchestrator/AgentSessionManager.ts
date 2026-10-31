@@ -12,6 +12,17 @@ interface SessionEntry {
   onWarning?: AgentTask["onWarning"]
 }
 
+/** What one agent did with a mid-turn message. */
+export interface SupplementReport {
+  agentId: string
+  /**
+   * `injected` landed in the running turn; `idle` had no turn to land in;
+   * `unsupported` cannot take mid-turn input at all; `error` failed.
+   */
+  status: "injected" | "idle" | "unsupported" | "error"
+  error?: string
+}
+
 /** Owns reusable agent sessions across independent orchestration turns. */
 export class AgentSessionManager {
   private entries = new Map<string, SessionEntry>()
@@ -138,6 +149,45 @@ export class AgentSessionManager {
         entry.busy = false
       }
     }
+  }
+
+  /**
+   * Deliver a message into every session that is running a turn right now.
+   *
+   * Only `running` sessions are candidates, and that is the whole safety
+   * argument: a session between turns has nothing to inject into, and asking a
+   * provider to steer an idle session makes it *start* a turn that this manager
+   * never scheduled — one whose output belongs to no turn and which nothing
+   * would ever settle. Sessions that are idle are therefore not reported as
+   * failures but simply absent, and the caller sees an empty list.
+   *
+   * One agent failing never stops the others: each report stands alone, because
+   * the caller has to be able to say "architect took it, qa did not" rather than
+   * "steering failed".
+   */
+  async supplement(text: string): Promise<SupplementReport[]> {
+    if (this.closed) return []
+    const targets = [...this.entries.entries()].filter(
+      ([, entry]) => entry.session?.state === "running"
+    )
+    return await Promise.all(
+      targets.map(async ([agentId, entry]): Promise<SupplementReport> => {
+        const session = entry.session
+        if (!session) return { agentId, status: "idle" }
+        if (!session.capabilities.supplement || !session.supplement) {
+          return { agentId, status: "unsupported" }
+        }
+        try {
+          return { agentId, status: (await session.supplement(text)).status }
+        } catch (error) {
+          return {
+            agentId,
+            status: "error",
+            error: error instanceof Error ? error.message : String(error),
+          }
+        }
+      })
+    )
   }
 
   /** Closes all sessions and permits a fresh conversation after cleanup completes. */

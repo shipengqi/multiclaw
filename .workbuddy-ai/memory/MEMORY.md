@@ -90,6 +90,22 @@
   Claude 工具集里无对应项 → 一律拒绝;MCP 工具和某些内置工具走 ACP 时仍可能被挡。已写进 `AcpRuntime.ts` 注释。
 - `usage_update` 已映射为 `usage` + `cost` 事件(扩展了 `RuntimeEvent`/`AgentOutput` 类型支持 `contextTokens`/`contextSize`/`amount`/`currency`)。
 
+## 中途纠偏(steering)
+- **协议不在 ACP 标准里**,是从 `codex-acp@2.2.2` / `claude-agent-acp@0.93.0` 的 dist 源码核实的:
+  扩展请求 `_session/steering`,params `{ sessionId, prompt: ContentBlock[], _meta?: { steering: { idleBehavior } } }`,
+  由 `initialize` 的 `_meta.steering.supported === true` 广告(必须显式 true,别猜)。改 bridge 版本要重核。
+- `outcome`:`injected` / `promptRequired`(Claude 空闲时的 opt-in)/ `startedNewTurn` / `failed`
+  (Codex 另有 `noRunningTurn`)。**发 steer 时一律带 `idleBehavior:"promptRequired"`**。
+- **最危险的一条:两个 bridge 在空闲会话上收到 steer 都会自己开一个新 turn**。那样起的 turn 没有
+  `prompt()` owner,没人 settle/归因/取消。所以:① 只给 `state === "running"` 的会话发;
+  ② 万一回了 `startedNewTurn`,立刻发 `session/cancel` 清场。
+- `RuntimeSession.capabilities.supplement` **是协商结果**,不是常量:initialize 晚于会话对象创建,
+  所以用 getter 暴露。`AgentSessionManager.supplement()` 返回 `SupplementReport[]`
+  (`injected|idle|unsupported|error`,每 agent 独立,一个失败不影响其他);没有 running 会话 → `[]`。
+- TUI 语义“永不丢”:有 agent 收到 → `stream:note` 写 `[steer] …` 到 **live turn**(即使正在回看旧轮次)
+  + 提示点名;一个都没收到(没人在轮次中 / bridge 不支持)→ **转成排队后续**并说明时机变了;
+  空闲时 `/steer` 直接拒绝(`availability: "running"`)。
+
 ## 工作区语义
 - `run`(批处理)→ 每次一个 `workDir/.multiclaw/runs/run-<stamp>/`,agent cwd 在其中。
 - 控制台(迭代)→ **每轮共用 `config.workDir`**,只日志按轮隔离。`App.startTurn` **不要**再覆盖 `runConfig.workDir`。
@@ -116,6 +132,13 @@
   `App.startTurn` 经 `stateRef` 读它 —— `startTurn` 的 deps 不含 state,直接读 `state` 会拿到 stale。
 - **dashboard 测的是 `dist`,不是 core 源码**:改了 core 要先 `pnpm build`,否则 dashboard
   集成测仍在跑旧 dist(症状:新断言红得莫名其妙,core 单测却全绿)。
+- **重启恢复只记边界,不续接**:`console/session.json`(`session.ts`,版本 1)记 inFlight 轮次/queue/
+  taskStart/pending 计数;`restoreConsole` 把 inFlight 还原成 `phase:"complete" + interrupted:true` 的
+  普通历史记录(未回音 agent → `cancelled`,stage outcome 丢弃重新推导),队列恢复但**暂停**。
+  不变量:①挂载时**不写**日志(清 inFlight 会与把 interrupted 轮次写进 history.json 竞争,窗口内崩溃两边都没);
+  ②去重靠 `inFlight.turn > last.turn`,不靠删字段;③主动退出写干净日志,只有进程被杀才出现 interrupted;
+  ④interrupted 进 conversation(cancelled 不进),否则重启后"继续"没上下文;⑤不代答、不 resume 本进程没有的 session。
+  写盘统一走 `atomic.ts` 的 `writeJsonFile`(按路径串行 + tmp+rename),`cleanup()` 要 `await pendingWrite`。
 
 ## 环境坑(pnpm)
 - 根目录**无** `.npmrc`/`.pnpmrc`,nodeLinker = 默认 isolated。新增依赖后 `.bin` 软链可能缺失报
@@ -137,6 +160,9 @@
 - [ ] `session/request_permission`:同一份「默认 tools + 读 `secret.txt`」配置必须真返回文件内容,不再 `PERMISSION_DENIED`。
 - [ ] codex-acp:角色提示词走 AIR 命名空间后的**实际指令遵从度**;工具限制缺失时的实际行为(用于拍板下方开放问题)。
 - [ ] `multiclaw init`:在无 claude CLI 但装了 `claude-agent-acp` 的环境里的表现。
+- [ ] **steering 的真实行为**:对着真跑一轮的 claude / codex bridge 发 `/steer`,确认 `outcome` 真是
+  `injected`(而不是被 bridge 忽略)、`promptRequired` 在 Claude 空闲时真挡住自起 turn、
+  `startedNewTurn` 的 cancel 真能把会话清回 idle。mock 只能证明我们发了什么,证不了对方怎么做。
 
 ## 开放问题
 - **codex 的工具限制**(命名空间分派已实现,此项待拍板):角色提示词已走 AIR 命名空间,但 codex

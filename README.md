@@ -289,6 +289,22 @@ strip above it and starts as the next turn the moment the console goes idle — 
 while watching the output is never lost. Cancelling drops the queue with the turn, since "cancel"
 should mean stop.
 
+**Steering the turn that is running.** A queued follow-up waits for the current turn to end.
+`/steer <text>` does the opposite: it delivers the message *into* the agents that are inside a turn
+right now, which is how you correct course without throwing the run away. The agents it reached get a
+`[steer] …` marker in their stream, so the log shows what you said and when.
+
+It is timing-dependent by nature — an agent that has not started yet will not see the message — and
+the console is explicit about the outcome instead of guessing:
+
+- Reached at least one running agent: the notice names them, and any agent that was between turns is
+  named as such.
+- Nobody was mid-turn, or the provider's bridge does not support mid-turn input: the text becomes a
+  queued follow-up and the notice says the timing changed. It is never silently dropped, and it never
+  makes an idle session start a turn of its own.
+- While no turn is running there is nothing to steer into, so `/steer` is refused and points at
+  ordinary input instead.
+
 Cancelling aborts the in-flight agents and their child processes rather than leaving them running in
 the background.
 
@@ -302,6 +318,7 @@ Type `/` on an empty line for a filtered list.
 | `/focus <id>` | Focus an agent by id |
 | `/clear` | Clear the focused agent's log |
 | `/history` | Browse finished turns (see [History](#history)) |
+| `/steer <text>` | Send a message into the agents running right now |
 | `/cancel` | Cancel the running turn and its queue |
 | `/help` | Key map |
 | `/quit` | Exit |

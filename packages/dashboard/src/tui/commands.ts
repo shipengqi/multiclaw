@@ -94,6 +94,12 @@ export const COMMANDS: readonly CommandSpec[] = [
     availability: "idle",
   },
   {
+    name: "steer",
+    args: "<text>",
+    description: "Send a message into the agents running right now",
+    availability: "running",
+  },
+  {
     name: "answer",
     args: "<text>",
     description: "Answer the leader's pending question",

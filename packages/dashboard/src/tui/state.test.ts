@@ -739,6 +739,23 @@ describe("turn history", () => {
     expect(cycled.focusId).toBe("leader")
   })
 
+  // A console note is about work happening *now*, so it belongs to the live
+  // turn even while an old one is open: writing it into the record on screen
+  // would edit history that the run never produced.
+  it("writes a console note to the live turn, not the one being read", () => {
+    const live: TuiState = { ...withAgents("a"), phase: "running", requirement: "live" }
+    const opened = tuiReducer(
+      { ...live, history: [record(1, live.agents, "a")] },
+      { type: "view:open", turn: 1 }
+    )
+
+    const noted = tuiReducer(opened, { type: "stream:note", agentId: "a", text: "[steer] go left" })
+
+    expect(noted.agents.a.logs).toBe("\n[steer] go left\n")
+    expect(noted.view?.agents.a.logs).toBe("")
+    expect(noted.history[0].agents.a.logs).toBe("")
+  })
+
   it("goes back to the live turn when a new one starts", () => {
     const opened = tuiReducer(start(start(withAgents("a"), "first"), "second"), {
       type: "view:open",

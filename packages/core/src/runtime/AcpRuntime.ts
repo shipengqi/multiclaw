@@ -15,6 +15,7 @@ import type {
   RuntimeQuery,
   RuntimeSession,
   RuntimeSessionOptions,
+  RuntimeSupplementResult,
 } from "../types/runtime"
 import { abortError } from "../utils/abort"
 import { PermanentError } from "../utils/errors"
@@ -27,6 +28,14 @@ const discoveredModels = new Map<string, string[]>()
 export const KILL_ESCALATION_MS = 3000
 const CANCEL_GRACE_MS = 2000
 const CLEANUP_ACK_MS = 3000
+/**
+ * How long a mid-turn message may take to be acknowledged.
+ *
+ * Injecting is a queue push on the agent side, so anything slower means the
+ * agent is stuck somewhere it cannot answer from — and an unacknowledged steer
+ * is worse than a refused one, because the user cannot tell whether it landed.
+ */
+const STEER_ACK_MS = 15_000
 const DEFAULT_TIMEOUT_MS = 600_000
 const DEFAULT_COMMAND = "opencode"
 const DEFAULT_ARGS = ["acp"]
@@ -41,6 +50,29 @@ type AcpModule = typeof import("@agentclientprotocol/sdk")
 type AcpSessionNotification = import("@agentclientprotocol/sdk").SessionNotification
 type AcpPermissionRequest = import("@agentclientprotocol/sdk").RequestPermissionRequest
 type AcpPermissionResponse = import("@agentclientprotocol/sdk").RequestPermissionResponse
+
+/**
+ * Extension method both ACP bridges implement for mid-turn input.
+ *
+ * It is not in the ACP spec: the two bridges that support it (Claude and Codex)
+ * agreed on this name, this `{ sessionId, prompt }` shape and this `outcome`
+ * vocabulary, and advertise it as `InitializeResponse._meta.steering.supported`.
+ */
+const STEER_METHOD = "_session/steering"
+
+/**
+ * Whether the agent advertised mid-turn input during `initialize`.
+ *
+ * `_meta` is a free-form extension bag that the protocol says clients must not
+ * assume anything about, so this reads it defensively and requires an explicit
+ * `supported === true`. Anything else — a missing key, a truthy string, an
+ * older bridge — means "not available", which is the safe direction: the
+ * console then queues the text instead of sending a method nobody will read.
+ */
+function advertisesSteering(init: { _meta?: { [key: string]: unknown } | null }): boolean {
+  const steering = init._meta?.steering
+  return isRecord(steering) && steering.supported === true
+}
 
 const BASE_CAPABILITIES: RuntimeCapabilities = {
   streaming: true,
@@ -411,6 +443,8 @@ export class AcpRuntime extends RuntimeBase {
       })
       let state: RuntimeSession["state"] = "idle"
       let sessionId = ""
+      /** Negotiated during `initialize`; decides whether `supplement` exists. */
+      let steeringSupported = false
       let active: ActiveTurn | undefined
       let childClosed = false
       let terminalError: Error | undefined
@@ -776,6 +810,68 @@ export class AcpRuntime extends RuntimeBase {
           })
         return turn.cancellation
       }
+      /**
+       * Deliver a message into the running turn.
+       *
+       * Three things are deliberate here:
+       *
+       * - It never starts a turn. Both bridges will happily start one when
+       *   nothing is running (Codex always, Claude unless asked not to), and a
+       *   turn started from a steer has no `prompt` call owning it: nothing here
+       *   would settle it, attribute its output, or show it to the user. So an
+       *   idle session answers `idle` and the caller keeps its text.
+       * - It asks the provider not to start a turn either, via
+       *   `_meta.steering.idleBehavior`. Claude honours that and answers
+       *   `promptRequired`; Codex ignores unknown meta, which is why the
+       *   `startedNewTurn` branch below has to clean up after it.
+       * - It has a deadline. "Did my message land?" cannot be a guess.
+       */
+      const supplement = async (
+        text: string,
+        supplementOptions: { signal?: AbortSignal } = {}
+      ): Promise<RuntimeSupplementResult> => {
+        if (!steeringSupported) {
+          throw new Error(`${command} does not accept mid-turn input`)
+        }
+        const turn = active
+        if (!turn || state !== "running") return { status: "idle" }
+        if (supplementOptions.signal?.aborted) throw abortError()
+        let timer: NodeJS.Timeout | undefined
+        try {
+          const response = await Promise.race([
+            ctx.request<{ outcome?: unknown }, Record<string, unknown>>(STEER_METHOD, {
+              sessionId,
+              prompt: [{ type: "text", text }],
+              _meta: { steering: { idleBehavior: "promptRequired" } },
+            }),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(`steering was not acknowledged within ${STEER_ACK_MS}ms`)),
+                STEER_ACK_MS
+              )
+            }),
+          ])
+          if (active !== turn) return { status: "idle" }
+          const outcome = response?.outcome
+          if (outcome === "injected") return { status: "injected" }
+          if (outcome === "promptRequired") return { status: "idle" }
+          if (outcome === "startedNewTurn") {
+            // The turn ended between the check above and the agent's decision, so
+            // the agent started one from our text. Nothing owns it: cancel it
+            // rather than let work run that the caller is not tracking.
+            await Promise.resolve()
+              .then(() => ctx.notify(acp.methods.agent.session.cancel, { sessionId }))
+              .catch(() => {})
+            return { status: "idle" }
+          }
+          if (outcome === "failed") {
+            throw new Error("the agent could not apply the mid-turn message")
+          }
+          throw new Error(`unexpected steering outcome: ${JSON.stringify(outcome ?? null)}`)
+        } finally {
+          if (timer) clearTimeout(timer)
+        }
+      }
       const prompt = (
         text: string,
         promptOptions: RuntimePromptOptions = {}
@@ -863,8 +959,13 @@ export class AcpRuntime extends RuntimeBase {
         get state() {
           return state
         },
-        capabilities: { continuation: true, supplement: false },
+        get capabilities() {
+          // Read, not captured: the negotiation happens in `initialize`, after
+          // this object exists.
+          return { continuation: true, supplement: steeringSupported }
+        },
         prompt,
+        supplement,
         cancelTurn,
         close,
       }
@@ -878,6 +979,7 @@ export class AcpRuntime extends RuntimeBase {
           ...(questionForms ? { clientCapabilities: { elicitation: { form: {} } } } : {}),
         })
         if (terminalError) throw terminalError
+        steeringSupported = advertisesSteering(init)
         if (options.sessionId) {
           if (init.agentCapabilities?.loadSession !== true) {
             throw new PermanentError(

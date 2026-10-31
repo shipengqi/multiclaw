@@ -198,6 +198,14 @@ export type TuiAction =
   | { type: "stream:latest" }
   /** Drop the focused agent's buffered output without touching its status. */
   | { type: "stream:clear" }
+  /**
+   * Append a console marker to one agent's stream — what the user did, not what
+   * the agent said.
+   *
+   * Always the live turn: a mid-turn message can only reach what is running
+   * now, so there is no past turn for it to belong to.
+   */
+  | { type: "stream:note"; agentId: string; text: string }
   /** Open a finished turn for reading, by its turn number. */
   | { type: "view:open"; turn: number }
   /** Go back to the live turn. */
@@ -767,6 +775,21 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         if (!id || !agent) return turn
         return { ...turn, agents: { ...turn.agents, [id]: { ...agent, logs: "" } }, scroll: 0 }
       })
+
+    case "stream:note": {
+      // Written to the live turn even while a past turn is open: the note is
+      // about work happening now, and rewriting the record being read would be
+      // a lie about a turn that has already ended.
+      const agent = state.agents[action.agentId]
+      if (!agent) return state
+      return {
+        ...state,
+        agents: {
+          ...state.agents,
+          [action.agentId]: { ...agent, logs: appendLog(agent.logs, `\n${action.text}\n`) },
+        },
+      }
+    }
 
     case "view:open": {
       const record = state.history.find((turn) => turn.turn === action.turn)

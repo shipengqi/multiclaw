@@ -408,3 +408,128 @@ describe("AgentSessionManager", () => {
     await rejected
   })
 })
+
+describe("AgentSessionManager · mid-turn input", () => {
+  /**
+   * A session that stays `running` until the test releases it.
+   *
+   * A steer is only meaningful mid-turn, so the test has to own that window
+   * instead of racing a prompt that finishes on its own.
+   */
+  function steeringSession(options: {
+    supported?: boolean
+    /** False for a session whose turn finishes on its own, i.e. idle afterwards. */
+    hold?: boolean
+    supplement?: (text: string) => Promise<{ status: "injected" | "idle" }>
+  }) {
+    let state: RuntimeSession["state"] = "idle"
+    const finish = deferred<void>()
+    const supplement = vi.fn(options.supplement ?? (async () => ({ status: "injected" as const })))
+    const live: RuntimeSession = {
+      sessionId: "session-1",
+      get state() {
+        return state
+      },
+      capabilities: { continuation: true, supplement: options.supported !== false },
+      prompt: vi.fn(async (text: string) => {
+        state = "running"
+        if (options.hold !== false) await finish.promise
+        state = "idle"
+        return { output: text, exitCode: 0, sessionId: "session-1" }
+      }),
+      cancelTurn: vi.fn(async () => {}),
+      close: vi.fn(async () => {
+        state = "closed"
+      }),
+      ...(options.supported === false ? {} : { supplement }),
+    }
+    return { live, finish, supplement }
+  }
+
+  function runtimeFor(sessions: Record<string, RuntimeSession>) {
+    return {
+      ...fakeRuntime("steering", async () => ({ output: "cold", exitCode: 0 })),
+      openSession: vi.fn(async (options: RuntimeSessionOptions) => {
+        const live = sessions[options.agentId]
+        if (!live) throw new Error(`no session for ${options.agentId}`)
+        return live
+      }),
+    }
+  }
+
+  it("delivers only to sessions that are running a turn", async () => {
+    // A session between turns has nothing to inject into, and asking a provider
+    // to steer one makes it start a turn this manager never scheduled.
+    const running = steeringSession({})
+    const idle = steeringSession({ hold: false })
+    const runtime = runtimeFor({ running: running.live, idle: idle.live })
+    const manager = new AgentSessionManager()
+    try {
+      const turn = manager.execute(runtime, task({ agentId: "running" }))
+      await manager.execute(runtime, task({ agentId: "idle" }))
+      await vi.waitFor(() => expect(running.live.state).toBe("running"))
+
+      const reports = await manager.supplement("use postgres")
+
+      expect(reports).toEqual([{ agentId: "running", status: "injected" }])
+      expect(running.supplement).toHaveBeenCalledWith("use postgres")
+      expect(idle.supplement).not.toHaveBeenCalled()
+      running.finish.resolve()
+      await turn
+    } finally {
+      await manager.close()
+    }
+  })
+
+  it("reports an agent that cannot take mid-turn input", async () => {
+    const running = steeringSession({ supported: false })
+    const manager = new AgentSessionManager()
+    const runtime = runtimeFor({ running: running.live })
+    try {
+      const turn = manager.execute(runtime, task({ agentId: "running" }))
+      await vi.waitFor(() => expect(running.live.state).toBe("running"))
+
+      expect(await manager.supplement("hello")).toEqual([
+        { agentId: "running", status: "unsupported" },
+      ])
+      running.finish.resolve()
+      await turn
+    } finally {
+      await manager.close()
+    }
+  })
+
+  it("keeps going when one agent fails, and reports which one", async () => {
+    const broken = steeringSession({
+      supplement: async () => {
+        throw new Error("agent is stuck")
+      },
+    })
+    const fine = steeringSession({ supplement: async () => ({ status: "idle" }) })
+    const manager = new AgentSessionManager()
+    const runtime = runtimeFor({ broken: broken.live, fine: fine.live })
+    try {
+      const first = manager.execute(runtime, task({ agentId: "broken" }))
+      const second = manager.execute(runtime, task({ agentId: "fine" }))
+      await vi.waitFor(() => expect(fine.live.state).toBe("running"))
+
+      const reports = await manager.supplement("hello")
+
+      expect(reports).toEqual([
+        { agentId: "broken", status: "error", error: "agent is stuck" },
+        { agentId: "fine", status: "idle" },
+      ])
+      broken.finish.resolve()
+      fine.finish.resolve()
+      await Promise.all([first, second])
+    } finally {
+      await manager.close()
+    }
+  })
+
+  it("answers with nothing when no session is running", async () => {
+    const manager = new AgentSessionManager()
+    expect(await manager.supplement("hello")).toEqual([])
+    await manager.close()
+  })
+})

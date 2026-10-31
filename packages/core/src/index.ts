@@ -1,7 +1,7 @@
 export { agents } from "./agents"
 export { defineConfig } from "./config/defineConfig"
 export { EventBus } from "./event/EventBus"
-export { AgentSessionManager } from "./orchestrator/AgentSessionManager"
+export { AgentSessionManager, type SupplementReport } from "./orchestrator/AgentSessionManager"
 export { Orchestrator } from "./orchestrator/Orchestrator"
 export { buildStages } from "./orchestrator/StageBuilder"
 export * from "./providers"

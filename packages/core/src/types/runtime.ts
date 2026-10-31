@@ -195,14 +195,41 @@ export interface RuntimePromptOptions {
   onQuestion?: RuntimeQuestionHandler
 }
 
+/**
+ * What a mid-turn message did.
+ *
+ * `injected` means the running turn took it — the agent will see it before it
+ * finishes. `idle` means no turn was running, so nothing was applied and the
+ * caller still owns the text; deciding to queue it is the caller's job, not the
+ * runtime's.
+ */
+export type RuntimeSupplementResult = { status: "injected" } | { status: "idle" }
+
 /** Caller-owned live session. Always await close() in a finally block. */
 export interface RuntimeSession {
   readonly sessionId: string
   readonly state: "idle" | "running" | "cancelling" | "closing" | "closed"
-  /** Continuation is sequential; supplement would mean supported mid-turn input. */
+  /**
+   * What this session can do beyond a single turn.
+   *
+   * `supplement` is negotiated with the provider rather than assumed: it is true
+   * only when the agent advertised mid-turn input during `initialize` (ACP
+   * `_meta.steering.supported`), so a bridge that does not implement it is
+   * reported as unable instead of being sent a method it will ignore.
+   */
   readonly capabilities: { continuation: boolean; supplement: boolean }
   /** Rejects overlapping turns; it does not implicitly queue or inject input. */
   prompt(text: string, options?: RuntimePromptOptions): Promise<AgentOutput>
+  /**
+   * Delivers a message into the turn that is running *now*, when
+   * {@link RuntimeSession.capabilities} allows it.
+   *
+   * Only meaningful mid-turn. An idle session resolves `idle` and must not start
+   * a turn from it: `prompt` is how a turn starts, and a turn the caller never
+   * started has no owner to settle it, cancel it or show its output. Rejects on
+   * provider errors — "did it land?" must never be a guess.
+   */
+  supplement?(text: string, options?: { signal?: AbortSignal }): Promise<RuntimeSupplementResult>
   /**
    * Idempotently cancels the current turn and waits for its terminal response.
    * ACP closes uncooperative providers after a grace period; cleanup failure rejects.

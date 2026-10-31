@@ -11,6 +11,7 @@ import {
   type MultiClawConfig,
   type RuntimePromptOptions,
   type RuntimeSession,
+  type RuntimeSupplementResult,
   runtimeRegistry,
 } from "@multiclawcli/core"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -48,6 +49,10 @@ describe("App · caller-owned live sessions", () => {
     options?: RuntimePromptOptions
   ) => Promise<AgentOutput>
   let closeSession: (agentId: string) => Promise<void>
+  /** Whether the fake bridge advertises mid-turn steering, as `initialize` does. */
+  let steerCapable: boolean
+  let steers: { agentId: string; text: string }[]
+  let supplementResult: () => RuntimeSupplementResult
 
   beforeEach(() => {
     exit.mockReset()
@@ -58,6 +63,9 @@ describe("App · caller-owned live sessions", () => {
     closed = []
     respond = async (id) => (id === "leader" ? RUN : DONE)
     closeSession = async () => {}
+    steerCapable = false
+    steers = []
+    supplementResult = () => ({ status: "injected" })
     const runtime: AgentRuntime = {
       name: RUNTIME,
       async describe() {
@@ -89,7 +97,18 @@ describe("App · caller-owned live sessions", () => {
           get state() {
             return state
           },
-          capabilities: { continuation: true, supplement: false },
+          capabilities: { continuation: true, supplement: steerCapable },
+          // A bridge that never advertised `_session/steering` has no method to
+          // call, so the fake leaves it off rather than answering "idle" — the
+          // console has to tell "not supported" apart from "nothing running".
+          ...(steerCapable
+            ? {
+                async supplement(text: string) {
+                  steers.push({ agentId, text })
+                  return supplementResult()
+                },
+              }
+            : {}),
           async prompt(text, options) {
             expect(state).toBe("idle")
             state = "running"
@@ -494,5 +513,144 @@ describe("App · caller-owned live sessions", () => {
     ])
     expect(order[order.length - 1]).toBe("exit")
     expect(closed.sort()).toEqual(["architect", "leader"])
+  })
+
+  // Mid-turn input is the one console operation whose outcome depends on
+  // timing: it can only reach a session that is *inside* a turn at that instant.
+  // These pin the three outcomes a user can see — and the rule behind all of
+  // them, which is that the text is never dropped.
+  describe("mid-turn steering", () => {
+    it("delivers the text to the agent running now and marks its stream", async () => {
+      steerCapable = true
+      const runningNow = deferred()
+      const release = deferred()
+      const landed = deferred()
+      supplementResult = () => {
+        landed.resolve()
+        return { status: "injected" }
+      }
+      respond = async (id) => {
+        if (id === "leader") return RUN
+        runningNow.resolve()
+        await release.promise
+        return DONE
+      }
+      // The turn may only end once the steer has been delivered: releasing the
+      // agent earlier would race the command against the end of its prompt and
+      // turn the "no session running" answer into a coin flip.
+      void landed.promise.then(() => release.resolve())
+      const tracker = turns(1)
+
+      const frame = stripAnsi(
+        await driveFrame(
+          <App config={config()} sessions={sessions} onTurnStart={tracker.start} />,
+          {
+            keys: ["build API", "\r"],
+            ready: runningNow.promise,
+            thenKeys: ["/steer use postgres not sqlite", "\r"],
+            thenReady: tracker.ready,
+          }
+        )
+      )
+
+      expect(steers).toEqual([{ agentId: "architect", text: "use postgres not sqlite" }])
+      // The note lands in the stream the user is watching, not only in a notice.
+      expect(frame).toContain("[steer] use postgres not sqlite")
+      expect(frame).toContain("steered architect")
+      // Nothing was queued: the message went into the turn that was running.
+      expect(prompts.map(({ agentId }) => agentId)).toEqual(["leader", "architect"])
+    })
+
+    it("queues the text when the running agent cannot take mid-turn input", async () => {
+      // A bridge that never advertised `_session/steering`. The runtime only
+      // claims the capability after the handshake says so, and the console must
+      // not pretend a message landed somewhere.
+      steerCapable = false
+      const runningNow = deferred()
+      const release = deferred()
+      const real = sessions.supplement.bind(sessions)
+      vi.spyOn(sessions, "supplement").mockImplementation(async (text) => {
+        const reports = await real(text)
+        release.resolve()
+        return reports
+      })
+      respond = async (id) => {
+        if (id === "leader") return RUN
+        runningNow.resolve()
+        await release.promise
+        return DONE
+      }
+      const tracker = turns(1)
+
+      const frame = stripAnsi(
+        await driveFrame(
+          <App config={config()} sessions={sessions} onTurnStart={tracker.start} />,
+          {
+            keys: ["build API", "\r"],
+            ready: runningNow.promise,
+            // Paused so the queued text is still on screen in the final frame;
+            // that a resumed queue runs is covered by the queue tests.
+            thenKeys: ["/pause", "\r", "/steer tighten the error handling", "\r"],
+            thenReady: tracker.ready,
+          }
+        )
+      )
+
+      expect(steers).toEqual([])
+      expect(prompts).toHaveLength(2)
+      expect(frame).toContain("no running agent can take mid-turn input — queued as a follow-up")
+      expect(frame).toContain("tighten the error handling")
+    })
+
+    it("queues the text when no agent was between prompts", async () => {
+      // The window this covers — one agent finished, the next has not started —
+      // is real but not schedulable from a test, so the report is stubbed. What
+      // is pinned down here is the console's answer to an empty list.
+      const runningNow = deferred()
+      const release = deferred()
+      vi.spyOn(sessions, "supplement").mockImplementation(async () => {
+        release.resolve()
+        return []
+      })
+      respond = async (id) => {
+        if (id === "leader") return RUN
+        runningNow.resolve()
+        await release.promise
+        return DONE
+      }
+      const tracker = turns(1)
+
+      const frame = stripAnsi(
+        await driveFrame(
+          <App config={config()} sessions={sessions} onTurnStart={tracker.start} />,
+          {
+            keys: ["build API", "\r"],
+            ready: runningNow.promise,
+            thenKeys: ["/pause", "\r", "/steer also cover the empty case", "\r"],
+            thenReady: tracker.ready,
+          }
+        )
+      )
+
+      expect(prompts).toHaveLength(2)
+      expect(frame).toContain("no agent was mid-turn — queued as a follow-up")
+      expect(frame).toContain("also cover the empty case")
+    })
+
+    it("refuses to steer outside a turn, since there is nothing to inject into", async () => {
+      const supplement = vi.spyOn(sessions, "supplement")
+
+      const frame = stripAnsi(
+        await driveFrame(<App config={config()} sessions={sessions} />, {
+          keys: ["/steer go left", "\r"],
+          settleMs: 60,
+        })
+      )
+
+      // Steering an idle session would make the provider *start* a turn that no
+      // orchestration scheduled, so the command is refused before it is sent.
+      expect(supplement).not.toHaveBeenCalled()
+      expect(frame).toContain("/steer only applies while a turn is running")
+    })
   })
 })
