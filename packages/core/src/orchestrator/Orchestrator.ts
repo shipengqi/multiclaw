@@ -76,7 +76,7 @@ export class Orchestrator {
     }
     if (options.signal?.aborted)
       return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
-    this.clearStaleTaskPlan()
+    this.prepareTaskPlan()
     const resolution = await this.resolveTurn(options.signal)
     if (resolution.kind === "cancelled" || options.signal?.aborted) {
       return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
@@ -129,7 +129,7 @@ export class Orchestrator {
       return this.finishEmpty(startTime, undefined, false)
     }
     if (options.signal?.aborted) return this.finishCancelled(startTime)
-    this.clearStaleTaskPlan()
+    this.prepareTaskPlan()
     const resolution = await this.resolveTurn(options.signal)
     if (resolution.kind === "cancelled" || options.signal?.aborted) {
       return this.finishCancelled(startTime)
@@ -140,6 +140,10 @@ export class Orchestrator {
     }
 
     const agents = resolution.agents
+    // No planner stage runs in a resumed turn, so nothing would re-apply the
+    // plan that describes the very task being continued. Without this every
+    // retried agent is handed the generic "no plan was provided" fallback.
+    if (this.config.resume) this.applyResumeTaskPlan(agents)
 
     // A leader can only *subtract* from the configured team, so an empty result
     // means it named nothing we recognise. Falling through would run zero stages
@@ -516,14 +520,20 @@ export class Orchestrator {
   }
 
   /**
-   * Drop last run's task plan before the architect gets a chance to write one.
+   * Decide what to do with last run's task plan before this turn starts.
    *
    * The console runs every turn against the same workspace, so the plan file
    * survives between turns. If a turn's architect fails to write a new one,
    * `applyTaskPlan` would silently re-apply the previous turn's titles, scopes
    * and dependencies to a completely different requirement.
+   *
+   * A resumed turn is the exception: the plan in the workspace describes the
+   * task being continued, and it is the only record of what each resumed agent
+   * was asked to do. Deleting it would leave every retried agent with the
+   * generic "no plan was provided" fallback.
    */
-  private clearStaleTaskPlan(): void {
+  private prepareTaskPlan(): void {
+    if (this.config.resume) return
     // `force` makes the normal case — a workspace with no plan in it — a no-op
     // rather than a stat followed by a delete.
     fs.rmSync(path.join(this.workDir, "task-plan.json"), { force: true })
@@ -539,13 +549,17 @@ export class Orchestrator {
    */
   private async resolveTurn(signal?: AbortSignal): Promise<Resolution> {
     if (signal?.aborted) return { kind: "cancelled" }
-    // A resume/retry already knows who runs: re-deciding with the leader would
-    // re-route the turn and could pick a different team than the one being
-    // resumed. Reusing `selectAgents` keeps the unknown-id warning, the
-    // `agent:skipped` emission and — crucially — the pruning of a `dependsOn`
-    // that points outside the resumed set, which is what lets a single-agent
-    // retry run without its (absent) dependency.
-    if (this.config.resume) {
+    // A resume that names its agents already knows who runs: re-deciding with
+    // the leader would re-route the turn and could pick a different team than
+    // the one being resumed. Reusing `selectAgents` keeps the unknown-id
+    // warning, the `agent:skipped` emission and — crucially — the pruning of a
+    // `dependsOn` that points outside the resumed set, which is what lets a
+    // single-agent retry run without its (absent) dependency.
+    //
+    // A resume carrying only `sessions` is the other case: it continues a
+    // conversation rather than redoing a known pipeline, so the turn still has
+    // to be routed — the sessions are for whichever agents the route picks.
+    if (this.config.resume?.agents) {
       return {
         kind: "run",
         agents: this.selectAgents(this.config.resume.agents, "The resume list"),
@@ -598,7 +612,7 @@ export class Orchestrator {
    * `applyTaskPlan` writes `taskTitle` / `dependsOn` / `agentScope` onto whatever
    * objects it is handed. The console reuses a single config across turns, so
    * returning the config's own objects would leak turn 1's dependency graph into
-   * turn 2 — the exact cross-turn contamination `clearStaleTaskPlan` exists to
+   * turn 2 — the exact cross-turn contamination `prepareTaskPlan` exists to
    * prevent, but for the in-memory fields rather than the file.
    */
   private configuredAgents(): AgentDefinition[] {
@@ -703,12 +717,21 @@ export class Orchestrator {
     return agent.role === "planner" || agent.id === "architect"
   }
 
-  private async applyTaskPlan(
-    agents: AgentDefinition[],
-    executedIds: ReadonlySet<string>
-  ): Promise<void> {
+  /**
+   * Read and validate `task-plan.json`, one entry per agent id.
+   *
+   * `undefined` means "there is no usable plan" — no file, unparseable JSON, or
+   * no `tasks` array. Each of those is reported rather than treated as an empty
+   * plan: a broken plan must not be indistinguishable from a missing one.
+   *
+   * Validation stops at "is this entry well-formed and unique". Whether an id
+   * belongs to the run is the caller's question, because a normal turn and a
+   * resume answer it differently — a resume must not warn about every teammate
+   * it deliberately left out.
+   */
+  private readTaskPlan(): Map<string, Partial<TaskPlan["tasks"][number]>> | undefined {
     const taskPlanPath = path.join(this.workDir, "task-plan.json")
-    if (!fs.existsSync(taskPlanPath)) return
+    if (!fs.existsSync(taskPlanPath)) return undefined
 
     let taskPlan: unknown
     try {
@@ -720,7 +743,7 @@ export class Orchestrator {
       this.warn(
         `Could not parse task-plan.json — continuing with the original agent set: ${errorMessage(err)}`
       )
-      return
+      return undefined
     }
 
     if (
@@ -730,11 +753,10 @@ export class Orchestrator {
       !Array.isArray(taskPlan.tasks)
     ) {
       this.warn("task-plan.json has no `tasks` array — ignoring it.")
-      return
+      return undefined
     }
 
     const taskMap = new Map<string, Partial<TaskPlan["tasks"][number]>>()
-    const selected = new Set(agents.map((a) => a.id))
     for (const [index, entry] of taskPlan.tasks.entries()) {
       if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
         this.warn(`task-plan.json contains a malformed task at index ${index} — ignoring it.`)
@@ -755,17 +777,27 @@ export class Orchestrator {
         this.warn(`task-plan.json contains a malformed task at index ${index} — ignoring it.`)
         continue
       }
-      if (!selected.has(task.id)) {
-        this.warn(
-          `The task plan names "${task.id}", which is not in this run — ignoring that task.`
-        )
-        continue
-      }
       if (taskMap.has(task.id)) {
         this.warn(`The task plan contains a duplicate task for "${task.id}" — ignoring that task.`)
         continue
       }
       taskMap.set(task.id, task as Partial<TaskPlan["tasks"][number]>)
+    }
+    return taskMap
+  }
+
+  private async applyTaskPlan(
+    agents: AgentDefinition[],
+    executedIds: ReadonlySet<string>
+  ): Promise<void> {
+    const taskMap = this.readTaskPlan()
+    if (!taskMap) return
+
+    const selected = new Set(agents.map((a) => a.id))
+    for (const id of taskMap.keys()) {
+      if (!selected.has(id)) {
+        this.warn(`The task plan names "${id}", which is not in this run — ignoring that task.`)
+      }
     }
     for (const agent of agents) {
       const task = taskMap.get(agent.id)
@@ -788,6 +820,28 @@ export class Orchestrator {
         if (task.plan?.length) {
           agent.agentPlan = task.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")
         }
+      }
+    }
+  }
+
+  /**
+   * Hand a resumed agent the plan entry it was originally given.
+   *
+   * `dependsOn` is deliberately not applied: `selectAgents` has already pruned
+   * the stage graph for this run, and re-applying the plan's dependencies would
+   * undo that pruning — including the one that lets a single-agent retry run
+   * without the teammate it depends on.
+   */
+  private applyResumeTaskPlan(agents: AgentDefinition[]): void {
+    const taskMap = this.readTaskPlan()
+    if (!taskMap) return
+    for (const agent of agents) {
+      const task = taskMap.get(agent.id)
+      if (!task) continue
+      agent.taskTitle = task.title
+      agent.agentScope = task.scope
+      if (task.plan?.length) {
+        agent.agentPlan = task.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")
       }
     }
   }

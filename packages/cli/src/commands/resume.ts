@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import type { MultiClawConfig, OrchestratorResult } from "@multiclawcli/core"
+import type { OrchestratorResult } from "@multiclawcli/core"
 
 /** A previous run's report, as much of it as resume needs. */
 export interface ResumeTarget {
@@ -80,7 +80,7 @@ export function readReport(runDir: string): OrchestratorResult {
 export function resumeOptionsFromReport(
   report: OrchestratorResult,
   requirementOverride?: string
-): { requirement: string; resume: NonNullable<MultiClawConfig["resume"]> } {
+): { requirement: string; resume: { agents: string[]; sessions?: Record<string, string> } } {
   // A review loop records every pass; only the latest result owns a resumable session.
   const latest = new Map(report.agentResults.map((result) => [result.agentId, result]))
   const agents = [...latest.keys()].filter((id) => id !== report.acceptance?.reviewer)

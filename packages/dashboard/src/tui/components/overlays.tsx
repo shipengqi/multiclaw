@@ -239,7 +239,7 @@ export function HistoryOverlay({
       )}
 
       <Box marginTop={1}>
-        <Text dimColor>{`↑↓ select · enter open · esc close${range}`}</Text>
+        <Text dimColor>{`↑↓ select · enter open · c continue · esc close${range}`}</Text>
       </Box>
     </Box>
   )

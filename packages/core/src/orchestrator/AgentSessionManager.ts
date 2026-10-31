@@ -152,6 +152,20 @@ export class AgentSessionManager {
   }
 
   /**
+   * Whether this manager still holds a session for `agentId`.
+   *
+   * A caller about to continue a past conversation uses this to avoid naming a
+   * session it already has open: passing the id would change the entry's
+   * fingerprint, and the manager would close a perfectly good session and
+   * `session/load` it straight back.
+   */
+  has(agentId: string): boolean {
+    if (this.closed) return false
+    const entry = this.entries.get(agentId)
+    return entry !== undefined && !entry.closing && entry.session?.state !== "closed"
+  }
+
+  /**
    * Deliver a message into every session that is running a turn right now.
    *
    * Only `running` sessions are candidates, and that is the whole safety

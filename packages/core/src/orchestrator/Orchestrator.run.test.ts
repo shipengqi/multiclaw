@@ -1694,6 +1694,96 @@ describe("Orchestrator.run · resume", () => {
     )
   })
 
+  it("gives a resumed agent the plan entry it was originally handed", async () => {
+    // A retry runs no planner, so nothing else re-applies the plan. Without this
+    // the agent gets the generic "no plan was provided" fallback and repeats the
+    // turn with less information than it had the first time — while the plan file
+    // it describes is still sitting in the workspace.
+    fs.writeFileSync(
+      path.join(workDir, "task-plan.json"),
+      JSON.stringify({
+        tasks: [
+          { id: "architect", title: "design it", scope: "the whole system", plan: ["look"] },
+          {
+            id: "dev",
+            title: "build the API",
+            scope: "src/server only",
+            plan: ["schema", "routes"],
+          },
+        ],
+      })
+    )
+    let prompt = ""
+    handler = async (task) => {
+      prompt = task.prompt
+      return { output: "ok", exitCode: 0 }
+    }
+
+    await runOrch(
+      [
+        agent("architect"),
+        agent("dev", { taskPrompt: "SCOPE:{{agentScope}}\nPLAN:{{agentPlan}}" }),
+      ],
+      { resume: { agents: ["dev"] }, context: { requirement: "ship it" } }
+    )
+
+    expect(prompt).toContain("src/server only")
+    expect(prompt).toContain("1. schema\n2. routes")
+    // The plan describes the task being continued, so it outlives the run: a
+    // second retry has to be able to read it too.
+    expect(fs.existsSync(path.join(workDir, "task-plan.json"))).toBe(true)
+  })
+
+  it("does not warn about plan entries for agents a resume left out", async () => {
+    // Every plan names the whole team. A single-agent retry knows it is running
+    // one agent, so the other entries are not a mistake worth reporting.
+    fs.writeFileSync(
+      path.join(workDir, "task-plan.json"),
+      JSON.stringify({
+        tasks: [
+          { id: "architect", scope: "x" },
+          { id: "dev", scope: "y" },
+        ],
+      })
+    )
+    const { events } = await runOrch([agent("architect"), agent("dev")], {
+      resume: { agents: ["dev"] },
+    })
+
+    expect(
+      warningsOf(events)
+        .map((w) => w.payload.message)
+        .join("\n")
+    ).not.toContain("architect")
+  })
+
+  it("routes normally when a resume carries only sessions", async () => {
+    // "Continue this conversation": the caller knows the sessions, not the team.
+    // Treating that as a fixed agent list would re-run the whole pipeline instead
+    // of letting the route pick who answers the new instruction.
+    let leaderCalls = 0
+    const sessionIds: Record<string, string | undefined> = {}
+    handler = async (task) => {
+      if (task.agentId === "leader") {
+        leaderCalls += 1
+        return { output: '{"mode":"run","run":["dev"],"reason":"one worker"}', exitCode: 0 }
+      }
+      sessionIds[task.agentId] = task.sessionId
+      return { output: "ok", exitCode: 0 }
+    }
+
+    const { result, events } = await runOrch([agent("dev")], {
+      leader: agent("leader"),
+      resume: { sessions: { dev: "sess-7" } },
+    })
+
+    expect(leaderCalls).toBe(1)
+    // The leader runs first, then the agent it routed to — in that order.
+    expect(startedIds(events)).toEqual(["leader", "dev"])
+    expect(sessionIds.dev).toBe("sess-7")
+    expect(result.success).toBe(true)
+  })
+
   it("reports a resumed run that names no agents as an empty failure", async () => {
     const { result } = await runOrch([agent("dev")], { resume: { agents: [] } })
 

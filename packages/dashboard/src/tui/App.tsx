@@ -186,6 +186,42 @@ function pickTurn(
   return { record: target.record, requirement: target.record.requirement }
 }
 
+/** The sessions a finished turn's agents reported, keyed by agent id. */
+function turnSessions(turn: TurnView): Record<string, string> {
+  const sessions: Record<string, string> = {}
+  for (const agent of Object.values(turn.agents)) {
+    if (agent.sessionId) sessions[agent.id] = agent.sessionId
+  }
+  return sessions
+}
+
+/** A past turn whose conversation the next instruction should continue. */
+interface Continuation {
+  turn: number
+  sessions: Record<string, string>
+}
+
+/**
+ * The `resume` that continues a past conversation, or undefined when there is
+ * nothing left to continue.
+ *
+ * Only agents whose session this process no longer holds are named. A live
+ * session already carries its history, and naming its id would change the
+ * session manager's fingerprint and make it close and `session/load` a session
+ * it is holding open — the case that matters is the restart, where every
+ * session is gone and the id on disk is the only handle.
+ */
+function continuationResume(
+  continuation: Continuation | null,
+  live: AgentSessionManager | null
+): MultiClawConfig["resume"] | undefined {
+  if (!continuation) return undefined
+  const sessions = Object.fromEntries(
+    Object.entries(continuation.sessions).filter(([id]) => !live?.has(id))
+  )
+  return Object.keys(sessions).length > 0 ? { sessions } : undefined
+}
+
 function StatusLine({
   state,
   running,
@@ -325,6 +361,9 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   const abortRef = useRef<AbortController | null>(null)
   const sessionsRef = useRef<AgentSessionManager | null>(null)
   if (!sessionsRef.current) sessionsRef.current = providedSessions ?? new AgentSessionManager()
+  // Armed by `/history` → `c`: the next instruction continues that turn's
+  // conversations. One-shot by design — see `startTurn`.
+  const continuationRef = useRef<Continuation | null>(null)
   const activeTurnRef = useRef<Promise<void> | null>(null)
   const reporterErrorRef = useRef<Error | null>(null)
   const closingRef = useRef(false)
@@ -545,6 +584,12 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       if (closingRef.current || busyRef.current) return
       busyRef.current = true
       setRunning(true)
+      // Consumed here, whatever happens next: a continuation arms exactly one
+      // instruction. `/task` drops it outright — that command exists to start
+      // over with fresh sessions, which is the opposite of continuing.
+      const continuation = opts?.newTask ? null : continuationRef.current
+      continuationRef.current = null
+      const resume = opts?.resume ?? continuationResume(continuation, sessionsRef.current)
       if (opts?.newTask) {
         try {
           await sessionsRef.current?.reset()
@@ -606,8 +651,9 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
             ? { mode: "ask", onRequest: requestPermission }
             : config.permissions,
         questions: config.questions?.onRequest ? config.questions : { onRequest: requestQuestion },
-        // Only a retry carries this; a normal turn lets the leader route.
-        ...(opts?.resume ? { resume: opts.resume } : {}),
+        // A retry names the agents to redo; a continued conversation carries only
+        // sessions and still lets the leader route. Both arrive here.
+        ...(resume ? { resume } : {}),
       }
 
       const controller = new AbortController()
@@ -1383,6 +1429,24 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       if (key.return) {
         dispatch({ type: "view:open", turn: historyTurns[historyIndex].turn })
         setHistoryOpen(false)
+        return
+      }
+      if (char === "c") {
+        // Continue this conversation: nothing runs now. The turn's sessions are
+        // adopted for whatever the user types next, which is the difference
+        // between "read that turn again" and "pick up where it left off".
+        const target = historyTurns[historyIndex]
+        const sessions = turnSessions(target)
+        const count = Object.keys(sessions).length
+        if (count === 0) {
+          setNotice(`turn ${target.turn} has no agent sessions to continue`)
+          return
+        }
+        continuationRef.current = { turn: target.turn, sessions }
+        setHistoryOpen(false)
+        setNotice(
+          `continuing turn ${target.turn} — ${count} ${count === 1 ? "session" : "sessions"} · type your next instruction`
+        )
         return
       }
       return

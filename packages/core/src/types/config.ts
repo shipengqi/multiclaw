@@ -66,17 +66,26 @@ export interface MultiClawConfig {
    */
   history?: TurnRecord[]
   /**
-   * Re-run a known set of agents instead of letting the leader route, continuing
-   * their sessions where one is known.
+   * Continue known agent sessions, and optionally re-run a fixed set of agents
+   * instead of letting the leader route.
    *
-   * Set by a resume/retry driver — the CLI's `--resume`, the console's `/retry` —
-   * which already knows which agents to redo. Like `history`, it is per-run state
-   * the caller carries: core has no session of its own, and a config that never
-   * resumes leaves it unset and behaves exactly as before.
+   * Two shapes, and the difference is who decides what runs:
+   *
+   * - `agents` set — the CLI's `--resume`, the console's `/retry`: exactly those
+   *   agents run, in that order. A `dependsOn` outside the set is pruned, which
+   *   is what lets a single-agent retry run without its absent dependency.
+   * - `agents` absent — the console continuing an earlier session: the turn
+   *   routes as usual (leader, or the whole team) and the sessions are there for
+   *   whichever agents the route happens to pick. This is what makes a new
+   *   instruction land in a conversation the agents already remember.
+   *
+   * Like `history`, it is per-run state the caller carries: core has no session
+   * of its own, and a config that never resumes leaves it unset and behaves
+   * exactly as before.
    */
   resume?: {
     /** Agent ids to run, in the order they were originally selected. */
-    agents: string[]
+    agents?: string[]
     /** agentId → session id, for agents whose session is worth continuing. */
     sessions?: Record<string, string>
   }

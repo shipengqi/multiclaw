@@ -34,6 +34,9 @@ function alwaysAvailable(name: string) {
 /** A fresh temp workspace per test, so nothing leaks into the repo. */
 let workDir: string
 
+/** The session id each agent was launched with, per test. */
+let seenSessionIds: Record<string, string | undefined> = {}
+
 function config(): MultiClawConfig {
   return {
     name: "dev-team",
@@ -91,6 +94,7 @@ beforeAll(() => {
     name: RUNTIME,
     describe: alwaysAvailable(RUNTIME),
     async execute(task) {
+      seenSessionIds[task.agentId] = task.sessionId
       if (task.agentId === "leader") {
         return { output: '{"mode":"run","run":["architect"]}', exitCode: 0 }
       }
@@ -101,6 +105,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), "multiclaw-app-history-"))
+  seenSessionIds = {}
 })
 
 afterEach(() => {
@@ -174,5 +179,54 @@ describe("App · remembering turns across sessions", () => {
 
     const turns = JSON.parse(fs.readFileSync(target, "utf-8")) as TurnView[]
     expect(turns.some((t) => t.requirement === "persist me" && t.phase === "complete")).toBe(true)
+  })
+
+  it("continues a finished turn's sessions when c is pressed", async () => {
+    // The point of `c`: the next instruction lands in the conversation that turn
+    // left behind, instead of starting the agents cold.
+    seedHistory([
+      {
+        ...savedTurn(1, "design the thing"),
+        agents: {
+          architect: {
+            id: "architect",
+            name: "Architect",
+            status: "success",
+            sessionId: "sess-1",
+            logs: "",
+          },
+        },
+      },
+    ])
+    let complete: () => void = () => {}
+    const finished = new Promise<void>((resolve) => {
+      complete = resolve
+    })
+
+    await driveFrame(
+      <App
+        config={config()}
+        onTurnStart={(bus) => {
+          bus.subscribe((event) => {
+            if (event.type === "orchestration:complete") complete()
+          })
+        }}
+      />,
+      { keys: ["/history", "\r", "c", "next step", "\r"], ready: finished, settleMs: 200 }
+    )
+
+    expect(seenSessionIds.architect).toBe("sess-1")
+  })
+
+  it("says so when the chosen turn has no sessions to continue", async () => {
+    // An old turn can predate session ids, and silently starting a cold turn
+    // would look like the continuation worked.
+    seedHistory([savedTurn(1, "ancient task")])
+
+    const frame = stripAnsi(
+      await driveFrame(<App config={config()} />, { keys: ["/history", "\r", "c"], settleMs: 200 })
+    )
+
+    expect(frame).toContain("no agent sessions to continue")
   })
 })
