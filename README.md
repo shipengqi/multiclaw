@@ -305,6 +305,11 @@ the console is explicit about the outcome instead of guessing:
 - While no turn is running there is nothing to steer into, so `/steer` is refused and points at
   ordinary input instead.
 
+Delivery is not the same as obedience, and the two bridges differ: Claude stops the response it was
+writing and answers the new instruction, while Codex finishes the turn it is in and applies the
+message before that turn ends. The marker says the message landed, not that the agent has already
+acted on it.
+
 Cancelling aborts the in-flight agents and their child processes rather than leaving them running in
 the background.
 

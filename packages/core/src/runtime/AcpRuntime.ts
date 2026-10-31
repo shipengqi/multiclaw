@@ -822,9 +822,18 @@ export class AcpRuntime extends RuntimeBase {
        *   idle session answers `idle` and the caller keeps its text.
        * - It asks the provider not to start a turn either, via
        *   `_meta.steering.idleBehavior`. Claude honours that and answers
-       *   `promptRequired`; Codex ignores unknown meta, which is why the
-       *   `startedNewTurn` branch below has to clean up after it.
+       *   `promptRequired`; Codex ignores unknown meta and answers
+       *   `startedNewTurn`, which is why that branch below has to clean up after
+       *   it (measured 2026-10-31 against claude-agent-acp 0.93.0 and
+       *   codex-acp 2.2.2: `session/cancel` sent as a notification does stop the
+       *   turn Codex started this way).
        * - It has a deadline. "Did my message land?" cannot be a guess.
+       *
+       * `injected` is about delivery, not obedience, and the two providers
+       * differ: Claude stops the response it was writing and answers the new
+       * instruction, while Codex finishes the turn it is in and applies the
+       * message before that turn ends. Callers should word their notices
+       * accordingly — the text was delivered either way.
        */
       const supplement = async (
         text: string,

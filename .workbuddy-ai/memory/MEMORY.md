@@ -99,6 +99,14 @@
 - **最危险的一条:两个 bridge 在空闲会话上收到 steer 都会自己开一个新 turn**。那样起的 turn 没有
   `prompt()` owner,没人 settle/归因/取消。所以:① 只给 `state === "running"` 的会话发;
   ② 万一回了 `startedNewTurn`,立刻发 `session/cancel` 清场。
+- **2026-10-31 真机实测(claude-agent-acp 0.93.0 + codex-acp 2.2.2)**:
+  - 两者都真的广告 `_meta.steering.supported=true` → 我们协商出的 `capabilities.supplement` 是 true。
+  - 空闲发 steer:claude 回 `{outcome:"promptRequired", reason:"noRunningTurn"}`(1ms,不起 turn);
+    codex 回 `{outcome:"startedNewTurn"}` 并且**真的开跑**(所以那条守卫不是防御性写法,是必需的)。
+  - codex 的 `startedNewTurn` 清场有效:`session/cancel` **以通知发出**(按 request 发会回
+    `Method not found -32601`)→ 流在两个 in-flight chunk 后停住,8s 无新增。
+  - 送达到≠照做,而且两家不一样:claude 会**打断**当前回答直接回应新指令(数到 4 就变 BANANA);
+    codex 会**跑完当前轮次**再应用(数满 200 之后才 BANANA)。README 已按实测写清,提示语只能说"送达"。
 - `RuntimeSession.capabilities.supplement` **是协商结果**,不是常量:initialize 晚于会话对象创建,
   所以用 getter 暴露。`AgentSessionManager.supplement()` 返回 `SupplementReport[]`
   (`injected|idle|unsupported|error`,每 agent 独立,一个失败不影响其他);没有 running 会话 → `[]`。
@@ -160,9 +168,9 @@
 - [ ] `session/request_permission`:同一份「默认 tools + 读 `secret.txt`」配置必须真返回文件内容,不再 `PERMISSION_DENIED`。
 - [ ] codex-acp:角色提示词走 AIR 命名空间后的**实际指令遵从度**;工具限制缺失时的实际行为(用于拍板下方开放问题)。
 - [ ] `multiclaw init`:在无 claude CLI 但装了 `claude-agent-acp` 的环境里的表现。
-- [ ] **steering 的真实行为**:对着真跑一轮的 claude / codex bridge 发 `/steer`,确认 `outcome` 真是
-  `injected`(而不是被 bridge 忽略)、`promptRequired` 在 Claude 空闲时真挡住自起 turn、
-  `startedNewTurn` 的 cancel 真能把会话清回 idle。mock 只能证明我们发了什么,证不了对方怎么做。
+- [x] steering(claude/codex 两个真 bridge,2026-10-31 已验):`injected` 真被接受且真的影响输出、
+  `promptRequired` 在 claude 空闲时真挡住自起 turn、codex 的 `startedNewTurn` 真能 cancel 掉、
+  steer 之后会话仍可继续 prompt。**未验**:opencode(原生 ACP,不确定是否支持该扩展)。
 
 ## 开放问题
 - **codex 的工具限制**(命名空间分派已实现,此项待拍板):角色提示词已走 AIR 命名空间,但 codex
