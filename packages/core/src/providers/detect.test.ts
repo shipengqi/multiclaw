@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { detectProviders, presentProviders } from "./detect"
+import { detectProviders, parseVersion, presentProviders } from "./detect"
 
 // Control PATH / bundled-bridge resolution without touching the real filesystem.
 vi.mock("./bridge", () => ({
@@ -98,7 +98,9 @@ describe("detectProviders", () => {
     const found = await detectProviders({ withVersion: true })
     const cursor = found.find((p) => p.id === "cursor")
     expect(cursor?.status).toBe("present")
-    expect(cursor?.version).toBe("cursor-agent 0.4.2")
+    // The number, not the sentence: the doctor table has one narrow column and
+    // the row already names the provider.
+    expect(cursor?.version).toBe("0.4.2")
   })
 
   it("treats an ambiguous binary as missing when --version does not confirm it", async () => {
@@ -112,6 +114,39 @@ describe("detectProviders", () => {
     const found = await detectProviders({ withVersion: true })
     const claude = found.find((p) => p.id === "claude")
     expect(claude?.version).toBe("1.0.0")
+  })
+
+  // codex-acp answers `--version` with its full package name, which is 35
+  // characters — wider than the column, so it used to push `bundled` up against
+  // the number and make the table unreadable.
+  it("keeps only the number when a bridge names itself in --version", async () => {
+    spawnMock.mockImplementation(() => fakeChild("@agentclientprotocol/codex-acp 2.5.0\n"))
+    const found = await detectProviders({ withVersion: true })
+    expect(found.find((p) => p.id === "codex")?.version).toBe("2.5.0")
+  })
+})
+
+describe("parseVersion", () => {
+  it("takes the version out of whatever the CLI printed", () => {
+    expect(parseVersion("0.95.0\n")).toBe("0.95.0")
+    expect(parseVersion("@agentclientprotocol/codex-acp 2.5.0\n")).toBe("2.5.0")
+    expect(parseVersion("codex-cli 0.162.1")).toBe("0.162.1")
+    expect(parseVersion("1.19.0-beta.2")).toBe("1.19.0-beta.2")
+  })
+
+  it("ignores colour, which would otherwise count towards the column width", () => {
+    expect(parseVersion("\u001b[32m2.5.0\u001b[0m")).toBe("2.5.0")
+  })
+
+  it("reads the first line only, and falls back to it when there is no number", () => {
+    expect(parseVersion("2.5.0\nbuilt from abc123")).toBe("2.5.0")
+    expect(parseVersion("unknown build")).toBe("unknown build")
+  })
+
+  it("has nothing to say about empty output", () => {
+    expect(parseVersion("")).toBeUndefined()
+    expect(parseVersion("   \n")).toBeUndefined()
+    expect(parseVersion(undefined)).toBeUndefined()
   })
 })
 

@@ -7,7 +7,8 @@ const ESC = String.fromCharCode(27)
 function detected(
   present: string[],
   missing: string[],
-  source: Record<string, "path" | "bundled"> = {}
+  source: Record<string, "path" | "bundled"> = {},
+  versions: Record<string, string> = {}
 ) {
   return [
     ...present.map((id) => ({
@@ -15,7 +16,7 @@ function detected(
       label: id,
       command: id,
       status: "present" as const,
-      version: "1.0.0",
+      version: versions[id] ?? "1.0.0",
       ...(source[id] ? { source: source[id] } : {}),
       ...(source[id] === "bundled" ? { resolvedPath: `/opt/multiclaw/${id}/bin.js` } : {}),
     })),
@@ -133,6 +134,26 @@ describe("formatDoctorReport", () => {
     expect(plain).not.toContain(ESC)
     const colored = formatDoctorReport(report, true)
     expect(colored).toContain(ESC)
+  })
+
+  // The padding *is* the separator, so a value wider than its column used to
+  // run straight into the next one: a codex bridge reporting
+  // "@agentclientprotocol/codex-acp 2.5.0" produced "2.5.0bundled".
+  it("clips an over-long value instead of fusing it with the next column", () => {
+    const report: DoctorReport = buildDoctorReport(
+      detected(
+        ["codex"],
+        [],
+        { codex: "bundled" },
+        { codex: "@agentclientprotocol/codex-acp 2.5.0" }
+      )
+    )
+    const row = formatDoctorReport(report, false)
+      .split("\n")
+      .find((line) => line.includes("✓ present"))
+    expect(row).toBeDefined()
+    expect(row).not.toContain("0bundled")
+    expect(row).toMatch(/…\s+bundled/)
   })
 
   it("prints install hints for missing providers", () => {

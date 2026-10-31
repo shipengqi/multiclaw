@@ -122,9 +122,13 @@ export function formatDoctorReport(report: DoctorReport, useColor = true): strin
   const c = (code: string, text: string) => color(useColor, code, text)
   // Pad by *visible* width so ANSI codes do not shift columns.
   const cell = (text: string, width: number, code?: string) => {
-    const rendered = code ? color(useColor, code, text) : text
-    const visible = text.replace(ANSI_RE, "").length
-    return rendered + " ".repeat(Math.max(0, width - visible))
+    const plain = text.replace(ANSI_RE, "")
+    // The padding *is* the separator between columns, so a value wider than its
+    // column fuses with the next one — which is how `2.5.0bundled` happened.
+    // Clip to `width - 1` so at least one space always survives.
+    const clipped = plain.length > width - 1 ? `${plain.slice(0, Math.max(0, width - 2))}…` : plain
+    const rendered = code ? color(useColor, code, clipped) : clipped
+    return rendered + " ".repeat(Math.max(0, width - clipped.length))
   }
 
   lines.push("")

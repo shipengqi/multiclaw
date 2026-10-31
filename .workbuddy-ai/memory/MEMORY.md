@@ -177,6 +177,14 @@
 - 装完必须 `readInstalledVersion(pkgRoot)` 复查(readFileSync,不走 require 缓存),不符则退出 1。
 - `runUpgrade(ctx)` 接受注入的 `exec`/`readVersion` → 测试零 mock。
 
+## `multiclaw doctor`(cli)
+- **version 列存的是解析后的数字,不是 `--version` 的整行**。`providers/detect.ts: parseVersion()`
+  在存值时裁出 `\d+\.\d+\.\d+`;但 `versionFor()` 必须返回**原始行**,因为 `spec.confirm`
+  (cursor 的 `agent`)靠词确认身份——两处一起裁会让 cursor 变 missing。
+- 表格的 `cell()` **补白就是列分隔符**,超宽值会与下一列粘连(0.6.0 的 `2.5.0bundled`)。
+  超宽时裁到 `width-1` + `…`,保证至少一个空格。
+- 渲染实测(本机):`OpenCode 1.19.0 path / Claude 0.89.1 path / Codex 2.2.2 path`。
+
 ## 待真机验证(mock 覆盖不了,需真实 API 密钥 / 真实二进制)
 - [x] `session/request_permission`(2026-10-31 已验):默认 tools 下 Read 成功读到 `secret.txt`,
   零 `permission_rejected`。**同时推翻了两条旧预期**:默认 allowlist 含 `Bash`,所以 `rm` 不经

@@ -27,7 +27,39 @@ export interface DetectedProvider {
   resolvedPath?: string
 }
 
-/** Run `command --version` and return trimmed stdout, or undefined on failure. */
+/**
+ * The version token inside whatever a CLI prints for `--version`.
+ *
+ * Providers disagree on the shape: `0.95.0`, `codex-cli 0.162.1`,
+ * `@agentclientprotocol/codex-acp 2.5.0`. The package name in front is noise —
+ * the row already names the provider — and at 35 characters it is wider than
+ * the column it goes in, which pushed `bundled` up against the version and made
+ * the table unreadable. So the table gets the number, not the sentence.
+ *
+ * Falls back to the first line when nothing looks like a version, rather than
+ * returning nothing: "it printed something unexpected" is worth seeing.
+ */
+export function parseVersion(raw: string | undefined): string | undefined {
+  if (!raw) return undefined
+  // Strip SGR colour, which would otherwise count towards the column width.
+  // Built from a char code because a literal ESC is rejected by the linter —
+  // the same construction `doctor.ts` uses for the same reason.
+  const plain = raw.replace(SGR_RE, "")
+  const firstLine = plain.split("\n")[0].trim()
+  if (!firstLine) return undefined
+  return firstLine.match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/)?.[0] ?? firstLine
+}
+
+const SGR_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g")
+
+/**
+ * Run `command --version` and return its raw output, or undefined on failure.
+ *
+ * Raw, not parsed: `spec.confirm` decides whether an ambiguous binary name
+ * (cursor's `agent`) really is that provider by looking at the *words* it
+ * prints, so the caller needs the whole line. Parsing happens where the value
+ * is stored for display — see {@link parseVersion}.
+ */
 async function versionFor(command: string): Promise<string | undefined> {
   return new Promise((resolve) => {
     let out = ""
@@ -89,7 +121,7 @@ export async function detectProviders(opts?: {
           const v = await versionFor(exe)
           if (v && spec.confirm(v)) {
             matched = cmd
-            version = v
+            version = parseVersion(v)
             source = bundled ? "bundled" : "path"
             resolvedPath = bundled ? exe : undefined
             break
@@ -103,7 +135,7 @@ export async function detectProviders(opts?: {
       source = bundled ? "bundled" : "path"
       resolvedPath = bundled ? exe : undefined
       if (opts?.withVersion) {
-        version = await versionFor(exe)
+        version = parseVersion(await versionFor(exe))
       }
       break
     }
