@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url"
 import { Command } from "commander"
 import { doctorCommand } from "./commands/doctor"
 import { initCommand } from "./commands/init"
+import { pruneCommand } from "./commands/prune"
 import { runCommand } from "./commands/run"
 import { tuiCommand } from "./commands/tui"
 import { upgradeCommand } from "./commands/upgrade"
@@ -50,6 +51,17 @@ program
   .description("Check which agent providers are installed and ready")
   .option("--config <path>", "Config file path (default: auto-discover ./multiclaw.config.ts)")
   .action((opts: { config?: string }) => doctorCommand(opts.config))
+
+program
+  .command("prune")
+  .description("Clean up history entries and old run directories (interactive)")
+  .option("--config <path>", "Config file path (default: auto-discover ./multiclaw.config.ts)")
+  .option("--history", "Prune console history only (non-interactive)")
+  .option("--runs", "Prune all runs only (non-interactive)")
+  .option("--all", "Prune everything (non-interactive)")
+  .option("--dry-run", "Show what would be deleted without deleting")
+  .option("--yes", "Skip confirmation prompt")
+  .action((opts) => pruneCommand(opts))
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   // `(err as Error).message` is a cast, not a check: a rejection with `null` or
