@@ -11,7 +11,7 @@ import {
   listWindowStart,
 } from "./components/overlays"
 import { ErrorPanel, ReplyPanel, StreamPanel, TeamPanel, WelcomePanel } from "./components/panels"
-import { CommandMenu, Prompt } from "./components/prompt"
+import { CommandMenu, MAX_PROMPT_ROWS, Prompt } from "./components/prompt"
 import {
   createInitialState,
   initialState,
@@ -892,7 +892,9 @@ describe("Prompt", () => {
   const PLACEHOLDER = "describe what the team should do…"
 
   const prompt = (props: Partial<Parameters<typeof Prompt>[0]> = {}) =>
-    renderFrame(<Prompt value="" cursor={0} caretVisible placeholder={PLACEHOLDER} {...props} />)
+    renderFrame(
+      <Prompt value="" cursor={0} caretVisible placeholder={PLACEHOLDER} width={100} {...props} />
+    )
 
   it("draws the caret as a reversed cell", async () => {
     expect(await prompt()).toContain("\u001b[7m")
@@ -967,5 +969,61 @@ describe("Prompt", () => {
   it("keeps the caret on the cell under it when it sits on a newline", async () => {
     const frame = await prompt({ value: "a\nb", cursor: 1 })
     expect(frame).toContain(`\u001b[7m${GLYPH.newline}`)
+  })
+
+  // The bug this guards: the caret used to be a *sibling* of the text, so Ink
+  // wrapped the text and left the caret stranded at the right end of the first
+  // row — pointing at nothing while the line carried on underneath it.
+  it("takes the caret to the row the text actually reached", async () => {
+    const value = "abcdefghijklmno"
+    // 14 columns, so 12 of text: twelve characters on the first row, three on
+    // the second — where the caret belongs.
+    const rows = stripAnsi(await prompt({ value, cursor: value.length, width: 14 })).split("\n")
+    expect(rows[0]).toBe(`› ${"abcdefghijkl"}`)
+    expect(rows[1].trimEnd()).toBe("  mno")
+  })
+
+  it("indents wrapped rows by the marker so the text stays in one column", async () => {
+    const rows = stripAnsi(await prompt({ value: "abcdefghijklmno", cursor: 15, width: 14 })).split(
+      "\n"
+    )
+    expect(rows[1].startsWith("  mno")).toBe(true)
+  })
+
+  it("keeps the caret on a wrapped row when it sits mid-text", async () => {
+    const frame = await prompt({ value: "abcdefghijklmnop", cursor: 14, width: 14 })
+    // Two rows down: `mn` before the caret, `o` under it.
+    expect(frame).toContain("\u001b[7mo")
+  })
+
+  // A CJK character is one code unit and two columns, so counting code units
+  // would fit twice as much on a row as the terminal can draw.
+  it("measures wide characters as two columns", async () => {
+    const rows = stripAnsi(await prompt({ value: "我需要对当前", cursor: 6, width: 10 })).split(
+      "\n"
+    )
+    expect(rows[0]).toBe("› 我需要对")
+    expect(rows[1].trimEnd()).toBe("  当前")
+  })
+
+  // A full last row leaves no cell for the caret, so it moves to a fresh row —
+  // which is where the next keystroke will land.
+  it("puts the caret on a fresh row when the text fills the row exactly", async () => {
+    const rows = stripAnsi(await prompt({ value: "abcdefghijkl", cursor: 12, width: 14 })).split(
+      "\n"
+    )
+    expect(rows[0]).toBe("› abcdefghijkl")
+    expect(rows[1].trimEnd()).toBe("")
+  })
+
+  // The prompt grows with the input, and the body gives up a row for each one.
+  // Past the cap it scrolls, keeping the caret — and so the next keystroke — in
+  // view rather than clipping the bottom off.
+  it("caps its own height and scrolls to keep the caret visible", async () => {
+    const value = "abcdefghijklmnopqrstuvwxyz0123456789"
+    const frame = stripAnsi(await prompt({ value, cursor: value.length, width: 10 }))
+    const rows = frame.trimEnd().split("\n")
+    expect(rows.length).toBe(MAX_PROMPT_ROWS)
+    expect(rows[rows.length - 1]).toContain("89")
   })
 })

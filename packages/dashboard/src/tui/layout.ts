@@ -46,6 +46,15 @@ export interface LayoutInput {
   menuRows: number
   /** Rows the queued follow-ups are asking for. */
   queueRows?: number
+  /**
+   * Rows the prompt is asking for.
+   *
+   * The prompt wraps, so a long input makes it grow — one row per line typed
+   * past the terminal's width. Left out, it is the one row it used to be, so a
+   * caller that has not measured the text keeps the old budget rather than
+   * silently reserving nothing.
+   */
+  promptRows?: number
   /** Whether a command result is waiting to be shown. */
   notice: boolean
   /** A past turn is open for reading, which costs a banner row. */
@@ -126,6 +135,8 @@ export function computeLayout(input: LayoutInput): Layout {
   const showRail = !welcome && !input.overlay && rows >= RAIL_MIN_ROWS && input.hasRail
   const menuRows = Math.min(Math.max(0, input.menuRows), MAX_MENU_ROWS)
   const queueRows = Math.min(Math.max(0, input.queueRows ?? 0), MAX_QUEUE_ROWS)
+  // At least one row: the prompt is always on screen, even while it is empty.
+  const promptRows = Math.max(1, input.promptRows ?? 1)
   // At least one row when there is a rail at all: a caller that does not measure
   // the cells gets the old flat assumption rather than silently reserving nothing.
   const railRows = showRail
@@ -144,7 +155,7 @@ export function computeLayout(input: LayoutInput): Layout {
     (input.viewing ? 1 : 0) + // "viewing turn N" banner
     queueRows +
     menuRows +
-    1 + // prompt
+    promptRows +
     1 // hint bar
 
   const bodyHeight = Math.max(MIN_BODY_ROWS, rows - reserved)

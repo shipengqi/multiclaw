@@ -86,6 +86,23 @@ describe("computeLayout", () => {
     expect(computeLayout(base).bodyHeight).toBe(computeLayout({ ...base, queueRows: 0 }).bodyHeight)
   })
 
+  // The prompt wraps, so a long input is taller than the one row it used to be.
+  // Every row it takes has to come out of the body, or the screen overflows and
+  // Yoga shrinks whichever pane it can — the failure this budget exists for.
+  it("charges a wrapping prompt against the body", () => {
+    const layout = computeLayout({ ...base, promptRows: 3 })
+    expect(layout.bodyHeight).toBe(30 - 7 - 2)
+  })
+
+  it("keeps at least one row for the prompt when the caller measured none", () => {
+    expect(computeLayout({ ...base, promptRows: 0 }).bodyHeight).toBe(
+      computeLayout(base).bodyHeight
+    )
+    expect(computeLayout(base).bodyHeight).toBe(
+      computeLayout({ ...base, promptRows: 1 }).bodyHeight
+    )
+  })
+
   it("clamps a negative queue request to zero", () => {
     expect(computeLayout({ ...base, queueRows: -3 }).queueRows).toBe(0)
   })

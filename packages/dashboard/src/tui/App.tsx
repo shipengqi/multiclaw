@@ -56,10 +56,10 @@ import {
   TeamPanel,
   WelcomePanel,
 } from "./components/panels"
-import { CommandMenu, Prompt } from "./components/prompt"
+import { CommandMenu, MARKER_WIDTH, Prompt, promptRowCount } from "./components/prompt"
 import { describeSteering, formatCost, formatDuration } from "./format"
 import { exportPath, exportTurn, historyPath, saveHistory } from "./history"
-import { computeLayout } from "./layout"
+import { computeLayout, MIN_COLUMNS } from "./layout"
 import {
   journalTurn,
   restoreConsole,
@@ -764,6 +764,16 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   const argOpen = !helpOpen && !historyOpen && arg !== undefined && argRows.length > 0
   const paletteOpen = menuOpen || argOpen
 
+  // The prompt wraps, so a long input makes it taller than one row — and every
+  // row it takes is a row the body cannot have. Measured here, before the
+  // layout, for the same reason `railCells` is: Ink cannot be asked how tall a
+  // wrapping line will be until it has already laid the screen out.
+  const promptRows = promptRowCount(
+    line.text,
+    line.cursor,
+    Math.max(MIN_COLUMNS, columns) - MARKER_WIDTH
+  )
+
   const layout = computeLayout({
     columns,
     rows,
@@ -771,6 +781,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     overlay: helpOpen || historyOpen,
     menuRows: paletteOpen ? paletteTotal : 0,
     queueRows: queue.length,
+    promptRows,
     notice: notice !== undefined || (queuePaused && queue.length > 0),
     viewing: state.view !== undefined,
     hasRail: shown.leaderIds.length > 0 || shown.stages.length > 0,
@@ -1627,6 +1638,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
         value={line.text}
         cursor={line.cursor}
         caretVisible={caretOn}
+        width={layout.columns}
         placeholder={
           running
             ? RUNNING_PLACEHOLDER
