@@ -1886,3 +1886,107 @@ describe("Orchestrator.run · upstream outputs", () => {
     expect(prompts.solo).not.toContain("{{upstreamOutputs}}")
   })
 })
+
+describe("checkpoint-gated orchestration", () => {
+  it("pauses after the configured agents and continues on user approval", async () => {
+    let checkpointCalled = false
+    const { result, events } = await runOrch(
+      [agent("architect"), agent("developer", { dependsOn: ["architect"] })],
+      {
+        checkpoints: [{ afterAgents: ["architect"], label: "design review" }],
+        onCheckpoint: async (info) => {
+          checkpointCalled = true
+          expect(info.label).toBe("design review")
+          expect(info.completedAgents).toHaveLength(1)
+          expect(info.completedAgents[0].id).toBe("architect")
+          return { action: "continue" }
+        },
+      }
+    )
+    expect(checkpointCalled).toBe(true)
+    expect(result.success).toBe(true)
+    expect(result.agentResults.map((r) => r.agentId)).toContain("developer")
+    const completedStages = events.filter((e) => e.type === "stage:complete")
+    expect(completedStages).toHaveLength(2)
+  })
+
+  it("cancels the run when the user rejects at a checkpoint", async () => {
+    const { result, events } = await runOrch(
+      [agent("architect"), agent("developer", { dependsOn: ["architect"] })],
+      {
+        checkpoints: [{ afterAgents: ["architect"] }],
+        onCheckpoint: async () => ({ action: "cancel" }),
+      }
+    )
+    expect(result.success).toBe(false)
+    expect(result.cancelled).toBe(true)
+    expect(result.agentResults.map((r) => r.agentId)).toContain("architect")
+    expect(result.agentResults.map((r) => r.agentId)).not.toContain("developer")
+    const skipped = events.filter((e) => e.type === "agent:skipped")
+    expect(skipped.some((e) => e.payload.agentId === "developer")).toBe(true)
+  })
+
+  it("injects feedback into the requirement on modify", async () => {
+    handler = async (task) => ({
+      output: `out:${task.agentId} · prompt:${task.prompt.slice(-60)}`,
+      exitCode: 0,
+    })
+    const { result } = await runOrch(
+      [agent("architect"), agent("developer", { dependsOn: ["architect"] })],
+      {
+        checkpoints: [{ afterAgents: ["architect"] }],
+        onCheckpoint: async () => ({
+          action: "modify",
+          instruction: "use postgres instead of sqlite",
+        }),
+      }
+    )
+    expect(result.success).toBe(true)
+    const devResult = result.agentResults.find((r) => r.agentId === "developer")
+    expect(devResult?.output).toContain("postgres")
+  })
+
+  it("does not trigger a checkpoint until all afterAgents have run", async () => {
+    let checkpointCalled = false
+    await runOrch(
+      [
+        agent("architect"),
+        agent("designer", { dependsOn: ["architect"] }),
+        agent("developer", { dependsOn: ["designer"] }),
+      ],
+      {
+        checkpoints: [{ afterAgents: ["architect", "designer"] }],
+        onCheckpoint: async () => {
+          checkpointCalled = true
+          return { action: "continue" }
+        },
+      }
+    )
+    expect(checkpointCalled).toBe(true)
+  })
+
+  it("skips checkpoints when no handler is configured", async () => {
+    const { result } = await runOrch(
+      [agent("architect"), agent("developer", { dependsOn: ["architect"] })],
+      {
+        checkpoints: [{ afterAgents: ["architect"] }],
+        // onCheckpoint omitted
+      }
+    )
+    expect(result.success).toBe(true)
+    expect(result.agentResults).toHaveLength(2)
+  })
+
+  it("cancels via abort signal passed to the checkpoint handler", async () => {
+    const { result } = await runOrch(
+      [agent("architect"), agent("developer", { dependsOn: ["architect"] })],
+      {
+        checkpoints: [{ afterAgents: ["architect"] }],
+        onCheckpoint: async (_info, signal) => {
+          return signal.aborted ? { action: "cancel" } : { action: "cancel" }
+        },
+      }
+    )
+    expect(result.cancelled).toBe(true)
+  })
+})

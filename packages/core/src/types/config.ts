@@ -36,6 +36,35 @@ export interface ReviewPolicy {
   maxRepairRounds?: number
 }
 
+/**
+ * A checkpoint pauses the pipeline after specific agents complete, giving the
+ * user a chance to review their output before downstream agents run.
+ */
+export interface CheckpointPolicy {
+  /** Agent IDs that must all complete before this checkpoint triggers. */
+  afterAgents: string[]
+  /** Label shown to the user in the checkpoint prompt. */
+  label?: string
+}
+
+/** What the orchestrator presents when a checkpoint is reached. */
+export interface CheckpointInfo {
+  label: string
+  completedAgents: Array<{ id: string; name: string; output?: string }>
+}
+
+/** How the user responds to a checkpoint. */
+export type CheckpointResponse =
+  | { action: "continue" }
+  | { action: "modify"; instruction: string }
+  | { action: "cancel" }
+
+/** Caller-owned checkpoint handler; headless callers continue automatically. */
+export type CheckpointHandler = (
+  checkpoint: CheckpointInfo,
+  signal: AbortSignal
+) => Promise<CheckpointResponse>
+
 export interface ReviewVerdict {
   verdict: "approved" | "changes_required"
   summary: string
@@ -95,6 +124,10 @@ export interface MultiClawConfig {
   useLeader?: boolean
   /** Opt-in delivery gate. Execution success alone does not satisfy this policy. */
   review?: ReviewPolicy
+  /** Pause points after specific agents complete, for human review before continuation. */
+  checkpoints?: CheckpointPolicy[]
+  /** Caller-owned checkpoint handler; absent checkpoints proceed automatically. */
+  onCheckpoint?: CheckpointHandler
   /** Caller-owned live approvals. Ask mode without a handler fails closed. */
   permissions?: {
     mode: "auto" | "ask" | "deny"

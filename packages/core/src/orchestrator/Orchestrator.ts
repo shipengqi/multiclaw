@@ -6,6 +6,8 @@ import { resolveModel } from "../providers/resolve"
 import type { AgentDefinition, AgentResult, TaskPlan } from "../types/agent"
 import type {
   AcceptanceResult,
+  CheckpointInfo,
+  CheckpointResponse,
   MultiClawConfig,
   OrchestrationPreview,
   OrchestratorResult,
@@ -37,6 +39,8 @@ export class Orchestrator {
   private contextManager: ContextManager
   private runner: AgentRunner
   private workDir: string
+  /** Which configured checkpoints have already been triggered this run. */
+  private checkpointTriggered = new Set<number>()
 
   constructor(
     private config: MultiClawConfig,
@@ -281,7 +285,31 @@ export class Orchestrator {
         payload: { stageIndex: i },
       })
 
-      if (!allSuccess && !this.config.continueOnError) {
+      // Check for human checkpoints after this stage.
+      if (this.config.checkpoints?.length && this.config.onCheckpoint) {
+        for (let cpIdx = 0; cpIdx < this.config.checkpoints.length; cpIdx++) {
+          if (this.checkpointTriggered.has(cpIdx)) continue
+          const cp = this.config.checkpoints[cpIdx]
+          if (cp.afterAgents.every((id) => executedIds.has(id))) {
+            this.checkpointTriggered.add(cpIdx)
+            const response = await this.handleCheckpoint(cp, results, options.signal)
+            if (response.action === "cancel") {
+              cancelled = true
+              allSuccess = false
+              break
+            }
+            if (response.action === "modify") {
+              const current = this.contextManager.get("requirement") ?? ""
+              this.contextManager.set(
+                "requirement",
+                `${current}\n\n[Checkpoint feedback] ${response.instruction}`
+              )
+            }
+          }
+        }
+      }
+
+      if (cancelled || (!allSuccess && !this.config.continueOnError)) {
         for (const remainingStage of stages.slice(i + 1)) {
           for (const agent of remainingStage) {
             this.eventBus.emit({
@@ -479,6 +507,26 @@ export class Orchestrator {
       for (const stage of repairStages) if (!(await execute(stage, instruction))) return acceptance
       acceptance.status = "failed"
     }
+  }
+
+  private async handleCheckpoint(
+    policy: { afterAgents: string[]; label?: string },
+    results: AgentResult[],
+    signal?: AbortSignal
+  ): Promise<CheckpointResponse> {
+    if (signal?.aborted) return { action: "cancel" }
+    const completedAgents = policy.afterAgents
+      .map((id) => {
+        const r = results.find((res) => res.agentId === id && res.status === "success")
+        if (!r) return undefined
+        return { id: r.agentId, name: r.agentName, output: r.output }
+      })
+      .filter((a): a is NonNullable<typeof a> => a !== undefined)
+    const info: CheckpointInfo = {
+      label: policy.label || "review checkpoint",
+      completedAgents,
+    }
+    return this.config.onCheckpoint!(info, signal ?? new AbortController().signal)
   }
 
   private stageInfos(stages: AgentDefinition[][]): StageInfo[] {

@@ -110,7 +110,17 @@ export const COMMANDS: readonly CommandSpec[] = [
     description: "Pause queued turns, not the active agent",
     availability: "always",
   },
-  { name: "continue", description: "Resume queued turns after a checkpoint", availability: "idle" },
+  {
+    name: "continue",
+    description: "Resume queued turns or pass a checkpoint",
+    availability: "always",
+  },
+  {
+    name: "modify",
+    args: "<instruction>",
+    description: "Provide feedback at a checkpoint and continue",
+    availability: "running",
+  },
   {
     name: "respond",
     args: "<question id> <JSON object>",

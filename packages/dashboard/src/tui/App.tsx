@@ -1,5 +1,7 @@
 import * as path from "node:path"
 import type {
+  CheckpointHandler,
+  CheckpointResponse,
   EventBus,
   MultiClawConfig,
   MultiClawEvent,
@@ -384,6 +386,8 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   const pending = useRef<MultiClawEvent[]>([])
   const permissionSerialRef = useRef(0)
   const questionSerialRef = useRef(0)
+  const checkpointResolveRef = useRef<((response: CheckpointResponse) => void) | null>(null)
+  const checkpointLabelRef = useRef<string>("")
   const mountedRef = useRef(true)
   const interactionsRef = useRef<PendingInteraction[]>([])
   const [interactions, setInteractions] = useState<PendingInteraction[]>([])
@@ -447,6 +451,23 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       interactionsRef.current.push(entry)
       signal.addEventListener("abort", onAbort, { once: true })
       if (mountedRef.current) setInteractions([...interactionsRef.current])
+    })
+  }, [])
+
+  const handleCheckpoint = useCallback<CheckpointHandler>((info, signal) => {
+    if (closingRef.current || signal.aborted) return Promise.resolve({ action: "cancel" })
+    return new Promise<CheckpointResponse>((resolve) => {
+      checkpointResolveRef.current = resolve
+      checkpointLabelRef.current = info.label
+      const names = info.completedAgents.map((a) => a.name).join(", ")
+      setNotice(
+        `checkpoint: ${info.label} — ${names} done · /continue /modify <instruction> /cancel`
+      )
+      const onAbort = () => {
+        checkpointResolveRef.current = null
+        resolve({ action: "cancel" })
+      }
+      signal.addEventListener("abort", onAbort, { once: true })
     })
   }, [])
 
@@ -651,6 +672,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
             ? { mode: "ask", onRequest: requestPermission }
             : config.permissions,
         questions: config.questions?.onRequest ? config.questions : { onRequest: requestQuestion },
+        onCheckpoint: config.onCheckpoint ?? handleCheckpoint,
         // A retry names the agents to redo; a continued conversation carries only
         // sessions and still lets the leader route. Both arrive here.
         ...(resume ? { resume } : {}),
@@ -709,7 +731,15 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
         activeTurnRef.current = null
       }
     },
-    [config, flush, onTurnStart, requestPermission, requestQuestion, clearInteractions]
+    [
+      config,
+      flush,
+      onTurnStart,
+      requestPermission,
+      requestQuestion,
+      handleCheckpoint,
+      clearInteractions,
+    ]
   )
 
   // A queued follow-up starts the moment the console goes idle again. Without
@@ -930,6 +960,18 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       // live turn and start over on top of it. An unknown name is let through so
       // `default:` below still reports it. The notice names the phase the command
       // wants, so the user knows whether to wait or that it does not apply yet.
+      // When a checkpoint is waiting, only the checkpoint commands are valid.
+      if (
+        checkpointResolveRef.current &&
+        name !== "continue" &&
+        name !== "modify" &&
+        name !== "cancel"
+      ) {
+        setNotice(
+          `checkpoint: ${checkpointLabelRef.current} · /continue /modify <instruction> /cancel`
+        )
+        return
+      }
       if (!canRun(name, running)) {
         setNotice(unavailableReason(name, running))
         return
@@ -1086,7 +1128,15 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
           setQueuePaused(true)
           setNotice("queue paused — the active turn continues")
           return
-        case "continue":
+        case "continue": {
+          if (checkpointResolveRef.current) {
+            const resolve = checkpointResolveRef.current
+            checkpointResolveRef.current = null
+            checkpointLabelRef.current = ""
+            resolve({ action: "continue" })
+            setNotice("continuing…")
+            return
+          }
           if (awaitingAnswerRef.current) {
             setNotice("answer the leader first; queued input is not an answer")
             return
@@ -1095,6 +1145,24 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
           setQueuePaused(false)
           setNotice("queue resumed")
           return
+        }
+        case "modify": {
+          const instruction = args.join(" ")
+          if (!instruction) {
+            setNotice("usage: /modify <instruction> — only at a checkpoint")
+            return
+          }
+          if (!checkpointResolveRef.current) {
+            setNotice("no checkpoint is waiting")
+            return
+          }
+          const resolve = checkpointResolveRef.current
+          checkpointResolveRef.current = null
+          checkpointLabelRef.current = ""
+          resolve({ action: "modify", instruction })
+          setNotice("modifying and continuing…")
+          return
+        }
         case "agents":
           setNotice(
             `team: ${plannedAgents(config)
@@ -1275,6 +1343,14 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
           setNotice("showing latest output")
           return
         case "cancel": {
+          if (checkpointResolveRef.current) {
+            const resolve = checkpointResolveRef.current
+            checkpointResolveRef.current = null
+            checkpointLabelRef.current = ""
+            resolve({ action: "cancel" })
+            setNotice("checkpoint cancelled")
+            return
+          }
           if (!abortRef.current) {
             setNotice("nothing to cancel")
             return
@@ -1321,6 +1397,11 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     const command = parseCommand(text)
     if (command) {
       runCommand(command.name, command.args, text)
+      return
+    }
+    // During a checkpoint, bare text is treated as feedback.
+    if (checkpointResolveRef.current) {
+      runCommand("modify", [text], text)
       return
     }
     setLine(EMPTY_LINE)
@@ -1443,6 +1524,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
           return
         }
         continuationRef.current = { turn: target.turn, sessions }
+        dispatch({ type: "view:open", turn: target.turn })
         setHistoryOpen(false)
         setNotice(
           `continuing turn ${target.turn} — ${count} ${count === 1 ? "session" : "sessions"} · type your next instruction`
@@ -1770,16 +1852,18 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
         : menuOpen
           ? "↑↓ select · tab complete · enter run · esc close"
           : running
-            ? interactions.length > 0
-              ? layout.interactionRows === 0
-                ? // Too short to dock the bar, so the commands are the only way in.
-                  "decide with /approve 1 · /deny · /respond"
-                : interactions[0].kind === "question"
-                  ? "tab field · ↑↓ pick · enter next · /dismiss"
-                  : menu.released
-                    ? "/approve 1 and /deny still reach it"
-                    : "↑↓ or 1-9 choose · enter confirm · esc to type"
-              : "enter queues · ctrl+c cancel"
+            ? checkpointResolveRef.current
+              ? `/continue · /modify <instruction> · /cancel`
+              : interactions.length > 0
+                ? layout.interactionRows === 0
+                  ? // Too short to dock the bar, so the commands are the only way in.
+                    "decide with /approve 1 · /deny · /respond"
+                  : interactions[0].kind === "question"
+                    ? "tab field · ↑↓ pick · enter next · /dismiss"
+                    : menu.released
+                      ? "/approve 1 and /deny still reach it"
+                      : "↑↓ or 1-9 choose · enter confirm · esc to type"
+                : "enter queues · ctrl+c cancel"
             : state.view
               ? "esc live · tab agent · ? help"
               : state.reply
@@ -1800,11 +1884,13 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
           : `${formField.title} — ↑↓ to pick · enter for the next field`
       : front?.kind === "permission" && !menu.released
         ? "choose above · esc to type here instead"
-        : running
-          ? RUNNING_PLACEHOLDER
-          : awaitingAnswer
-            ? "answer the leader… · /task starts a new task"
-            : INPUT_PLACEHOLDER
+        : checkpointResolveRef.current
+          ? `checkpoint: ${checkpointLabelRef.current} — type feedback or /continue`
+          : running
+            ? RUNNING_PLACEHOLDER
+            : awaitingAnswer
+              ? "answer the leader… · /task starts a new task"
+              : INPUT_PLACEHOLDER
 
   return (
     <Box flexDirection="column" height={layout.rows}>

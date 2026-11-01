@@ -197,11 +197,17 @@ describe("COMMANDS", () => {
     expect(availableCommands(true).map((c) => c.name)).toContain("fork")
   })
 
-  it.each(["task", "answer", "continue"])("offers /%s only while idle", (name) => {
+  it.each(["task", "answer"])("offers /%s only while idle", (name) => {
     expect(availableCommands(false).map((c) => c.name)).toContain(name)
     expect(availableCommands(true).map((c) => c.name)).not.toContain(name)
     expect(canRun(name, true)).toBe(false)
     expect(unavailableReason(name, true)).toBe(`/${name} waits for the current turn to finish`)
+  })
+
+  it("offers /continue in both phases for checkpoints and queue resume", () => {
+    expect(availableCommands(false).map((c) => c.name)).toContain("continue")
+    expect(availableCommands(true).map((c) => c.name)).toContain("continue")
+    expect(canRun("continue", true)).toBe(true)
   })
 
   it("allows /pause during an active turn without exposing continuation", () => {
