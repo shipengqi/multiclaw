@@ -1191,7 +1191,7 @@ describe("App · completing an agent id", () => {
       await driveFrame(<App config={REPLAY_CONFIG} />, { keys: ["/focus "], settleMs: 200 })
     )
 
-    expect(frame).toContain("↑↓ select · enter focus · esc close")
+    expect(frame).toContain("↑↓ select · tab complete · enter focus · esc close")
   })
 
   it("runs /focus with the highlighted agent when a row is accepted", async () => {
