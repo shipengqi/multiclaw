@@ -158,3 +158,6 @@ scripts/
 
 # Runtime state written by `multiclaw run` and the console under `workDir`
 .multiclaw/
+
+# WorkBuddy AI local memory
+.workbuddy-ai/
