@@ -143,7 +143,7 @@ describe("App · the session picker", () => {
             name: "Architect",
             status: "success",
             sessionId: "sess-A",
-            logs: "",
+            logs: [],
           },
         },
       }),

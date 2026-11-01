@@ -203,7 +203,7 @@ describe("App · remembering turns across sessions", () => {
             name: "Architect",
             status: "success",
             sessionId: "sess-1",
-            logs: "",
+            logs: [],
           },
         },
       },

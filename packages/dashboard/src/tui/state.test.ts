@@ -775,7 +775,7 @@ describe("turn history", () => {
 describe("stageStatus", () => {
   const agents = (statuses: Record<string, AgentView["status"]>): Record<string, AgentView> =>
     Object.fromEntries(
-      Object.entries(statuses).map(([id, status]) => [id, { id, name: id, status, logs: "" }])
+      Object.entries(statuses).map(([id, status]) => [id, { id, name: id, status, logs: [] }])
     )
 
   it("is failed when any member failed", () => {
@@ -1028,7 +1028,7 @@ describe("live clocks", () => {
   })
 
   it("has no clock for an agent that never started", () => {
-    expect(agentElapsed({ id: "a", name: "a", status: "pending", logs: "" }, 5000)).toBeUndefined()
+    expect(agentElapsed({ id: "a", name: "a", status: "pending", logs: [] }, 5000)).toBeUndefined()
   })
 
   it("runs the turn clock live, then reports the orchestrator's total", () => {
@@ -1339,7 +1339,7 @@ describe("conversationTurns", () => {
 
   function statuses(values: Record<string, AgentView["status"]>): Record<string, AgentView> {
     return Object.fromEntries(
-      Object.entries(values).map(([id, status]) => [id, { id, name: id, status, logs: "" }])
+      Object.entries(values).map(([id, status]) => [id, { id, name: id, status, logs: [] }])
     )
   }
 
