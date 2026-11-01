@@ -1,5 +1,5 @@
 import type { SupplementReport } from "@multiclawcli/core"
-import { renderToAnsi } from "md4x"
+import { renderToAnsi } from "md4x/napi"
 import stringWidth from "string-width"
 import type { LogSegment } from "./state"
 
