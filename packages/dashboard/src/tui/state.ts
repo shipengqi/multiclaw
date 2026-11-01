@@ -10,7 +10,7 @@ import type {
   TurnOutcome,
   TurnRecord,
 } from "@multiclawcli/core"
-import { wrapLine } from "./format"
+import { renderSegments, wrapLine } from "./format"
 
 /**
  * Per-agent log buffer cap, in characters.
@@ -20,6 +20,13 @@ import { wrapLine } from "./format"
  * renders a tail window, so only the tail is worth keeping.
  */
 export const MAX_LOG_CHARS = 8000
+
+export type LogKind = "text" | "tool" | "tool-detail" | "system"
+
+export interface LogSegment {
+  kind: LogKind
+  text: string
+}
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: the ESC character is required to strip ANSI colour codes
 const ANSI_PATTERN = /\x1b\[[0-9;]*[a-zA-Z]/g
@@ -52,7 +59,7 @@ export interface AgentView {
    * re-exploring from scratch.
    */
   sessionId?: string
-  logs: string
+  logs: LogSegment[]
 }
 
 export type TuiPhase = "idle" | "running" | "complete"
@@ -236,13 +243,42 @@ export function stripAnsi(text: string): string {
 }
 
 /** Append a chunk, keeping only the last {@link MAX_LOG_CHARS} characters. */
-export function appendLog(previous: string, chunk: string): string {
-  const next = previous + stripAnsi(chunk)
-  return next.length > MAX_LOG_CHARS ? next.slice(next.length - MAX_LOG_CHARS) : next
+export function appendLog(
+  previous: LogSegment[],
+  chunk: string,
+  kind: LogKind = "text"
+): LogSegment[] {
+  const text = stripAnsi(chunk)
+  if (!text) return previous
+
+  // Merge with the last segment when kind matches (avoids thousands of 1-char segments during streaming)
+  const last = previous[previous.length - 1]
+  const next: LogSegment[] =
+    last?.kind === kind
+      ? [...previous.slice(0, -1), { kind, text: last.text + text }]
+      : [...previous, { kind, text }]
+
+  // Cap total chars, trimming from the front
+  let total = next.reduce((sum, s) => sum + s.text.length, 0)
+  if (total <= MAX_LOG_CHARS) return next
+
+  const result = [...next]
+  while (total > MAX_LOG_CHARS && result.length > 0) {
+    const first = result[0]
+    const excess = total - MAX_LOG_CHARS
+    if (first.text.length <= excess) {
+      total -= first.text.length
+      result.shift()
+    } else {
+      result[0] = { ...first, text: first.text.slice(excess) }
+      break
+    }
+  }
+  return result
 }
 
 function blankAgent(id: string, name: string, patch: Partial<AgentView> = {}): AgentView {
-  return { id, name, status: "pending", logs: "", ...patch }
+  return { id, name, status: "pending", logs: [], ...patch }
 }
 
 /** ISO timestamps come from the event bus; a malformed one must not become NaN. */
@@ -440,8 +476,8 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
             usage: undefined,
             costUsd: undefined,
             logs:
-              existing.startedAt !== undefined && existing.logs
-                ? appendLog(existing.logs, "\n[agent restarted]\n")
+              existing.startedAt !== undefined && existing.logs.length > 0
+                ? appendLog(existing.logs, "[agent restarted]", "system")
                 : existing.logs,
           }
         : blankAgent(agentId, agentName, {
@@ -473,7 +509,7 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
         ...state,
         agents: {
           ...state.agents,
-          [agentId]: { ...existing, logs: appendLog(existing.logs, chunk) },
+          [agentId]: { ...existing, logs: appendLog(existing.logs, chunk, kind ?? "text") },
         },
       }
     }
@@ -500,9 +536,10 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
         ? { ...existing, ...patch }
         : blankAgent(result.agentId, result.agentName, patch)
       if (event.type === "agent:failed") {
-        if (next.logs === "" && result.output) next.logs = appendLog("", result.output)
-        if (result.error && !next.logs.includes(stripAnsi(result.error))) {
-          next.logs = appendLog(next.logs, `\n[error] ${result.error}\n`)
+        if (next.logs.length === 0 && result.output)
+          next.logs = appendLog([], result.output, "text")
+        if (result.error && !next.logs.some((s) => s.text.includes(stripAnsi(result.error!)))) {
+          next.logs = appendLog(next.logs, result.error, "system")
         }
       }
       return { ...state, agents: { ...state.agents, [result.agentId]: next } }
@@ -519,12 +556,16 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
 
     case "agent:retrying": {
       const { agentId, agentName, attempt, maxAttempts, error } = event.payload
-      const note = `\n[retry ${attempt}/${maxAttempts}] ${error}\n`
+      const note = `[retry ${attempt}/${maxAttempts}] ${error}`
       const existing = state.agents[agentId]
       const retry = { attempt, max: maxAttempts }
       const next: AgentView = existing
-        ? { ...existing, status: "retrying", retry, logs: appendLog(existing.logs, note) }
-        : blankAgent(agentId, agentName, { status: "retrying", retry, logs: note })
+        ? { ...existing, status: "retrying", retry, logs: appendLog(existing.logs, note, "system") }
+        : blankAgent(agentId, agentName, {
+            status: "retrying",
+            retry,
+            logs: appendLog([], note, "system"),
+          })
       return { ...state, agents: { ...state.agents, [agentId]: next } }
     }
 
@@ -557,8 +598,13 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
  * many rows, so the two cannot be the same unit — every window and scroll
  * calculation goes through here, and none of them may count `\n` instead.
  */
-function wrapLog(logs: string, width: number): string[] {
-  return logs.split("\n").flatMap((line) => wrapLine(line, width))
+function wrapLog(logs: LogSegment[], width: number): string[] {
+  if (logs.length === 0) return []
+  const rendered = renderSegments(logs, width)
+  return rendered
+    .trimEnd()
+    .split("\n")
+    .flatMap((line) => wrapLine(line, width))
 }
 
 /** Row count of the focused agent's buffer, which is what scroll clamps against. */
@@ -855,7 +901,7 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         const id = turn.focusId
         const agent = id ? turn.agents[id] : undefined
         if (!id || !agent) return turn
-        return { ...turn, agents: { ...turn.agents, [id]: { ...agent, logs: "" } }, scroll: 0 }
+        return { ...turn, agents: { ...turn.agents, [id]: { ...agent, logs: [] } }, scroll: 0 }
       })
 
     case "stream:note": {
@@ -868,7 +914,7 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         ...state,
         agents: {
           ...state.agents,
-          [action.agentId]: { ...agent, logs: appendLog(agent.logs, `\n${action.text}\n`) },
+          [action.agentId]: { ...agent, logs: appendLog(agent.logs, action.text, "system") },
         },
       }
     }

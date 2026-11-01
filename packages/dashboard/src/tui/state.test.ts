@@ -14,6 +14,7 @@ import {
   conversationTurns,
   createInitialState,
   initialState,
+  type LogSegment,
   leaderAgentIds,
   MAX_HISTORY,
   MAX_LOG_CHARS,
@@ -107,18 +108,21 @@ describe("stripAnsi", () => {
 
 describe("appendLog", () => {
   it("appends and strips ANSI", () => {
-    expect(appendLog("a", "\x1b[32mb\x1b[0m")).toBe("ab")
+    const result = appendLog([{ kind: "text", text: "a" }], "\x1b[32mb\x1b[0m")
+    expect(result).toEqual([{ kind: "text", text: "ab" }])
   })
 
   it("keeps only the tail once the cap is exceeded", () => {
-    const previous = "x".repeat(MAX_LOG_CHARS)
+    const previous: LogSegment[] = [{ kind: "text", text: "x".repeat(MAX_LOG_CHARS) }]
     const next = appendLog(previous, "TAIL")
-    expect(next).toHaveLength(MAX_LOG_CHARS)
-    expect(next.endsWith("TAIL")).toBe(true)
+    const total = next.reduce((sum, s) => sum + s.text.length, 0)
+    expect(total).toBe(MAX_LOG_CHARS)
+    expect(next[next.length - 1].text.endsWith("TAIL")).toBe(true)
   })
 
   it("does not truncate below the cap", () => {
-    expect(appendLog("abc", "def")).toBe("abcdef")
+    const result = appendLog([{ kind: "text", text: "abc" }], "def")
+    expect(result).toEqual([{ kind: "text", text: "abcdef" }])
   })
 })
 
@@ -144,7 +148,7 @@ describe("reduceEvent", () => {
     expect(state.stages).toHaveLength(2)
     expect(Object.keys(state.agents).sort()).toEqual(["architect", "dev", "qa"])
     expect(state.agents.architect.status).toBe("pending")
-    expect(state.agents.architect.logs).toBe("")
+    expect(state.agents.architect.logs).toEqual([])
   })
 
   it("keeps the raw answer separate from the resolved pipeline requirement", () => {
@@ -198,7 +202,7 @@ describe("reduceEvent", () => {
       payload: { name: "demo", totalAgents: 1, stages: [stage(0, ["leader"])] },
     })
 
-    expect(state.agents.leader.logs).toBe("deciding...")
+    expect(state.agents.leader.logs).toEqual([{ kind: "text", text: "deciding..." }])
     expect(state.agents.leader.status).toBe("running")
   })
 
@@ -290,9 +294,9 @@ describe("reduceEvent", () => {
     expect(next.agents.a.duration).toBeUndefined()
     expect(next.agents.a.attempts).toBeUndefined()
     expect(next.agents.a.retry).toBeUndefined()
-    expect(next.agents.a.logs).toContain("old output")
-    expect(next.agents.a.logs).toContain("[agent restarted]")
-    expect(previous.agents.a.logs).not.toContain("[agent restarted]")
+    expect(next.agents.a.logs.some((s) => s.text.includes("old output"))).toBe(true)
+    expect(next.agents.a.logs.some((s) => s.text.includes("[agent restarted]"))).toBe(true)
+    expect(previous.agents.a.logs.some((s) => s.text.includes("[agent restarted]"))).toBe(false)
   })
 
   it.each(["approved", "changes_required", "failed", "cancelled"] as const)(
@@ -332,7 +336,7 @@ describe("reduceEvent", () => {
 
   it("appends output for a known agent", () => {
     const state = reduceEvent(withAgents("a"), output("a", "hello"))
-    expect(state.agents.a.logs).toBe("hello")
+    expect(state.agents.a.logs).toEqual([{ kind: "text", text: "hello" }])
   })
 
   it("ignores output for an unknown agent", () => {
@@ -368,8 +372,11 @@ describe("reduceEvent", () => {
       payload: result("a", { status: "failed", output: "partial answer", error: "boom" }),
     }
     const state = reduceEvent(withAgents("a"), event)
-    expect(state.agents.a.logs).toBe("partial answer\n[error] boom\n")
-    expect(reduceEvent(state, event).agents.a.logs).toBe(state.agents.a.logs)
+    expect(state.agents.a.logs).toEqual([
+      { kind: "text", text: "partial answer" },
+      { kind: "system", text: "boom" },
+    ])
+    expect(reduceEvent(state, event).agents.a.logs).toEqual(state.agents.a.logs)
   })
 
   it("does not duplicate streamed output or an already buffered error", () => {
@@ -378,7 +385,7 @@ describe("reduceEvent", () => {
       timestamp: TS,
       payload: result("a", { status: "failed", output: "partial answer", error: "boom" }),
     })
-    expect(state.agents.a.logs).toBe("partial answer\nboom")
+    expect(state.agents.a.logs).toEqual([{ kind: "text", text: "partial answer\nboom" }])
   })
 
   it("does not replace a successful agent's streamed output", () => {
@@ -387,7 +394,7 @@ describe("reduceEvent", () => {
       timestamp: TS,
       payload: result("a", { output: "answer" }),
     })
-    expect(state.agents.a.logs).toBe("answer")
+    expect(state.agents.a.logs).toEqual([{ kind: "text", text: "answer" }])
   })
 
   it("marks an existing agent skipped", () => {
@@ -416,7 +423,7 @@ describe("reduceEvent", () => {
       payload: { agentId: "a", agentName: "a", attempt: 2, maxAttempts: 3, error: "flaky" },
     })
     expect(state.agents.a.status).toBe("retrying")
-    expect(state.agents.a.logs).toContain("[retry 2/3] flaky")
+    expect(state.agents.a.logs.some((s) => s.text.includes("[retry 2/3] flaky"))).toBe(true)
   })
 
   it("records a retry for an unseen agent", () => {
@@ -606,7 +613,7 @@ describe("turn history", () => {
     expect(second.history[0].turn).toBe(1)
     expect(second.history[0].requirement).toBe("first")
     // The logs go with it — a history entry you cannot read is not history.
-    expect(second.history[0].agents.leader.logs).toBe("work")
+    expect(second.history[0].agents.leader.logs).toEqual([{ kind: "text", text: "work" }])
   })
 
   it("does not record the seeded roster as a turn nobody asked for", () => {
@@ -751,9 +758,9 @@ describe("turn history", () => {
 
     const noted = tuiReducer(opened, { type: "stream:note", agentId: "a", text: "[steer] go left" })
 
-    expect(noted.agents.a.logs).toBe("\n[steer] go left\n")
-    expect(noted.view?.agents.a.logs).toBe("")
-    expect(noted.history[0].agents.a.logs).toBe("")
+    expect(noted.agents.a.logs).toEqual([{ kind: "system", text: "[steer] go left" }])
+    expect(noted.view?.agents.a.logs).toEqual([])
+    expect(noted.history[0].agents.a.logs).toEqual([])
   })
 
   it("goes back to the live turn when a new one starts", () => {
@@ -819,7 +826,7 @@ describe("seedAgents", () => {
     const agents = seedAgents(config())
     expect(Object.keys(agents)).toEqual(["leader", "architect", "dev"])
     expect(agents.architect.status).toBe("pending")
-    expect(agents.architect.logs).toBe("")
+    expect(agents.architect.logs).toEqual([])
   })
 
   it("shows the model the agent will actually run with", () => {
@@ -901,7 +908,7 @@ describe("orchestration:stages", () => {
     expect(next.stages.map((s) => s.agents.map((x) => x.id))).toEqual([["a"], ["b"]])
     // The regroup must not reset what already ran: agent `a` keeps its log, and
     // `b` — newly named by the plan — is folded in as pending.
-    expect(next.agents.a.logs).toBe("hello")
+    expect(next.agents.a.logs).toEqual([{ kind: "text", text: "hello" }])
     expect(next.agents.b.status).toBe("pending")
   })
 })
@@ -1196,7 +1203,7 @@ describe("stream:clear", () => {
   it("drops the focused buffer without touching status", () => {
     const state = reduceEvent(withAgents("a"), output("a", "noise"))
     const cleared = tuiReducer(state, { type: "stream:clear" })
-    expect(cleared.agents.a.logs).toBe("")
+    expect(cleared.agents.a.logs).toEqual([])
     expect(cleared.agents.a.status).toBe("running")
     expect(cleared.scroll).toBe(0)
   })
@@ -1771,15 +1778,15 @@ describe("verbose and tool detail", () => {
   it("keeps tool-detail output while verbose is on", () => {
     const state = { ...withAgents("a"), verbose: true }
     const next = reduceEvent(state, outputEvent("a", "  ✓ detail\n", "tool-detail"))
-    expect(next.agents.a.logs).toBe("  ✓ detail\n")
+    expect(next.agents.a.logs).toEqual([{ kind: "tool-detail", text: "  ✓ detail\n" }])
   })
 
   it("always keeps the tool summary line, and untagged text", () => {
     const state = withAgents("a")
     const tool = reduceEvent(state, outputEvent("a", "\n› Bash\n", "tool"))
-    expect(tool.agents.a.logs).toContain("Bash")
+    expect(tool.agents.a.logs.some((s) => s.text.includes("Bash"))).toBe(true)
     const text = reduceEvent(state, outputEvent("a", "prose"))
-    expect(text.agents.a.logs).toBe("prose")
+    expect(text.agents.a.logs).toEqual([{ kind: "text", text: "prose" }])
   })
 
   it("carries verbose across turns, since it is a console setting", () => {

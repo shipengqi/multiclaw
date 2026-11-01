@@ -14,7 +14,7 @@ import {
   saveJournal,
   sessionPath,
 } from "./session"
-import { createInitialState, type TurnView } from "./state"
+import { createInitialState, type LogSegment, type TurnView } from "./state"
 
 const SID = "session-1"
 
@@ -65,7 +65,12 @@ function inFlight(overrides: Partial<SessionJournal["inFlight"]> = {}) {
     leaderIds: ["leader"],
     stages: [],
     agents: {
-      leader: { id: "leader", name: "Leader", status: "running", logs: "thinking" },
+      leader: {
+        id: "leader",
+        name: "Leader",
+        status: "running",
+        logs: [{ kind: "text" as const, text: "thinking" }],
+      },
     },
     pending: { permissions: 1, questions: 0 },
     ...overrides,
@@ -124,7 +129,7 @@ describe("session journal · on disk", () => {
       version: SESSION_VERSION,
       inFlight: {
         ...inFlight(),
-        agents: { leader: { id: "leader", name: "Leader", status: "confused", logs: "" } },
+        agents: { leader: { id: "leader", name: "Leader", status: "confused", logs: [] } },
       },
     })
     expect(loadJournal(workDir, SID)?.inFlight).toBeUndefined()
@@ -143,23 +148,26 @@ describe("journalTurn · what gets written", () => {
       workDir,
       agents: [{ id: "dev", name: "Dev", systemPrompt: "", taskPrompt: "" }],
     })
-    const long = `${"x".repeat(MAX_JOURNAL_LOG_CHARS)}THE END`
+    const longText = `${"x".repeat(MAX_JOURNAL_LOG_CHARS)}THE END`
+    const longLogs: LogSegment[] = [{ kind: "text", text: longText }]
     const entry = journalTurn(
       {
         ...state,
         turn: 3,
         requirement: "do it",
         phase: "running",
-        agents: { dev: { id: "dev", name: "Dev", status: "running", logs: long } },
+        agents: { dev: { id: "dev", name: "Dev", status: "running", logs: longLogs } },
       },
       { permissions: 0, questions: 0 }
     )
 
     expect(entry.turn).toBe(3)
     expect(entry.requirement).toBe("do it")
-    expect(entry.agents.dev.logs.length).toBe(MAX_JOURNAL_LOG_CHARS + 1)
-    expect(entry.agents.dev.logs.startsWith("…")).toBe(true)
-    expect(entry.agents.dev.logs.endsWith("THE END")).toBe(true)
+    const devLogs = entry.agents.dev.logs
+    const totalChars = devLogs.reduce((sum, s) => sum + s.text.length, 0)
+    expect(totalChars).toBe(MAX_JOURNAL_LOG_CHARS + 1)
+    expect(devLogs[0].text.startsWith("…")).toBe(true)
+    expect(devLogs[devLogs.length - 1].text.endsWith("THE END")).toBe(true)
   })
 })
 
@@ -168,9 +176,20 @@ describe("interruptedTurn · what a restart can honestly claim", () => {
     const turn = interruptedTurn({
       ...(inFlight() as NonNullable<SessionJournal["inFlight"]>),
       agents: {
-        leader: { id: "leader", name: "Leader", status: "running", logs: "thinking" },
-        dev: { id: "dev", name: "Dev", status: "success", logs: "done", duration: 900 },
-        qa: { id: "qa", name: "QA", status: "pending", logs: "" },
+        leader: {
+          id: "leader",
+          name: "Leader",
+          status: "running",
+          logs: [{ kind: "text" as const, text: "thinking" }],
+        },
+        dev: {
+          id: "dev",
+          name: "Dev",
+          status: "success",
+          logs: [{ kind: "text" as const, text: "done" }],
+          duration: 900,
+        },
+        qa: { id: "qa", name: "QA", status: "pending", logs: [] },
       },
       stages: [
         {

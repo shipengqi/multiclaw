@@ -1,5 +1,50 @@
 import type { SupplementReport } from "@multiclawcli/core"
+import { renderToAnsi } from "md4x"
 import stringWidth from "string-width"
+import type { LogSegment } from "./state"
+
+// Minimal ANSI helpers for tool/system line coloring — no extra dep needed
+const DIM = "\x1b[2m"
+const CYAN = "\x1b[36m"
+const YELLOW = "\x1b[33m"
+const RESET = "\x1b[0m"
+
+/**
+ * Render a structured log buffer to a single ANSI string ready for `wrapLog`.
+ *
+ * - `text` segments are rendered as markdown via md4x (with `heal:true` to
+ *   handle streaming-incomplete syntax gracefully).
+ * - `tool` segments are prefixed with a dim-cyan glyph.
+ * - `system` segments (errors, retries, steer notes) are rendered dim yellow.
+ * - `tool-detail` segments are already filtered at storage time; skipped here.
+ */
+export function renderSegments(segments: LogSegment[], _width: number): string {
+  const parts: string[] = []
+  let textBuf = ""
+
+  const flushText = () => {
+    if (!textBuf) return
+    parts.push(renderToAnsi(textBuf, { heal: true }))
+    textBuf = ""
+  }
+
+  for (const seg of segments) {
+    if (seg.kind === "text") {
+      textBuf += seg.text
+    } else {
+      flushText()
+      if (seg.kind === "tool") {
+        parts.push(`${DIM}${CYAN}▸ ${seg.text}${RESET}`)
+      } else if (seg.kind === "system") {
+        parts.push(`${DIM}${YELLOW}${seg.text}${RESET}`)
+      }
+      // tool-detail: filtered at storage time; never reaches here
+    }
+  }
+  flushText()
+
+  return parts.join("\n")
+}
 
 /**
  * Truncate to `max` columns, ending in an ellipsis when it does not fit.

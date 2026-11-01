@@ -33,6 +33,7 @@
   "dependencies": {
     "@multiclawcli/core": "workspace:*",
     "ink": "^8.0.0",
+    "md4x": "^0.0.30",
     "react": "^19.3.1",
     "string-width": "^8.3.0"
   },

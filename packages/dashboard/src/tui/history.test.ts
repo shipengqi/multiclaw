@@ -235,7 +235,12 @@ describe("exportTurn", () => {
     const markdown = formatTurnMarkdown(
       turn(3, {
         agents: {
-          dev: { id: "dev", name: "Developer", status: "success", logs: "built it" },
+          dev: {
+            id: "dev",
+            name: "Developer",
+            status: "success",
+            logs: [{ kind: "text" as const, text: "built it" }],
+          },
         },
         success: true,
       })

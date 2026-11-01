@@ -98,7 +98,7 @@ function isAgentView(value: unknown): value is AgentView {
   return (
     typeof value.id === "string" &&
     typeof value.name === "string" &&
-    typeof value.logs === "string" &&
+    Array.isArray(value.logs) &&
     typeof value.status === "string" &&
     STATUSES.has(value.status)
   )
@@ -181,9 +181,23 @@ export function saveJournal(
   return writeJsonFile(target, JSON.stringify(journal))
 }
 
-/** Keep the tail of a log, marked so a restored reader knows output was dropped. */
-function tail(text: string, max: number): string {
-  return text.length > max ? `…${text.slice(text.length - max)}` : text
+/** Keep the tail of a log segment array, marked so a restored reader knows output was dropped. */
+function tailSegments(segs: AgentView["logs"], max: number): AgentView["logs"] {
+  let total = segs.reduce((sum, s) => sum + s.text.length, 0)
+  if (total <= max) return segs
+  const result = [...segs]
+  while (total > max && result.length > 0) {
+    const first = result[0]
+    const excess = total - max
+    if (first.text.length <= excess) {
+      total -= first.text.length
+      result.shift()
+    } else {
+      result[0] = { ...first, text: `…${first.text.slice(excess)}` }
+      break
+    }
+  }
+  return result
 }
 
 /**
@@ -199,7 +213,7 @@ export function journalTurn(
 ): JournalTurn {
   const agents: Record<string, AgentView> = {}
   for (const [id, agent] of Object.entries(state.agents)) {
-    agents[id] = { ...agent, logs: tail(agent.logs, MAX_JOURNAL_LOG_CHARS) }
+    agents[id] = { ...agent, logs: tailSegments(agent.logs, MAX_JOURNAL_LOG_CHARS) }
   }
   return {
     turn: state.turn,

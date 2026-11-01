@@ -203,7 +203,8 @@ export function formatTurnMarkdown(turn: TurnView): string {
     lines.push("")
     lines.push("## Logs", "")
     for (const agent of agents) {
-      lines.push(`### ${agent.id}: ${agent.name}`, "", "```", agent.logs ?? "", "```", "")
+      const logsText = agent.logs.map((s) => s.text).join("")
+      lines.push(`### ${agent.id}: ${agent.name}`, "", "```", logsText ?? "", "```", "")
     }
   }
   return `${lines.join("\n").trimEnd()}\n`

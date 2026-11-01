@@ -15,6 +15,7 @@ import { CommandMenu, MAX_PROMPT_ROWS, Prompt } from "./components/prompt"
 import {
   createInitialState,
   initialState,
+  type LogSegment,
   reduceEvent,
   stripAnsi,
   type TuiState,
@@ -84,8 +85,9 @@ function midRun(): TuiState {
 }
 
 /** {@link midRun} with the focused agent's buffer swapped for `logs`. */
-function withLogs(logs: string): TuiState {
+function withLogs(text: string): TuiState {
   const state = midRun()
+  const logs: LogSegment[] = text ? [{ kind: "text", text }] : []
   return {
     ...state,
     agents: { ...state.agents, architect: { ...state.agents.architect, logs } },

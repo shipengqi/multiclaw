@@ -88,7 +88,14 @@ function inFlight(turn: number, requirement: string) {
     savedAt: now,
     leaderIds: ["leader"],
     stages: [],
-    agents: { leader: { id: "leader", name: "Leader", status: "running", logs: "working" } },
+    agents: {
+      leader: {
+        id: "leader",
+        name: "Leader",
+        status: "running",
+        logs: [{ kind: "text" as const, text: "working" }],
+      },
+    },
     pending: { permissions: 0, questions: 0 },
   }
 }
