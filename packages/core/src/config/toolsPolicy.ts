@@ -60,7 +60,7 @@ export async function validateToolsPolicy(
   const descriptions = new Map<AgentRuntime, Map<string, RuntimeInfo>>()
   for (const agent of agents) {
     checkAbort()
-    if (!hasExplicitTools(agent)) continue
+    if (!hasExplicitTools(agent) && (agent.tools !== undefined || !config.defaults?.tools)) continue
     const runtime = runtimeRegistry.get(agent.runtime ?? "acp")
     const command = resolveCommand(agent, config)
     let commands = descriptions.get(runtime)

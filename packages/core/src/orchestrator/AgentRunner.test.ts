@@ -72,6 +72,34 @@ describe("AgentRunner.run", () => {
     expect(result.status).toBe("success")
   })
 
+  it("falls back to hardcoded defaults when neither agent nor config specifies tools", async () => {
+    handler = async (task) => {
+      expect(task.tools).toEqual(["Read", "Write", "Bash"])
+      return { output: "done", exitCode: 0 }
+    }
+    await makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME }))
+  })
+
+  it("uses defaults.tools when agent has no explicit tools", async () => {
+    handler = async (task) => {
+      expect(task.tools).toEqual(["Read", "Glob"])
+      return { output: "done", exitCode: 0 }
+    }
+    await makeRunner({ defaults: { tools: ["Read", "Glob"] } }).run(
+      makeAgent({ id: "a", runtime: RUNTIME })
+    )
+  })
+
+  it("agent tools override defaults.tools", async () => {
+    handler = async (task) => {
+      expect(task.tools).toEqual(["Bash"])
+      return { output: "done", exitCode: 0 }
+    }
+    await makeRunner({ defaults: { tools: ["Read", "Glob"] } }).run(
+      makeAgent({ id: "a", runtime: RUNTIME, tools: ["Bash"] })
+    )
+  })
+
   it("reuses caller-owned sessions across runners without retaining the old event bus", async () => {
     const manager = new AgentSessionManager()
     const name = "test-runner-live-session"

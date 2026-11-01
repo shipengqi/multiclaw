@@ -191,11 +191,12 @@ export default defineConfig({
 | `agents` | AgentDefinition[] | ✓ | Agent 流水线（见下方 Agent 字段说明）。 |
 | `leader` | AgentDefinition | | 可选的路由 Agent（见 [Leader](#leader)）。 |
 | `useLeader` | boolean | | 是否启用 leader agent。默认当配置了 leader 时为 `true`。 |
-| `defaults` | object | | 项目级 `{ provider?, model?, command? }` 默认值，应用到所有未单独覆盖的 Agent，使生成的配置更简洁。 |
+| `defaults` | object | | 项目级 `{ provider?, model?, command?, tools? }` 默认值，应用到所有未单独覆盖的 Agent，使生成的配置更简洁。 |
 | `context` | Record<string, string> | | 可在每个 prompt 中通过 `{{key}}` 引用的变量，`requirement` 由 CLI 自动注入。 |
 | `logDir` | string | | 日志输出目录，默认 `workDir/.multiclaw/logs`。 |
 | `continueOnError` | boolean | | 某个 Agent 失败后是否继续运行，默认 `false`。 |
 | `maxConcurrency` | number | | 最大并行 Agent 数，默认不限制。 |
+| `permissions` | object | | 权限模式：`{ mode: "auto" \| "ask" \| "deny" }`。控制工具权限请求的处理方式。默认（`"auto"`）：白名单内的工具直接放行，白名单外的自动拒绝。`"ask"` 会将白名单外的工具升级到 `permissions.onRequest` 让人工决定。`"deny"` 拒绝所有请求。 |
 
 ### Agent 字段说明
 
@@ -355,7 +356,24 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 
 内置预设保留原有的隐式工具默认值，仍可搭配不支持 allowlist 的 provider 使用。工具策略也不是沙箱：允许 `Bash` 不代表限制其中的命令或文件路径。
 
+`defaults.tools` 会将同一份工具列表应用到所有未单独声明 `tools` 的 Agent。有显式 `tools` 字段的 Agent 会完全覆盖它（不做合并）。`defaults.tools` 触发的运行时能力校验与逐 Agent 设置相同，但不影响内置预设 Agent——预设 Agent 始终使用自己的预设工具列表。
+
 ### 人工审批与 Agent 提问
+
+multiclaw 通过 `permissions: { mode: ... }` 提供三种权限模式：
+
+| 模式 | 行为 |
+|------|------|
+| `"auto"` **（默认）** | `tools` 白名单内的工具直接放行，不弹任何提示。白名单外的工具自动拒绝并打 warning。 |
+| `"ask"` | 白名单内的工具仍直接放行。白名单**外**的工具升级到 `permissions.onRequest`（控制台的交互 UI 或调用方提供的处理函数）。 |
+| `"deny"` | 拒绝所有工具请求，包括白名单内的。 |
+
+```typescript
+// multiclaw.config.ts — 如需修改默认行为
+export default defineConfig({
+  permissions: { mode: "ask" }, // 对白名单外的工具弹出确认
+})
+```
 
 控制台默认以 **ask** 模式处理 ACP 工具权限请求，展示请求的 Agent、工具输入和 provider 提供的选项。并发请求按顺序排队，各自有唯一别名；普通输入仍只会加入后续需求队列，绝不会自动授权。
 

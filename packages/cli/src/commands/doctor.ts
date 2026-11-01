@@ -82,7 +82,11 @@ export function buildDoctorReport(
       .map((a) => {
         const command = resolveCommand(a, config)
         const spec = specForCommand(command) ?? specForProvider(resolveProvider(a, config))
-        return { id: a.id, spec, explicitTools: hasExplicitTools(a) }
+        return {
+          id: a.id,
+          spec,
+          explicitTools: hasExplicitTools(a) || (a.tools === undefined && !!config.defaults?.tools),
+        }
       })
       .filter((a) => a.spec && !a.spec.tools && a.explicitTools)
       .map((a) => a.id)

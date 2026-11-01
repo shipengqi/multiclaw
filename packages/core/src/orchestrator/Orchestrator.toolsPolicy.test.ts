@@ -173,6 +173,46 @@ describe("explicit tools preflight", () => {
     expect(describeRuntime).toHaveBeenCalledWith({ command: "claude-agent-acp" })
   })
 
+  it("validates runtime capability when defaults.tools is set and agent has no explicit tools", async () => {
+    const { result } = await run({ defaults: { tools: ["Read"] } })
+    expect(result.success).toBe(false)
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it("does not validate preset agent tools when only defaults.tools is set", async () => {
+    // preset() has agent.tools set (preset array, hasExplicitTools=false).
+    // defaults.tools must not cause it to trigger a capability check.
+    const { result } = await run({
+      agents: [preset()],
+      defaults: { tools: ["Read", "Glob"] },
+    })
+    expect(result.success).toBe(true)
+    expect(describeRuntime).not.toHaveBeenCalled()
+  })
+
+  it("passes defaults.tools to execute when agent has no explicit tools", async () => {
+    describeRuntime.mockImplementation(async () => {
+      const info = await fakeRuntime(runtimeName, execute).describe()
+      return { ...info, capabilities: { ...info.capabilities, tools: true } }
+    })
+    const { result } = await run({ defaults: { tools: ["Read", "Glob"] } })
+    expect(result.success).toBe(true)
+    expect(execute.mock.calls[0]?.[0].tools).toEqual(["Read", "Glob"])
+  })
+
+  it("agent explicit tools override defaults.tools", async () => {
+    describeRuntime.mockImplementation(async () => {
+      const info = await fakeRuntime(runtimeName, execute).describe()
+      return { ...info, capabilities: { ...info.capabilities, tools: true } }
+    })
+    const { result } = await run({
+      agents: [worker({ tools: ["Bash"] })],
+      defaults: { tools: ["Read", "Glob"] },
+    })
+    expect(result.success).toBe(true)
+    expect(execute.mock.calls[0]?.[0].tools).toEqual(["Bash"])
+  })
+
   it("does not apply a disabled leader's explicit tools", async () => {
     const { result } = await run({
       leader: agents.leader({ runtime: runtimeName, tools: [] }),

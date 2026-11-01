@@ -196,11 +196,12 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `agents` | AgentDefinition[] | ✓ | The agent pipeline (see Agent fields below). |
 | `leader` | AgentDefinition | | Optional routing agent (see [Leader](#leader)). |
 | `useLeader` | boolean | | Enable or disable the leader agent. Default: `true` when leader is configured. |
-| `defaults` | object | | Project-wide `{ provider?, model?, command? }` applied to every agent that does not override them. Keeps generated configs short. |
+| `defaults` | object | | Project-wide `{ provider?, model?, command?, tools? }` applied to every agent that does not override them. Keeps generated configs short. |
 | `context` | Record<string, string> | | Variables available as `{{key}}` in every prompt. `requirement` is injected automatically. |
 | `logDir` | string | | Log output directory. Default: `workDir/.multiclaw/logs`. |
 | `continueOnError` | boolean | | Keep running when an agent fails. Default: `false`. |
 | `maxConcurrency` | number | | Max agents running in parallel. Default: unlimited. |
+| `permissions` | object | | Permission mode: `{ mode: "auto" \| "ask" \| "deny" }`. Controls how tool-permission requests are handled. Default (`"auto"`): listed tools run without prompting; unlisted are refused. `"ask"` escalates unlisted tools to `permissions.onRequest`. `"deny"` refuses every request. |
 
 ### Agent fields
 
@@ -399,7 +400,24 @@ be distinguished from an unchanged preset. These defaults are **not** an enforce
 guarantee on unsupported providers. Tool policy is not a sandbox: allowing `Bash` does
 not restrict its commands or filesystem paths.
 
+`defaults.tools` applies the same tools list to every agent that does not declare its own `tools`. An agent with an explicit `tools` field overrides it completely (no merging). `defaults.tools` triggers the same runtime capability check as a per-agent setting, but does not affect built-in preset agents, which always use their own preset tools regardless.
+
 ### Human approvals and agent questions
+
+multiclaw has three permission modes, configured via `permissions: { mode: ... }`:
+
+| Mode | Behaviour |
+|------|-----------|
+| `"auto"` **(default)** | Tools on the agent's allowlist run without any prompt. Tools not on the list are automatically refused with a warning. |
+| `"ask"` | Tools on the allowlist still run without prompting. Tools **not** on the list are escalated to `permissions.onRequest` (the console's interactive UI, or a caller-supplied handler). |
+| `"deny"` | Every tool request is refused, even those on the allowlist. |
+
+```typescript
+// multiclaw.config.ts — override the default if needed
+export default defineConfig({
+  permissions: { mode: "ask" }, // prompt for any tool not on the allowlist
+})
+```
 
 The console defaults to **ask** for ACP tool-permission requests. It shows the
 requesting agent, tool input, and the provider's offered choices. Requests from

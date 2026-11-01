@@ -1,4 +1,4 @@
-import type { AgentDefinition } from "./agent"
+import type { AgentDefinition, ToolName } from "./agent"
 import type { LeaderMessage } from "./leader"
 import type { RuntimePermissionHandler, RuntimeQuestionHandler } from "./runtime"
 
@@ -145,6 +145,7 @@ export interface MultiClawConfig {
     provider?: string
     model?: string
     command?: string
+    tools?: ToolName[]
   }
 }
 
