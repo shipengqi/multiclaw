@@ -207,11 +207,11 @@ describe("App · launch options", () => {
 
     const frame = stripAnsi(
       await driveFrame(<App config={config()} initialSession={{ kind: "resume", id: olderId }} />, {
-        keys: ["/history", "\r"],
         settleMs: 150,
       })
     )
 
+    // The last turn of the resumed session is auto-opened.
     expect(frame).toContain("the older task")
     expect(frame).not.toContain("the newest task")
   })

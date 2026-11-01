@@ -38,11 +38,6 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   { name: "clear", description: "Clear the focused agent's log", availability: "always" },
   {
-    name: "history",
-    description: "Browse finished turns, or continue one",
-    availability: "always",
-  },
-  {
     name: "sessions",
     description: "Switch between, or delete, saved sessions",
     availability: "always",

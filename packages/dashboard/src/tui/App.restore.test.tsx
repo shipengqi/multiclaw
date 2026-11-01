@@ -171,12 +171,16 @@ describe("App · picking the session back up after a restart", () => {
     seedJournalFor(id, { version: SESSION_VERSION, inFlight: inFlight(2, "refactor the parser") })
 
     const frame = stripAnsi(
-      await driveFrame(<App config={config()} />, { keys: ["/history", "\r"], settleMs: 250 })
+      await driveFrame(<App config={config()} initialSession={{ kind: "resume", id }} />, {
+        settleMs: 250,
+      })
     )
 
+    // The interrupted turn is the last one, so it is auto-opened on resume.
     expect(frame).toContain("refactor the parser")
+    expect(frame).toContain("viewing turn 2")
+    // The notice bar reports the interruption.
     expect(frame).toContain("interrupted")
-    expect(frame).toContain("2 earlier")
   })
 
   it("runs the restored queue only when the user resumes it", async () => {

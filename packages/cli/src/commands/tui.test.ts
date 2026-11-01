@@ -62,4 +62,22 @@ describe("tuiCommand", () => {
     await expect(dispose()).rejects.toThrow("drain failed")
     expect(mocks.detach).toHaveBeenCalledOnce()
   })
+
+  it("passes { kind: 'new' } as initialSession when no flags are given", async () => {
+    await tuiCommand({})
+    expect(mocks.startTui.mock.calls[0][0].initialSession).toEqual({ kind: "new" })
+  })
+
+  it("passes { kind: 'resume' } when --resume is given without an id", async () => {
+    await tuiCommand({ resume: true })
+    expect(mocks.startTui.mock.calls[0][0].initialSession).toEqual({ kind: "resume" })
+  })
+
+  it("passes { kind: 'resume', id } when --resume <id> is given", async () => {
+    await tuiCommand({ resume: "abc-123" })
+    expect(mocks.startTui.mock.calls[0][0].initialSession).toEqual({
+      kind: "resume",
+      id: "abc-123",
+    })
+  })
 })

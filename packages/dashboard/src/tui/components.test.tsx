@@ -3,13 +3,7 @@ import { Text } from "ink"
 import { describe, expect, it } from "vitest"
 import { COMMANDS, paletteRows } from "./commands"
 import { Header, HintBar, PipelineRail, QueueStrip, Rule } from "./components/chrome"
-import {
-  HelpOverlay,
-  HistoryOverlay,
-  helpRows,
-  historyCapacity,
-  listWindowStart,
-} from "./components/overlays"
+import { HelpOverlay, helpRows, listWindowStart, overlayCapacity } from "./components/overlays"
 import { ErrorPanel, ReplyPanel, StreamPanel, TeamPanel, WelcomePanel } from "./components/panels"
 import { CommandMenu, MAX_PROMPT_ROWS, Prompt } from "./components/prompt"
 import {
@@ -628,128 +622,15 @@ describe("ErrorPanel", () => {
   })
 })
 
-describe("HistoryOverlay", () => {
-  const turn = (n: number, patch: Partial<TurnView> = {}): TurnView => ({
-    ...initialState,
-    turn: n,
-    phase: "complete",
-    requirement: `requirement ${n}`,
-    ...patch,
-  })
-
-  it("says so when there is nothing to browse", async () => {
-    const frame = stripAnsi(
-      await renderFrame(<HistoryOverlay turns={[]} selected={0} width={80} maxRows={24} />)
-    )
-    expect(frame).toContain("0 earlier")
-    expect(frame).toContain("No earlier turns yet.")
-  })
-
-  it("shows each turn's outcome, cost and requirement", async () => {
-    const frame = stripAnsi(
-      await renderFrame(
-        <HistoryOverlay
-          turns={[
-            turn(2, { success: true, totalDuration: 4200, agents: {} }),
-            turn(1, { success: false, totalDuration: 900 }),
-          ]}
-          selected={0}
-          width={80}
-          maxRows={24}
-        />
-      )
-    )
-    expect(frame).toContain("2 earlier")
-    expect(frame).toContain("turn 2")
-    expect(frame).toContain("✓ done")
-    expect(frame).toContain("4.2s")
-    expect(frame).toContain("turn 1")
-    expect(frame).toContain("✗ failed")
-    expect(frame).toContain("requirement 1")
-  })
-
-  // A turn that ended in words did not "finish" a pipeline, and the list has to
-  // be able to tell the two apart.
-  it("names a reply as an answer and a question as a decision", async () => {
-    const frame = stripAnsi(
-      await renderFrame(
-        <HistoryOverlay
-          turns={[
-            turn(3, { reply: { mode: "ask", message: "which db?" } }),
-            turn(2, { reply: { mode: "reply", message: "hi" } }),
-          ]}
-          selected={0}
-          width={80}
-          maxRows={24}
-        />
-      )
-    )
-    expect(frame).toContain("? needs input")
-    expect(frame).toContain("✓ answered")
-  })
-
-  it("marks only the selected row with a caret", async () => {
-    const frame = stripAnsi(
-      await renderFrame(
-        <HistoryOverlay turns={[turn(2), turn(1)]} selected={1} width={80} maxRows={24} />
-      )
-    )
-    expect(frame.split("›").length - 1).toBe(1)
-    expect(frame).toContain("› turn 1")
-  })
-
-  it("keeps every row inside the pane", async () => {
-    const frame = stripAnsi(
-      await renderFrame(
-        <HistoryOverlay
-          turns={[turn(1, { requirement: "x".repeat(200) })]}
-          selected={0}
-          width={40}
-          maxRows={24}
-        />
-      )
-    )
-    for (const line of frame.split("\n")) expect(line.length).toBeLessThanOrEqual(40)
-  })
-
-  // Regression: the list is unbounded, so past a handful of turns the highlight
-  // walked below the visible area and `enter` opened a turn that was not on
-  // screen — which is exactly when the list is worth opening.
-  it("windows the list and keeps the selected turn visible", async () => {
-    const turns = Array.from({ length: 12 }, (_, i) => turn(12 - i))
-    const frame = stripAnsi(
-      await renderFrame(<HistoryOverlay turns={turns} selected={11} width={80} maxRows={16} />)
-    )
-
-    expect(frame).toContain("showing")
-    // The last turn is the one selected, so it has to be on screen — along with
-    // its caret, which is what makes the selection legible.
-    expect(frame).toContain("› turn 1")
-    // The top of the list has been scrolled away.
-    expect(frame).not.toContain("turn 12")
-  })
-
-  it("shows the whole list when there is room for it", async () => {
-    const frame = stripAnsi(
-      await renderFrame(
-        <HistoryOverlay turns={[turn(2), turn(1)]} selected={0} width={80} maxRows={24} />
-      )
-    )
-    expect(frame).toContain("turn 2")
-    expect(frame).toContain("turn 1")
-    expect(frame).not.toContain("showing")
-  })
-})
-
-describe("historyCapacity / listWindowStart", () => {
+describe("overlayCapacity / listWindowStart", () => {
   it("never offers less than one row", () => {
-    expect(historyCapacity(0)).toBe(1)
-    expect(historyCapacity(6)).toBe(1)
+    expect(overlayCapacity(0)).toBe(1)
+    expect(overlayCapacity(6)).toBe(1)
   })
 
-  it("grows one row per turn", () => {
-    expect(historyCapacity(10)).toBe(2)
-    expect(historyCapacity(13)).toBe(3)
+  it("grows one row per item", () => {
+    expect(overlayCapacity(10)).toBe(2)
+    expect(overlayCapacity(13)).toBe(3)
   })
 
   it("does not scroll when everything already fits", () => {

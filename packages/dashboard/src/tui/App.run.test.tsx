@@ -411,79 +411,6 @@ describe("App · a follow-up typed mid-run", () => {
   })
 })
 
-describe("App · browsing finished turns", () => {
-  beforeAll(() => {
-    runtimeRegistry.register({
-      name: SLOW_RUNTIME,
-      describe: alwaysAvailable(SLOW_RUNTIME),
-      async execute(task) {
-        if (task.agentId === "leader") {
-          return { output: '{"mode":"run","run":["architect"]}', exitCode: 0 }
-        }
-        // Long enough that all three requirements below land while the first
-        // turn is still open, so they queue up in the order they were typed.
-        await new Promise((resolve) => setTimeout(resolve, 600))
-        return { output: `${task.agentId} finished`, exitCode: 0 }
-      },
-    })
-  })
-
-  /** Run three turns back to back, then type `thenKeys` and return the frame. */
-  async function threeTurns(thenKeys: string[]): Promise<string> {
-    let completes = 0
-    let resolveThird: () => void = () => {}
-    const third = new Promise<void>((resolve) => {
-      resolveThird = resolve
-    })
-
-    return stripAnsi(
-      await driveFrame(
-        <App
-          config={SLOW_CONFIG}
-          onTurnStart={(bus) => {
-            bus.subscribe((event) => {
-              if (event.type !== "orchestration:complete") return
-              completes += 1
-              if (completes === 3) resolveThird()
-            })
-          }}
-        />,
-        {
-          keys: ["first task", "\r", "second task", "\r", "third task", "\r"],
-          ready: third,
-          thenKeys,
-          timeoutMs: 8000,
-        }
-      )
-    )
-  }
-
-  // Only superseded turns are listed: turn 3 is the one on screen.
-  it("lists the turns that have finished, newest first", async () => {
-    const frame = await threeTurns(["/history", "\r"])
-
-    expect(frame).toContain("2 earlier")
-    expect(frame).toContain("turn 2")
-    expect(frame).toContain("turn 1")
-    expect(frame).toContain("first task")
-    expect(frame).toContain("second task")
-    // The turn that is still on screen is not offered back to the user.
-    expect(frame).not.toContain("third task")
-    // Newest first, so the turn the user just left is at the top of the list.
-    expect(frame.indexOf("turn 2")).toBeLessThan(frame.indexOf("turn 1"))
-  })
-
-  it("opens the selected turn for reading, with a way back to the live one", async () => {
-    const frame = await threeTurns(["/history", "\r", "\r"])
-
-    expect(frame).toContain("viewing turn 2")
-    expect(frame).toContain("second task")
-    expect(frame).toContain("esc to return")
-    // The panes are back, showing the turn that was opened.
-    expect(frame).toContain("TEAM")
-  })
-})
-
 const WORKSPACE_RUNTIME = "tui-integration-workspace"
 
 /** Every working directory the runtime was handed, across all turns. */
@@ -1286,9 +1213,9 @@ describe("App · the command palette window", () => {
   // top `MAX_MENU_ROWS` rows and the highlight was clamped inside it, so the
   // eighth command could not be reached with the arrow keys at all.
   const down = "\u001b[B"
-  // `/` opens the palette on every command; eight `↓` moves onto the ninth,
+  // `/` opens the palette on every command; seven `↓` moves onto the eighth,
   // which is `/fork` and sits below the first window.
-  const toFork = ["/", ...Array.from({ length: 8 }, () => down)]
+  const toFork = ["/", ...Array.from({ length: 7 }, () => down)]
 
   it("follows the selection past the first window, and runs the highlighted command", async () => {
     const highlighted = stripAnsi(

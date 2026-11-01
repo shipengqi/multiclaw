@@ -1,9 +1,8 @@
 import { Box, Text } from "ink"
 import { COMMANDS } from "../commands"
-import { formatAgo, formatDuration, padRight, truncate } from "../format"
+import { formatAgo, padRight, truncate } from "../format"
 import type { SessionMeta } from "../sessions"
-import { progress, type TurnView } from "../state"
-import { COLOR, GLYPH, STATUS } from "../theme"
+import { COLOR, GLYPH } from "../theme"
 
 interface HelpGroup {
   title: string
@@ -54,18 +53,15 @@ export const HELP_GROUPS: readonly HelpGroup[] = [
 
 const KEY_COLUMN = 16
 
-/**
- * One turn in the history list: the outcome row, the requirement row, and the
- * gap between turns.
- */
-const TURN_ROWS = 3
+/** Rows per list item in an overlay (2 content rows + 1 gap). */
+const ITEM_ROWS = 3
 
 /** Header, its gap, the list's gap and the footer. */
-const HISTORY_CHROME_ROWS = 4
+const OVERLAY_CHROME_ROWS = 4
 
-/** How many turns fit in a body of `maxRows`. Never fewer than one. */
-export function historyCapacity(maxRows: number): number {
-  return Math.max(1, Math.floor((maxRows - HISTORY_CHROME_ROWS) / TURN_ROWS))
+/** How many items fit in a body of `maxRows`. Never fewer than one. */
+export function overlayCapacity(maxRows: number): number {
+  return Math.max(1, Math.floor((maxRows - OVERLAY_CHROME_ROWS) / ITEM_ROWS))
 }
 
 /**
@@ -129,131 +125,11 @@ export function HelpOverlay({ width, maxRows }: { width: number; maxRows: number
 }
 
 /**
- * How a finished turn ended, in the same words the footer uses.
- *
- * A turn that ended in a reply is not a "done" — nothing was built — so it gets
- * its own phrasing rather than being folded into success.
- */
-function outcome(turn: TurnView): { text: string; color: string } {
-  if (turn.reply) {
-    return turn.reply.mode === "ask"
-      ? { text: `${GLYPH.ask} needs input`, color: COLOR.warn }
-      : { text: `${STATUS.success.glyph} answered`, color: COLOR.ok }
-  }
-  // A turn that never finished reads the same whether it was still running when
-  // it was snapshotted or recovered from the journal after a restart: it was
-  // stopped, and it is neither a success nor a failure.
-  if (turn.interrupted || turn.phase !== "complete") {
-    return { text: "interrupted", color: COLOR.warn }
-  }
-  if (turn.acceptance) {
-    switch (turn.acceptance.status) {
-      case "approved":
-        return { text: `${STATUS.success.glyph} approved`, color: COLOR.ok }
-      case "changes_required":
-        return { text: `${GLYPH.warn} changes required`, color: COLOR.warn }
-      case "failed":
-        return { text: `${STATUS.failed.glyph} acceptance failed`, color: COLOR.error }
-      case "cancelled":
-        return { text: `${STATUS.cancelled.glyph} acceptance cancelled`, color: COLOR.warn }
-    }
-  }
-  if (turn.cancelled) return { text: `${STATUS.cancelled.glyph} cancelled`, color: COLOR.warn }
-  return turn.success
-    ? { text: `${STATUS.success.glyph} done`, color: COLOR.ok }
-    : { text: `${STATUS.failed.glyph} failed`, color: COLOR.error }
-}
-
-/**
- * The finished turns, newest first.
- *
- * Two rows per turn on purpose: the requirement is the thing a reader is
- * scanning for, and folding it onto the same line as the outcome would truncate
- * exactly the part that identifies the turn.
- *
- * Only turns a newer turn has superseded are listed — the one being run is
- * already on screen, so listing it would offer to show the user what they are
- * looking at.
- */
-export function HistoryOverlay({
-  turns,
-  selected,
-  width,
-  maxRows,
-}: {
-  turns: TurnView[]
-  selected: number
-  width: number
-  /** Rows available in the body. The list is windowed against this. */
-  maxRows: number
-}) {
-  const capacity = historyCapacity(maxRows)
-  const start = listWindowStart(selected, turns.length, capacity)
-  const visible = turns.slice(start, start + capacity)
-  const range =
-    turns.length > capacity
-      ? ` · showing ${start + 1}–${start + visible.length} of ${turns.length}`
-      : ""
-
-  return (
-    <Box flexDirection="column" flexShrink={0} paddingLeft={2} paddingTop={1} width={width}>
-      <Box justifyContent="space-between">
-        <Text dimColor>HISTORY</Text>
-        <Text dimColor>{turns.length} earlier</Text>
-      </Box>
-
-      {turns.length === 0 ? (
-        <Box marginTop={1}>
-          <Text dimColor>No earlier turns yet.</Text>
-        </Box>
-      ) : (
-        <Box flexDirection="column" marginTop={1}>
-          {visible.map((turn, offset) => {
-            const index = start + offset
-            const focused = index === selected
-            const state = outcome(turn)
-            const { done, total } = progress(turn)
-            const time =
-              turn.totalDuration === undefined ? "" : ` · ${formatDuration(turn.totalDuration)}`
-            return (
-              <Box key={turn.turn} flexDirection="column" marginTop={index === 0 ? 0 : 1}>
-                <Box>
-                  <Text color={focused ? COLOR.accent : undefined}>
-                    {focused ? `${GLYPH.caret} ` : "  "}
-                  </Text>
-                  <Text bold={focused} color={focused ? COLOR.accent : undefined}>
-                    turn {turn.turn}
-                  </Text>
-                  <Text color={state.color}> · {state.text}</Text>
-                  <Text dimColor>
-                    {time} · {done}/{total} agents
-                  </Text>
-                </Box>
-                <Text dimColor wrap="truncate-end">
-                  {"    "}
-                  {truncate(turn.requirement ?? "(no requirement)", Math.max(8, width - 6))}
-                </Text>
-              </Box>
-            )
-          })}
-        </Box>
-      )}
-
-      <Box marginTop={1}>
-        <Text dimColor>{`↑↓ select · enter open · c continue · esc close${range}`}</Text>
-      </Box>
-    </Box>
-  )
-}
-
-/**
  * The session picker: every session in the workspace, newest activity first.
  *
- * The level above {@link HistoryOverlay}. Where the history list browses the
- * turns *within* a session, this switches between whole sessions — the thing a
- * restart, a `/new`, or opening the console again all create. The one the
- * console is attached to is marked, because "which am I on" is the first
- * question the list has to answer.
+ * Switches between whole sessions — the thing a restart, a `/new`, or opening
+ * the console again all create. The one the console is attached to is marked,
+ * because "which am I on" is the first question the list has to answer.
  */
 export function SessionsOverlay({
   sessions,
@@ -271,7 +147,7 @@ export function SessionsOverlay({
   maxRows: number
   now: number
 }) {
-  const capacity = historyCapacity(maxRows)
+  const capacity = overlayCapacity(maxRows)
   const start = listWindowStart(selected, sessions.length, capacity)
   const visible = sessions.slice(start, start + capacity)
   const range =

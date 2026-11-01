@@ -19,7 +19,7 @@ function initialSession(options: TuiCommandOptions) {
       ...(typeof options.resume === "string" ? { id: options.resume } : {}),
     }
   }
-  return undefined
+  return { kind: "new" as const }
 }
 
 export async function tuiCommand(options: TuiCommandOptions): Promise<void> {

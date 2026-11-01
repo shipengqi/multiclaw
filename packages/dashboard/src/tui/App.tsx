@@ -44,12 +44,7 @@ import {
   railCellWidths,
 } from "./components/chrome"
 import { PermissionBar, QuestionForm } from "./components/interaction"
-import {
-  HelpOverlay,
-  HistoryOverlay,
-  listWindowStart,
-  SessionsOverlay,
-} from "./components/overlays"
+import { HelpOverlay, listWindowStart, SessionsOverlay } from "./components/overlays"
 import {
   Divider,
   ErrorPanel,
@@ -416,8 +411,6 @@ export function App({
     launchNoticeRef.current ?? restored.notice
   )
   const [helpOpen, setHelpOpen] = useState(false)
-  const [historyOpen, setHistoryOpen] = useState(false)
-  const [historyCursor, setHistoryCursor] = useState(0)
   // The session picker: a snapshot of the index taken when it opens, so arrow
   // keys and deletes do not re-read the disk on every frame.
   const [sessionsOpen, setSessionsOpen] = useState(false)
@@ -431,9 +424,23 @@ export function App({
   const abortRef = useRef<AbortController | null>(null)
   const sessionsRef = useRef<AgentSessionManager | null>(null)
   if (!sessionsRef.current) sessionsRef.current = providedSessions ?? new AgentSessionManager()
-  // Armed by `/history` → `c`: the next instruction continues that turn's
-  // conversations. One-shot by design — see `startTurn`.
+  // Armed by session switch (or `--resume <id>` at startup): the next
+  // instruction continues that turn's conversations. One-shot — see `startTurn`.
   const continuationRef = useRef<Continuation | null>(null)
+  // For `--resume <id>`: open the last turn for context and set up continuation,
+  // matching what /sessions → switchSession does for an interactive switch.
+  useEffect(() => {
+    if (initialSession?.kind !== "resume" || !("id" in initialSession)) return
+    const history = restoredRef.current?.history ?? []
+    const last = history[history.length - 1]
+    if (last) dispatch({ type: "view:open", turn: last.turn })
+    const resumable = [...history]
+      .reverse()
+      .find((turn) => Object.keys(turnSessions(turn)).length > 0)
+    continuationRef.current = resumable
+      ? { turn: resumable.turn, sessions: turnSessions(resumable) }
+      : null
+  }, [initialSession])
   const activeTurnRef = useRef<Promise<void> | null>(null)
   const reporterErrorRef = useRef<Error | null>(null)
   const closingRef = useRef(false)
@@ -868,6 +875,10 @@ export function App({
         leaderIds: leaderAgentIds(config),
         history: restored.history,
       })
+      const lastTurn = restored.history[restored.history.length - 1]
+      if (lastTurn) {
+        dispatch({ type: "view:open", turn: lastTurn.turn })
+      }
       setQueue(restored.queue)
       queuePausedRef.current = restored.queue.length > 0
       setQueuePaused(restored.queue.length > 0)
@@ -976,11 +987,6 @@ export function App({
     [query, running]
   )
 
-  // Newest first: "what did I just ask" is the question a history list answers.
-  const historyTurns = useMemo(() => [...state.history].reverse(), [state.history])
-  const historyIndex =
-    historyTurns.length === 0 ? 0 : Math.min(historyCursor, historyTurns.length - 1)
-
   // What the panes are showing: the live turn, or a finished one opened for
   // reading. Everything downstream takes this rather than `state`, so a past
   // turn renders through exactly the same components.
@@ -1014,12 +1020,10 @@ export function App({
   // `/cancel` is offered. Opening it is a deliberate act (the user typed `/`),
   // so spending the arrows on it is fair — scrolling the stream is still one
   // keystroke away.
-  const menuOpen =
-    !helpOpen && !historyOpen && !sessionsOpen && query !== undefined && matches.length > 0
+  const menuOpen = !helpOpen && !sessionsOpen && query !== undefined && matches.length > 0
   // The argument palette opens where the command palette closed, and only when
   // there is something to offer — an empty list is not a palette.
-  const argOpen =
-    !helpOpen && !historyOpen && !sessionsOpen && arg !== undefined && argRows.length > 0
+  const argOpen = !helpOpen && !sessionsOpen && arg !== undefined && argRows.length > 0
   const paletteOpen = menuOpen || argOpen
 
   // The request the console is asking about, and the two pieces of state that
@@ -1062,7 +1066,7 @@ export function App({
     columns,
     rows,
     turn: state.turn,
-    overlay: helpOpen || historyOpen || sessionsOpen,
+    overlay: helpOpen || sessionsOpen,
     menuRows: paletteOpen ? paletteTotal : 0,
     queueRows: queue.length,
     interactionRows: interactionRows(interactions, Math.max(MIN_COLUMNS, columns)),
@@ -1351,15 +1355,6 @@ export function App({
           dispatch({ type: "stream:clear" })
           setNotice(`cleared ${shown.focusId}`)
           return
-        case "history":
-          if (state.history.length === 0) {
-            setNotice("no earlier turns yet")
-            return
-          }
-          setNotice(undefined)
-          setHistoryCursor(0)
-          setHistoryOpen(true)
-          return
         case "sessions": {
           // Snapshot the index as the picker opens, cursor on the current one.
           const list = listSessions(config.workDir)
@@ -1631,8 +1626,6 @@ export function App({
     if (key.ctrl && char === "c") {
       if (helpOpen) {
         setHelpOpen(false)
-      } else if (historyOpen) {
-        setHistoryOpen(false)
       } else if (sessionsOpen) {
         setSessionsOpen(false)
       } else if (abortRef.current) {
@@ -1658,50 +1651,7 @@ export function App({
       return
     }
 
-    // The history list is modal, so it swallows everything it does not use —
-    // otherwise an arrow would scroll the pane behind it.
-    if (historyOpen) {
-      if (key.escape) {
-        setHistoryOpen(false)
-        return
-      }
-      if (historyTurns.length === 0) return
-      if (key.upArrow) {
-        setHistoryCursor((historyIndex - 1 + historyTurns.length) % historyTurns.length)
-        return
-      }
-      if (key.downArrow) {
-        setHistoryCursor((historyIndex + 1) % historyTurns.length)
-        return
-      }
-      if (key.return) {
-        dispatch({ type: "view:open", turn: historyTurns[historyIndex].turn })
-        setHistoryOpen(false)
-        return
-      }
-      if (char === "c") {
-        // Continue this conversation: nothing runs now. The turn's sessions are
-        // adopted for whatever the user types next, which is the difference
-        // between "read that turn again" and "pick up where it left off".
-        const target = historyTurns[historyIndex]
-        const sessions = turnSessions(target)
-        const count = Object.keys(sessions).length
-        if (count === 0) {
-          setNotice(`turn ${target.turn} has no agent sessions to continue`)
-          return
-        }
-        continuationRef.current = { turn: target.turn, sessions }
-        dispatch({ type: "view:open", turn: target.turn })
-        setHistoryOpen(false)
-        setNotice(
-          `continuing turn ${target.turn} — ${count} ${count === 1 ? "session" : "sessions"} · type your next instruction`
-        )
-        return
-      }
-      return
-    }
-
-    // The session picker is modal for the same reason the history list is.
+    // The session picker is modal for the same reason the help overlay is.
     if (sessionsOpen) {
       if (key.escape) {
         setSessionsOpen(false)
@@ -2058,32 +2008,30 @@ export function App({
   // out rather than promised and silently ignored.
   const keys = helpOpen
     ? "esc close"
-    : historyOpen
-      ? "↑↓ select · enter open · esc close"
-      : sessionsOpen
-        ? "↑↓ select · enter open · d delete · esc close"
-        : argOpen
-          ? `↑↓ select · tab complete · enter ${arg?.command.name} · esc close`
-          : menuOpen
-            ? "↑↓ select · tab complete · enter run · esc close"
-            : running
-              ? checkpointResolveRef.current
-                ? `/continue · /modify <instruction> · /cancel`
-                : interactions.length > 0
-                  ? layout.interactionRows === 0
-                    ? // Too short to dock the bar, so the commands are the only way in.
-                      "decide with /approve 1 · /deny · /respond"
-                    : interactions[0].kind === "question"
-                      ? "tab field · ↑↓ pick · enter next · /dismiss"
-                      : menu.released
-                        ? "/approve 1 and /deny still reach it"
-                        : "↑↓ or 1-9 choose · enter confirm · esc to type"
-                  : "enter queues · ctrl+c cancel"
-              : state.view
-                ? "esc live · tab agent · ? help"
-                : state.reply
-                  ? "enter sends · / commands · ? help"
-                  : "tab switch · / commands · ? help"
+    : sessionsOpen
+      ? "↑↓ select · enter open · d delete · esc close"
+      : argOpen
+        ? `↑↓ select · tab complete · enter ${arg?.command.name} · esc close`
+        : menuOpen
+          ? "↑↓ select · tab complete · enter run · esc close"
+          : running
+            ? checkpointResolveRef.current
+              ? `/continue · /modify <instruction> · /cancel`
+              : interactions.length > 0
+                ? layout.interactionRows === 0
+                  ? // Too short to dock the bar, so the commands are the only way in.
+                    "decide with /approve 1 · /deny · /respond"
+                  : interactions[0].kind === "question"
+                    ? "tab field · ↑↓ pick · enter next · /dismiss"
+                    : menu.released
+                      ? "/approve 1 and /deny still reach it"
+                      : "↑↓ or 1-9 choose · enter confirm · esc to type"
+                : "enter queues · ctrl+c cancel"
+            : state.view
+              ? "esc live · tab agent · ? help"
+              : state.reply
+                ? "enter sends · / commands · ? help"
+                : "tab switch · / commands · ? help"
 
   // The prompt names what it is editing. While a form is up that is a field and
   // not a follow-up — it is the same line either way, so it has to say which.
@@ -2166,13 +2114,6 @@ export function App({
       >
         {helpOpen ? (
           <HelpOverlay width={layout.columns} maxRows={layout.bodyHeight} />
-        ) : historyOpen ? (
-          <HistoryOverlay
-            turns={historyTurns}
-            selected={historyIndex}
-            width={layout.columns}
-            maxRows={layout.bodyHeight}
-          />
         ) : sessionsOpen ? (
           <SessionsOverlay
             sessions={sessionList}

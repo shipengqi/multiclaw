@@ -354,7 +354,6 @@ Type `/` on an empty line for a filtered list.
 | `/verbose` | Toggle tool detail in the stream | always |
 | `/search <text>` | Search the focused stream | always |
 | `/latest` | Jump the stream to latest output | always |
-| `/history` | Browse finished turns (see [History](#history)) | always |
 | `/sessions` | Switch between, or delete, saved sessions (see [Sessions](#sessions)) | always |
 | `/export [turn] [path]` | Export a finished turn as Markdown | always |
 | `/fork [turn]` | Edit an earlier turn's requirement and re-run | always |
@@ -467,18 +466,16 @@ happens.
 
 ### History
 
-`/history` lists the turns you have finished, newest first, with each turn's outcome, duration,
-agent count and requirement. `↑` `↓` select and `enter` opens one for reading: the panes render that
-turn — its roster, its stream, its pipeline — behind a `viewing turn N` banner, and `esc` returns to
-the live turn. Reading a past turn is harmless: scrolling and `tab` apply to what you are reading,
-never to the turn that is still running.
-
-The turn currently on screen is not listed, because it is already in front of you. The console keeps
-the last 20 finished turns.
-
 Finished turns are written to `workDir/.multiclaw/sessions/<id>/turns.jsonl`, one line per turn, so
-closing the console and reopening it restores the list — and the turn numbering carries on from where
-it left off rather than restarting at one.
+closing the console and reopening it restores the session — and the turn numbering carries on from
+where it left off rather than restarting at one.
+
+Switching to a session via `/sessions` automatically opens its last turn for reading: the panes
+render that turn — its roster, its stream, its pipeline — behind a `viewing turn N` banner. `esc`
+returns to the idle state so you can type your next instruction. Reading a past turn is harmless:
+scrolling and `tab` apply to what you are reading, never to any running turn.
+
+The console keeps the last 20 finished turns per session.
 
 The next leader turn also receives compact execution facts from completed pipeline
 turns: completed agents, failures and their reasons, and acceptance status separately.
@@ -495,13 +492,13 @@ unit the console saves, resumes and deletes, the way Claude Code and Codex do. E
 its own `workDir/.multiclaw/sessions/<id>/` directory, and a small `index.json` holds the summaries
 the picker shows.
 
-- **Launch.** `multiclaw` continues the most recent session, or starts one when the workspace has
-  none. `multiclaw --new` starts a fresh session, and `multiclaw -r [id]` resumes a given session —
-  or opens the picker when no id is passed, the way `claude -r` does.
+- **Launch.** `multiclaw` always starts a **new** session. `multiclaw --new` is equivalent.
+  `multiclaw -r [id]` resumes a given session — or opens the picker when no id is passed, the way
+  `claude -r` does.
 - **`/sessions`** opens the picker: every session newest-first with its title (the first
   requirement), turn count and age, the current one marked. `↑` `↓` select, `enter` switches to the
-  highlighted session — its history comes back and your next instruction continues its agents where
-  they left off — `d` deletes one, and `esc` closes.
+  highlighted session — its last turn opens automatically so you can see the context, and your next
+  instruction continues its agents where they left off — `d` deletes one, and `esc` closes.
 - **`/new <requirement>`** closes the current agents and starts a new session in place.
 
 Sessions are kept until you remove them: `d` in the picker, `multiclaw sessions rm <id>` (a full id
@@ -525,8 +522,8 @@ that, and it is written to `workDir/.multiclaw/sessions/<id>/session.json` while
 - **Pending decisions.** An approval or question that was waiting is gone — the agent that asked no
   longer exists. The console says how many were discarded instead of silently dropping them.
 
-The notice bar names all of this on the first frame, and the interrupted turn is in `/history` like
-any other, so `/export` and `/replay` work on it. The one thing a restart does not do is pretend: no
+The notice bar names all of this on the first frame, and the interrupted turn is accessible via
+`/sessions` (switching back to that session auto-opens it), so `/export` and `/replay` work on it. The one thing a restart does not do is pretend: no
 decision is answered on your behalf, and no agent is resumed from a session this process never held.
 
 ## Logs
