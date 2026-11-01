@@ -86,7 +86,7 @@ jobs:
         run: pnpm -r --filter "./packages/*" publish --no-git-checks --access public
 
       - name: Generate release notes from Angular commits
-        run: pnpm dlx conventional-changelog-cli@5.0.0 -p angular -r 1 > "$RUNNER_TEMP/release-notes.md"
+        run: pnpm exec conventional-changelog -p angular --pkg packages/core/package.json --stdout > "$RUNNER_TEMP/release-notes.md"
 
       - name: Tag the release
         run: |
