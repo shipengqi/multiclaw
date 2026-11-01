@@ -53,13 +53,14 @@ Interactive scaffold. Creates `multiclaw.config.ts` in the current directory.
 Prompts:
 - **Project name** — defaults to the current directory name
 - **Preset** — pipeline template (see [Presets](#presets))
-- **Work directory** — where agents read and write files
 - **Provider** — which agent product to use (`claude`, `opencode`, `codex`, `cursor`). Only installed providers are offered; missing ones are listed with install hints.
-- **Model preference** — role-based tier defaults (recommended) or a specific tier/model
-- **Per-agent overrides** (optional) — pick individual agents and set a model for each
+- **Work directory** — where agents read and write files
 
-The result is a config with a single `defaults` block instead of repeating the provider
-and model across all twelve preset agents.
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `--force` | Overwrite an existing `multiclaw.config.ts` |
 
 ### `multiclaw doctor`
 
@@ -80,10 +81,37 @@ Runs the orchestration defined in your config file.
 |--------|-------------|
 | `--config <path>` | Path to config file. Auto-discovers `multiclaw.config.ts` if omitted. |
 | `--no-leader` | (Batch mode only) Skip the leader and run the full configured team. Has no effect in the interactive console — the leader is always used there. |
+| `--dry-run` | Preview the routed plan without running the pipeline. |
+| `--resume [path]` | Resume a previous run, continuing agent sessions. Defaults to the latest run. |
 
 The `<requirement>` string is injected into every agent's prompt as `{{requirement}}`.
 
 Each run creates an isolated timestamped subdirectory inside `workDir` (e.g. `workspace/.multiclaw/runs/run-2026-10-08T12-00-00`), so a one-shot run can never collide with anything else on disk. The interactive console is deliberately different — see [Workspace](#workspace).
+
+### `multiclaw upgrade`
+
+Upgrade multiclaw to the latest version.
+
+### `multiclaw prune`
+
+Interactively clean up saved sessions and old run directories.
+
+| Option | Description |
+|--------|-------------|
+| `--sessions` | Prune saved sessions only (non-interactive) |
+| `--runs` | Prune all run directories only (non-interactive) |
+| `--all` | Prune everything (non-interactive) |
+| `--dry-run` | Show what would be deleted without deleting |
+| `--yes` | Skip the confirmation prompt |
+
+### `multiclaw sessions`
+
+Manage saved console sessions.
+
+```bash
+multiclaw sessions ls                 # List saved sessions, newest first
+multiclaw sessions rm <id>            # Delete a session by id (or unique prefix)
+```
 
 ## Providers, models & tiers
 
@@ -318,18 +346,34 @@ the background.
 
 Type `/` on an empty line for a filtered list.
 
-| Command | Action |
-|---------|--------|
-| `/agents` | List the configured team |
-| `/focus <id>` | Focus an agent by id |
-| `/clear` | Clear the focused agent's log |
-| `/history` | Browse finished turns in the current session (see [History](#history)) |
-| `/sessions` | Switch between, or delete, saved sessions (see [Sessions](#sessions)) |
-| `/new <requirement>` | Start a new session with fresh agent sessions |
-| `/steer <text>` | Send a message into the agents running right now |
-| `/cancel` | Cancel the running turn and its queue |
-| `/help` | Key map |
-| `/quit` | Exit |
+| Command | Action | When |
+|---------|--------|------|
+| `/agents` | List the configured team | always |
+| `/focus <id>` | Focus an agent by id | always |
+| `/clear` | Clear the focused agent's log | always |
+| `/verbose` | Toggle tool detail in the stream | always |
+| `/search <text>` | Search the focused stream | always |
+| `/latest` | Jump the stream to latest output | always |
+| `/history` | Browse finished turns (see [History](#history)) | always |
+| `/sessions` | Switch between, or delete, saved sessions (see [Sessions](#sessions)) | always |
+| `/export [turn] [path]` | Export a finished turn as Markdown | always |
+| `/fork [turn]` | Edit an earlier turn's requirement and re-run | always |
+| `/pause` | Pause queued turns | always |
+| `/continue` | Resume queued turns or pass a checkpoint | always |
+| `/approve [id] <number>` | Approve the request on screen, or a named one | always |
+| `/deny [id]` | Deny the request on screen, or a named one | always |
+| `/respond <id> <JSON>` | Answer a structured question in one line of JSON | always |
+| `/skip <id>` | Decline a structured tool question | always |
+| `/dismiss <id>` | Cancel a structured tool question | always |
+| `/help` | Key map | always |
+| `/quit` | Exit | always |
+| `/retry [id]` | Re-run a failed agent (or all of them) | idle |
+| `/replay [turn]` | Run an earlier turn again | idle |
+| `/new <requirement>` | Start a new session with fresh agent sessions | idle |
+| `/answer <text>` | Answer the leader's pending question | idle |
+| `/steer <text>` | Send a message into the agents running right now | running |
+| `/modify <instruction>` | Provide feedback at a checkpoint and continue | running |
+| `/cancel` | Cancel the running turn and its queue | running |
 
 The console renders on the alternate screen buffer, so your shell scrollback is preserved.
 
@@ -513,9 +557,9 @@ Presets are pipeline templates you can pick during `multiclaw init`:
 
 | Preset | Pipeline | Agents |
 |--------|----------|--------|
-| `simple` | Architect → Arch Design Reviewer → Backend Developer → Code Reviewer | 4 |
 | `backend` | Product Manager → Architect → Arch Design Reviewer → Backend Developer → Tester → Code Reviewer + DevOps | 7 |
-| `fullstack` | Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Code Reviewer + DevOps | 9 |
+| `frontend` | Architect → UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer | 6 |
+| `fullstack` | Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer + DevOps | 10 |
 
 ## Leader
 

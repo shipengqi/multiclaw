@@ -50,12 +50,14 @@ multiclaw run "构建一个 Todo 列表 REST API"
 交互提示：
 - **项目名称** — 默认使用当前目录名
 - **预设模板** — 选择流水线模板（见[预设模板](#预设模板)）
+- **Agent 产品** — 选择使用哪个 Provider（`claude`、`opencode`、`codex`、`cursor`）。只提供已安装的 Provider；未安装的项会附带安装提示。
 - **工作目录** — Agent 读写文件的目录
-- **Provider** — 选择使用哪个 Agent 产品（`claude`、`opencode`、`codex`、`cursor`）。只提供已安装的 Provider；未安装的项会附带安装提示。
-- **模型偏好** — 基于角色的层级默认值（推荐）或指定具体层级/模型
-- **逐 Agent 覆盖**（可选）— 选择单个 Agent 并为其指定模型
 
-最终生成的配置只含一个 `defaults` 块，无需在十二个预设 Agent 间重复填写 Provider 与模型。
+选项：
+
+| 选项 | 说明 |
+|------|------|
+| `--force` | 覆盖已存在的 `multiclaw.config.ts` |
 
 ### `multiclaw doctor`
 
@@ -74,10 +76,51 @@ multiclaw doctor --config ./multiclaw.config.ts       # 同时校验配置
 |------|------|
 | `--config <path>` | 配置文件路径。省略时自动查找 `multiclaw.config.ts`。 |
 | `--no-leader` | （仅批量模式）跳过 leader，直接运行完整的已配置团队。在交互式控制台中无效——控制台始终会使用 leader。 |
+| `--dry-run` | 预览路由计划，不实际运行流水线。 |
+| `--resume [path]` | 续跑上一次运行（继续 Agent 会话），可指定具体运行目录，默认为最新一次运行。 |
 
 `<requirement>` 字符串会以 `{{requirement}}` 的形式注入到每个 Agent 的 prompt 中。
 
 每次运行都会在 `workDir` 下创建带时间戳的隔离子目录（如 `workspace/.multiclaw/runs/run-2026-10-08T12-00-00`），因此单次运行永远不会和磁盘上的其他内容互相干扰。交互式控制台则刻意不同——见 [工作区](#工作区)。
+
+### `multiclaw upgrade`
+
+将 multiclaw 升级到最新版本。
+
+### `multiclaw prune`
+
+交互式清理已保存的会话和旧运行目录。
+
+| 选项 | 说明 |
+|------|------|
+| `--sessions` | 仅清理已保存的会话（非交互式） |
+| `--runs` | 仅清理所有运行目录（非交互式） |
+| `--all` | 清理全部（非交互式） |
+| `--dry-run` | 仅展示将被删除的内容，不实际删除 |
+| `--yes` | 跳过确认提示 |
+
+### `multiclaw sessions`
+
+管理已保存的控制台会话。
+
+```bash
+multiclaw sessions ls                       # 列出已保存的会话（最新的在最前）
+multiclaw sessions rm <id>                  # 按 id（或唯一前缀）删除某个会话
+```
+
+## Provider、模型与层级
+
+两个概念让配置保持简洁且与 Provider 无关：
+
+- **`runtime` 与 `provider`**。*runtime* 是 multiclaw 与 Agent 通信所用的协议——目前始终是 `acp`（[Agent Client Protocol](https://agentclientprotocol.com)）。*provider* 是具体的 Agent 产品（`claude`、`opencode`、`codex`、`cursor`）。因此 `runtime` 是常量；`provider` 是你需要选择的那个。
+- **模型层级（Model Tiers）**。Agent 无需硬编码某个仅存在于特定 Provider 的模型 id，而是声明一个**层级**——`strong`、`balanced` 或 `fast`。内置目录会将每个层级映射到*各 Provider* 对应的具体模型 id（例如 Claude 上的 `strong` → `opus`，OpenCode 上的 `strong` → `opencode/exo-free`）。这样同一份预设配置可在任意 Provider 上直接运行，切换 Provider 只会改变解析出的模型。
+
+Agent 模型的解析优先级：
+
+1. `agent.model`（显式 id）→ 2. `agent.models[provider]` → 3. 旧版 `agent.models["acp"]` →
+4. `agent.modelTier`（通过目录解析）→ 5. `config.defaults.model` → 6. Provider 的默认模型。
+
+在配置顶部写一行 `defaults: { provider, model }` 即可为所有 Agent 提供步骤 2/5 的兜底值，几乎无需重复。
 
 ## 配置文件
 
@@ -200,6 +243,11 @@ Stage 4:  code-reviewer      │  devops            ← 并行
 
 不带子命令执行 `multiclaw` 会打开全屏终端控制台。它是**轮次式的指挥循环**，而不是聊天：你输入的每一轮就是整条流水线的一次完整编排，跑完后控制台保持打开，可以直接开始下一轮。
 
+**启动选项：**
+- `multiclaw` — 继续最近的会话，或在没有任何会话时创建新会话
+- `multiclaw --new` — 开始全新会话
+- `multiclaw -r [id]` — 按 id 续接某个会话，或不传 id 时打开会话选择器
+
 ```
 ◆ multiclaw · dev-team                                          turn 2 · 00:12
 ────────────────────────────────────────────────────────────────────────────
@@ -262,32 +310,52 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 - 当时没有任何 Agent 在轮次中，或该 provider 的 bridge 不支持中途输入：文本转为排队的后续需求，提示会说明时机变了。它绝不会被静默丢弃，也绝不会让空闲会话自行开始一个轮次。
 - 没有轮次在跑时无处可送，`/steer` 会被拒绝，并指向普通输入。
 
-送达不等于照做，生效时机也没有保证。在计数实测中，Claude bridge 0.89.1、0.95.0 和 Codex bridge 2.5.0 都在数到原定目标之前停止计数、回应新指令；Codex bridge 2.2.2 则先数到了目标。这是特定版本的实测现象，不是对其他任务或版本的保证。标记只说明消息送到了，不说明 agent 已经照它做了。
-
-取消会中止正在执行的 Agent 及其子进程，而不是把它们留在后台继续跑。
+送达不等于照做，生效时机也没有保证。取消会中止正在执行的 Agent 及其子进程，而不是把它们留在后台继续跑。
 
 ### 命令
 
 在空输入行上输入 `/` 会弹出可筛选的命令列表。
 
-| 命令 | 作用 |
-|------|------|
-| `/agents` | 列出配置的团队 |
-| `/focus <id>` | 按 id 聚焦某个 Agent |
-| `/clear` | 清空当前 Agent 的日志 |
-| `/history` | 浏览已完成的轮次（见 [历史](#历史)） |
-| `/steer <文本>` | 把消息送进此刻正在运行的 Agent |
-| `/cancel` | 取消当前轮次及其队列 |
-| `/help` | 快捷键帮助 |
-| `/quit` | 退出 |
+| 命令 | 作用 | 时机 |
+|------|------|------|
+| `/agents` | 列出配置的团队 | 始终 |
+| `/focus <id>` | 按 id 聚焦某个 Agent | 始终 |
+| `/clear` | 清空当前 Agent 的日志 | 始终 |
+| `/verbose` | 切换流中工具详情的显示 | 始终 |
+| `/search <text>` | 在当前流中搜索 | 始终 |
+| `/latest` | 跳到流的最新输出 | 始终 |
+| `/history` | 浏览已完成的轮次（见 [历史](#历史)） | 始终 |
+| `/sessions` | 切换或删除已保存的会话（见 [会话](#会话)） | 始终 |
+| `/export [turn] [path]` | 将某轮导出为 Markdown | 始终 |
+| `/fork [turn]` | 编辑某轮的需求后重新运行 | 始终 |
+| `/pause` | 暂停队列中待执行的需求 | 始终 |
+| `/continue` | 恢复队列或通过检查点 | 始终 |
+| `/approve [id] <number>` | 选择当前或指定审批请求的某个选项 | 始终 |
+| `/deny [id]` | 拒绝当前或指定审批请求 | 始终 |
+| `/respond <id> <JSON>` | 以一行 JSON 回答结构化问题 | 始终 |
+| `/skip <id>` | 跳过某个结构化提问 | 始终 |
+| `/dismiss <id>` | 取消某个结构化提问 | 始终 |
+| `/help` | 快捷键帮助 | 始终 |
+| `/quit` | 退出 | 始终 |
+| `/retry [id]` | 重跑失败的 Agent（或全部） | 空闲时 |
+| `/replay [turn]` | 重新运行某轮 | 空闲时 |
+| `/new <requirement>` | 关闭当前 Agent 会话并开始新会话 | 空闲时 |
+| `/answer <text>` | 回答 leader 未完成的提问 | 空闲时 |
+| `/steer <text>` | 把消息送进此刻正在运行的 Agent | 运行时 |
+| `/modify <instruction>` | 在检查点处提供反馈并继续 | 运行时 |
+| `/cancel` | 取消当前轮次及其队列 | 运行时 |
 
 控制台在备用屏幕缓冲区（alternate screen buffer）中渲染，因此终端的 scrollback 不会被破坏。
+
+终端较窄（不足 72 列）时会收起团队面板，让日志占满宽度；终端较矮（不足 16 行）时连管线栏也一并收起。页眉、输入行和提示栏永不收起。
+
+> **没有 TTY？** 控制台需要交互式终端。在 CI、管道或非 TTY 的 SSH 会话中，它会直接退出并提示改用 `multiclaw run`——后者以无头方式运行同一条流水线。
 
 ### 显式工具限制
 
 显式配置 `tools`（包括 `tools: []`）时，multiclaw 会在任何 leader、工作 Agent、审查或修复 Agent 启动之前，检查**实际解析出的命令**对应运行时能否执行该限制。不支持时会明确指出 Agent 和命令：请改用支持限制的 provider，或移除显式设置。不会静默删除限制或切换 provider；dry-run 预览与重试也受同一检查保护。
 
-内置预设保留原有的隐式工具默认值，仍可搭配不支持 allowlist 的 provider 使用。通过工厂参数覆盖、替换数组（即使值相同）或改变数组内容，都视为显式设置；普通对象展开会保留默认值语义。同引用且内容未变的数组赋值，无法与未修改的预设区分。不支持限制的 provider 上，这些默认值**不构成强制执行保证**。工具策略也不是沙箱：允许 `Bash` 不代表限制其中的命令或文件路径。
+内置预设保留原有的隐式工具默认值，仍可搭配不支持 allowlist 的 provider 使用。工具策略也不是沙箱：允许 `Bash` 不代表限制其中的命令或文件路径。
 
 ### 人工审批与 Agent 提问
 
@@ -298,19 +366,12 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 - 已在 `tools` 白名单内的工具直接放行、不弹审批；控制台只对白名单覆盖不到的工具发问。
 - 等待人工操作计入 Agent 原有超时。取消、退出和会话清理都会解除未决请求，不让 Agent 永久等待。
 
-无头运行和直接调用 core 时，默认仍按 `tools` 自动决策：命中的工具直接放行，其余拒绝。`permissions: { mode: "ask" }` 对白名单内的工具保持不变，把白名单外的交给 `permissions.onRequest`（调用方没提供回调时仍然拒绝）；`permissions: { mode: "deny" }` 则拒绝所有权限请求。回调属于当前轮次，不保存在复用的 provider 会话中。
-
-**这处理的是 provider 实际发出的审批请求，不是拦截每一次工具调用。** Claude 可能直接允许读取文件或安全命令，provider 自己的权限设置仍然生效。这不是沙箱，也不是细粒度的路径或命令授权。`allow_always` 的范围以 provider 展示的说明为准，不是 multiclaw 全局授权缓存，也可能修改 provider 设置。自动策略只选择单次授权，不会静默授予长期权限。拒绝工具不必然让 Agent 轮次失败；需要验证任务真正完成时，应使用可选的交付验收门禁。
-
 **运行中的结构化问题** 使用 ACP form elicitation；已安装的 Claude bridge 会将其回传到 `AskUserQuestion`。控制台将问题与审批放进同一个决策队列：
 
 - `/respond q1 {"question_0":"Azure"}` 将表单答案返回给准确的请求。字段键名和选项标签以问题面板为准；多选答案用 JSON 数组，自定义回答字段接受自由文本。
-- `/skip q1` 跳过问题；`/dismiss q1` 取消请求。这是两种不同的 provider 动作，不会回答别的 Agent，也不会作为下一轮需求。
-- JSON 格式错误或不符合已支持表单约束的值，不会清除请求，可以修改后再答。取消和超时都会解除问题等待。
+- `/skip q1` 跳过问题；`/dismiss q1` 取消请求。这是两种不同的 provider 动作。
 
-直接调用 core 时提供 `questions.onRequest`，或使用 `AgentTask.onQuestion`；直接复用 runtime 会话时，在打开会话时设置 `questionForms: true`，并在每次 `prompt` 中传入 `onQuestion`。只有调用方支持时才协商 form 能力；工具也必须在 Agent 的 `tools` 中可用，例如 Claude 的 `"AskUserQuestion"`。不支持 URL elicitation、自定义 schema 类型，也不根据普通输出文字猜测问题。支持字符串、数字、整数、布尔值及枚举多选表单，不是完整 JSON Schema 实现。没有问题处理回调时，意外收到的表单请求会被取消，不会自动填答。
-
-leader 澄清是独立机制：`/answer <text>` 回答已经结束的 leader `ask` 轮次，之前排队的文字不会被当作回答。`/task <需求>` 关闭旧 Agent 会话并开始新任务；`/pause`、`/continue` 控制后续需求队列，不暂停正在执行的 Agent。
+leader 澄清是独立机制：`/answer <text>` 回答已经结束的 leader `ask` 轮次，之前排队的文字不会被当作回答。`/new <requirement>` 关闭旧 Agent 会话并开始新任务；`/pause`、`/continue` 控制后续需求队列，不暂停正在执行的 Agent。
 
 ### 工作区
 
@@ -324,24 +385,28 @@ leader 澄清是独立机制：`/answer <text>` 回答已经结束的 leader `as
 
 当前屏幕上那一轮不会被列出——它已经在你眼前了。控制台保留最近 20 个已完成的轮次。
 
-已完成的轮次会写入 `workDir/.multiclaw/console/history.json`，因此关掉控制台再打开，历史列表会原样恢复，轮次编号也从上次继续，而不是从 1 重新开始。
+已完成的轮次会写入 `workDir/.multiclaw/sessions/<id>/turns.jsonl`，因此关掉控制台再打开，历史列表会原样恢复，轮次编号也从上次继续，而不是从 1 重新开始。
 
-下一轮 leader 也会收到已结束流水线的简短执行事实：完成的 Agent、失败与原因，以及单独列出的验收状态。执行成功不等于交付获批；中断保持为中断，用户取消的轮次不进入对话上下文，缺少事实的旧记录不会被认定为成功。这不增加模型调用，仍受最近 6 轮、4,000 字符的既有预算限制。输入“继续”也不会自动批准工具或自动重试失败任务。
+### 会话
+
+**会话（session）** 是一段连续的工作线——一系列共享同一团队的轮次。它是控制台保存、续接和删除的基本单位，与 Claude Code 和 Codex 的做法相同。每个会话存储在独立的 `workDir/.multiclaw/sessions/<id>/` 目录中，一个小型 `index.json` 保存选择器所需的摘要信息。
+
+- **启动。** `multiclaw` 继续最近的会话，若工作区还没有任何会话则创建一个。`multiclaw --new` 开始全新会话，`multiclaw -r [id]` 续接指定会话——不传 id 时打开选择器，与 `claude -r` 的方式相同。
+- **`/sessions`** 打开选择器：所有会话按最新排序，显示标题（首次需求原文）、轮次数量和时间，当前会话有标记。`↑` `↓` 选择，`enter` 切换到高亮的会话——其历史恢复，下一条指令将在它的 Agent 上继续——`d` 删除某个会话，`esc` 关闭选择器。
+- **`/new <requirement>`** 关闭当前 Agent 并就地开始新会话。
+
+会话会一直保留，直到你主动删除：选择器里按 `d`、执行 `multiclaw sessions rm <id>`（完整 id 或唯一前缀），或运行 `multiclaw prune`（同时列出旧运行目录）。`multiclaw sessions ls` 打印会话列表。
 
 ### 重启之后
 
-正常退出再打开是最简单的情况：轮次都在磁盘上，原样回来。而被"杀掉"的控制台——终端崩溃、重启、`kill -9`——留下的东西不止这些，所以运行期间还会写 `workDir/.multiclaw/console/session.json`：
+正常退出再打开是最简单的情况：轮次都在磁盘上，原样回来。而被"杀掉"的控制台——终端崩溃、重启、`kill -9`——留下的东西不止这些，所以运行期间还会写 `workDir/.multiclaw/sessions/<id>/session.json`：
 
 - **正在跑的那一轮。** Agent 进程随控制台一起消失，待审批的请求也只是发给它的一个 RPC，所以这一轮无法继续。它会被恢复成一个以 **interrupted** 结束的轮次：需求原文、团队、管线，以及每个 Agent 日志的末尾；始终没有回音的 Agent 标记为已停止。没有任何地方声称它成功了。
 - **队列。** 你打了但还没执行的后继需求会回来——但处于**暂停**状态：一打开就自动跑，等于在你没看着的时候干活。`/continue` 才会开始执行。
-- **任务边界。** `/task` 关闭上一个任务的上下文，这条边界现在能活过进程：重启后交给 leader 的是当前任务的轮次，而不是这个工作区跑过的所有轮次。
+- **会话。** 重启后打开的是你上次所在的会话，leader 拿到的是该会话的对话记录，而不是这个工作区跑过的所有轮次。
 - **待处理的决策。** 正在等待的审批或提问已经不存在了——提问的 Agent 没了。控制台会说明丢弃了几个，而不是悄悄丢掉。
 
 首帧的提示行会把这些都讲清楚，那一轮也会像其他轮次一样出现在 `/history` 里，`/export`、`/replay` 都能用。重启唯一不做的事就是假装：不会替你做任何决定，也不会去续接一个本进程从未持有过的会话。
-
-终端较窄（不足 72 列）时会收起团队面板，让日志占满宽度；终端较矮（不足 16 行）时连管线栏也一并收起。页眉、输入行和提示栏永不收起。
-
-> **没有 TTY？** 控制台需要交互式终端。在 CI、管道或非 TTY 的 SSH 会话中，它会直接退出并提示改用 `multiclaw run`——后者以无头方式运行同一条流水线。
 
 ## 日志
 
@@ -372,9 +437,9 @@ workDir/
 
 | 模板 | 流水线 | Agent 数 |
 |------|--------|---------|
-| `simple` | 架构师 → 架构评审 → 后端开发 → 代码评审 | 4 |
 | `backend` | 产品经理 → 架构师 → 架构评审 → 后端开发 → 测试 → 代码评审 + DevOps | 7 |
-| `fullstack` | 产品经理 → 架构师 → 架构评审 → 后端开发 + UI 设计师 → UI 评审 → 前端开发 → 代码评审 + DevOps | 9 |
+| `frontend` | 架构师 → UI 设计师 → UI 评审 → 前端开发 → 测试 → 代码评审 | 6 |
+| `fullstack` | 产品经理 → 架构师 → 架构评审 → 后端开发 + UI 设计师 → UI 评审 → 前端开发 → 测试 → 代码评审 + DevOps | 10 |
 
 ## Leader
 
