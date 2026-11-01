@@ -33,7 +33,8 @@ program
 program
   .command("init")
   .description("Scaffold a config file (interactive)")
-  .action(() => initCommand())
+  .option("--force", "Overwrite existing multiclaw.config.ts")
+  .action((opts: { force?: boolean }) => initCommand(opts))
 
 program
   .command("run [requirement]")

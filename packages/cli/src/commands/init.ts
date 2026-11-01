@@ -182,11 +182,16 @@ ${agentBlock}
 
 // ─── Command ──────────────────────────────────────────────────────────────────
 
-export async function initCommand(): Promise<void> {
+export async function initCommand(options: { force?: boolean } = {}): Promise<void> {
   const configPath = path.resolve(process.cwd(), "multiclaw.config.ts")
   if (fs.existsSync(configPath)) {
-    console.error("\x1b[31mError: multiclaw.config.ts already exists\x1b[0m")
-    process.exit(1)
+    if (!options.force) {
+      console.error(
+        "\x1b[31mError: multiclaw.config.ts already exists (use --force to overwrite)\x1b[0m"
+      )
+      process.exit(1)
+    }
+    console.log("\x1b[33mWarning: overwriting existing multiclaw.config.ts\x1b[0m")
   }
 
   const defaultProjectName = path.basename(process.cwd())
