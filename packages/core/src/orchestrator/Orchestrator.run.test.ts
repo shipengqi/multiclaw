@@ -1055,9 +1055,9 @@ describe("Orchestrator.run · intent routing", () => {
     expect(startedIds(events)).toEqual(["leader", "b"])
   })
 
-  it("drops dependsOn entries that point at a skipped agent", async () => {
+  it("preserves topological order through a skipped agent", async () => {
     leaderSays('{"mode":"run","run":["a","c"]}')
-    // Without the prune, `buildStages` would throw on c's dangling dependency.
+    // a → b (skip) → c: c must inherit b's dep on a and run after a, not in parallel.
     const { result, events } = await runOrch(
       [agent("a"), agent("b", { dependsOn: ["a"] }), agent("c", { dependsOn: ["b"] })],
       { leader: agent("leader") }
@@ -1065,6 +1065,72 @@ describe("Orchestrator.run · intent routing", () => {
 
     expect(result.success).toBe(true)
     expect(startedIds(events)).toEqual(["leader", "a", "c"])
+    const stageStarts = events
+      .filter((e) => e.type === "stage:start")
+      .map((e) => ({ stageIndex: e.payload.stageIndex, agentIds: e.payload.agentIds }))
+    expect(stageStarts).toEqual([
+      { stageIndex: 0, agentIds: ["a"] },
+      { stageIndex: 1, agentIds: ["c"] },
+    ])
+  })
+
+  it("collapses multi-hop skips: a→b→c→d, skip b and c, d waits for a", async () => {
+    leaderSays('{"mode":"run","run":["a","d"]}')
+    const { result, events } = await runOrch(
+      [
+        agent("a"),
+        agent("b", { dependsOn: ["a"] }),
+        agent("c", { dependsOn: ["b"] }),
+        agent("d", { dependsOn: ["c"] }),
+      ],
+      { leader: agent("leader") }
+    )
+
+    expect(result.success).toBe(true)
+    const stageStarts = events
+      .filter((e) => e.type === "stage:start")
+      .map((e) => e.payload.agentIds)
+    expect(stageStarts).toEqual([["a"], ["d"]])
+  })
+
+  it("collapses one skipped dep in a two-dep agent (fullstack-style)", async () => {
+    // frontend-developer depends on both backend-developer and ui-design-reviewer.
+    // When ui-design-reviewer is skipped, its dep on ui-designer is inherited.
+    leaderSays('{"mode":"run","run":["ui-designer","backend-developer","frontend-developer"]}')
+    const { result, events } = await runOrch(
+      [
+        agent("ui-designer"),
+        agent("ui-design-reviewer", { dependsOn: ["ui-designer"] }),
+        agent("backend-developer"),
+        agent("frontend-developer", { dependsOn: ["backend-developer", "ui-design-reviewer"] }),
+      ],
+      { leader: agent("leader") }
+    )
+
+    expect(result.success).toBe(true)
+    const stageStarts = events
+      .filter((e) => e.type === "stage:start")
+      .map((e) => new Set(e.payload.agentIds))
+    // Stage 0: ui-designer and backend-developer in parallel; stage 1: frontend-developer
+    expect(stageStarts).toEqual([
+      new Set(["ui-designer", "backend-developer"]),
+      new Set(["frontend-developer"]),
+    ])
+  })
+
+  it("produces no deps when every ancestor is skipped", async () => {
+    leaderSays('{"mode":"run","run":["c"]}')
+    // a → b → c; skip both a and b → c has nothing to wait for
+    const { result, events } = await runOrch(
+      [agent("a"), agent("b", { dependsOn: ["a"] }), agent("c", { dependsOn: ["b"] })],
+      { leader: agent("leader") }
+    )
+
+    expect(result.success).toBe(true)
+    const stageStarts = events
+      .filter((e) => e.type === "stage:start")
+      .map((e) => e.payload.agentIds)
+    expect(stageStarts).toEqual([["c"]])
   })
 
   it("falls back to the full team, loudly, when the leader fails", async () => {

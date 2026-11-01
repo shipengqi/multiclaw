@@ -718,14 +718,49 @@ export class Orchestrator {
       })
     }
 
+    const agentMap = new Map(this.config.agents.map((a) => [a.id, a]))
+
     return this.config.agents
       .filter((a) => runSet.has(a.id) && a.id !== this.config.review?.reviewer)
       .map((a) => ({
         ...a,
-        dependsOn: a.dependsOn?.filter(
-          (dep) => !skippedIds.has(dep) && dep !== this.config.review?.reviewer
-        ),
+        dependsOn:
+          a.dependsOn !== undefined
+            ? this.resolveEffectiveDeps(a.dependsOn, skippedIds, agentMap)
+            : undefined,
       }))
+  }
+
+  // When an intermediate agent is skipped, replace it in dependsOn with its own
+  // dependencies (recursively). This preserves topological ordering across gaps:
+  // code-reviewer → tester (skip) → backend-developer becomes
+  // code-reviewer → backend-developer, so the reviewer never runs before the code is written.
+  private resolveEffectiveDeps(
+    deps: string[],
+    skippedIds: Set<string>,
+    agentMap: Map<string, AgentDefinition>,
+    visited = new Set<string>()
+  ): string[] {
+    const reviewerId = this.config.review?.reviewer
+    const result = new Set<string>()
+    for (const id of deps) {
+      if (id === reviewerId) continue
+      if (visited.has(id)) continue
+      if (!skippedIds.has(id)) {
+        result.add(id)
+      } else {
+        visited.add(id)
+        for (const transitive of this.resolveEffectiveDeps(
+          agentMap.get(id)?.dependsOn ?? [],
+          skippedIds,
+          agentMap,
+          visited
+        )) {
+          result.add(transitive)
+        }
+      }
+    }
+    return [...result]
   }
 
   private async runStage(agents: AgentDefinition[], signal?: AbortSignal): Promise<AgentResult[]> {
