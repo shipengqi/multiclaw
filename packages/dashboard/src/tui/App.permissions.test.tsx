@@ -439,16 +439,12 @@ describe("App · explicit permission decisions", () => {
     }
     const ui = await mount()
     await ui.send("write files", "\r")
-    // Enter alone must not grant anything: nothing is highlighted yet.
+    // The first option is pre-selected — enter alone commits it.
     await ui.send("\r")
-    expect(decisions.size).toBe(0)
-    // `2` highlights, `enter` commits — two keystrokes for the always option.
-    await ui.send("2", "\r")
-    await vi.waitFor(() => expect(decisions.get("alpha")).toBe("alpha-always"))
+    await vi.waitFor(() => expect(decisions.get("alpha")).toBe("alpha-once"))
     expect(decisions.has("beta")).toBe(false)
-    // The next request becomes the front one and starts with nothing highlighted,
-    // so the same keys reach it — but a bare `down` lands on the first option,
-    // which is why the test picks the number explicitly.
+    // The next request becomes the front one and also starts with the first
+    // option pre-selected. Use a number key to pick a different option.
     await ui.send("2", "\r")
     await vi.waitFor(() => expect(ui.complete()).toBe(1))
     expect(decisions.get("beta")).toBe("beta-always")

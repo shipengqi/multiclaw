@@ -1029,7 +1029,7 @@ export function App({
   const menu =
     front?.kind === "permission" && permissionMenu.id === front.shortId
       ? permissionMenu
-      : { id: front?.shortId ?? "", cursor: undefined, released: false }
+      : { id: front?.shortId ?? "", cursor: 0, released: false }
   const frontQuestion = front?.kind === "question" ? front : undefined
   const questionFields = useMemo(
     () => (frontQuestion ? formFields(frontQuestion.request) : []),
