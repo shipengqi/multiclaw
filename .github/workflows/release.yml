@@ -35,10 +35,11 @@ jobs:
       contents: write # push the tag and create the GitHub Release
       id-token: write # npm trusted publishing (OIDC)
     steps:
-      - name: Check out main
+      - name: Check out the merged release commit
         uses: actions/checkout@v7
         with:
-          ref: main
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
 
       # Installs pnpm, the Node version declared in `devEngines` (package.json),
       # and the workspace dependencies.
@@ -84,6 +85,9 @@ jobs:
       - name: Publish to npm
         run: pnpm -r --filter "./packages/*" publish --no-git-checks --access public
 
+      - name: Generate release notes from Angular commits
+        run: pnpm dlx conventional-changelog-cli@5.0.0 -p angular -r 1 > "$RUNNER_TEMP/release-notes.md"
+
       - name: Tag the release
         run: |
           git tag "v$VERSION"
@@ -95,4 +99,4 @@ jobs:
         run: |
           gh release create "v$VERSION" \
             --title "v$VERSION" \
-            --generate-notes
+            --notes-file "$RUNNER_TEMP/release-notes.md"
