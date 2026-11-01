@@ -5,8 +5,9 @@ import type { MultiClawConfig } from "@multiclawcli/core"
 import { runtimeRegistry } from "@multiclawcli/core"
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { App } from "./App"
-import { historyPath } from "./history"
+import { turnsPath } from "./history"
 import { loadJournal, SESSION_VERSION, sessionPath } from "./session"
+import { createSession, latestSession } from "./sessions"
 import { stripAnsi, type TurnView } from "./state"
 import { driveFrame } from "./test-helpers"
 
@@ -92,14 +93,17 @@ function inFlight(turn: number, requirement: string) {
   }
 }
 
-function seedHistory(turns: TurnView[]): void {
-  const target = historyPath(workDir)
+/** Create a session and seed its turn log, so the console opens on it. */
+function seedSession(turns: TurnView[]): string {
+  const { id } = createSession(workDir)
+  const target = turnsPath(workDir, id)
   fs.mkdirSync(path.dirname(target), { recursive: true })
-  fs.writeFileSync(target, JSON.stringify(turns), "utf-8")
+  fs.writeFileSync(target, `${turns.map((turn) => JSON.stringify(turn)).join("\n")}\n`, "utf-8")
+  return id
 }
 
-function seedJournal(value: unknown): void {
-  const target = sessionPath(workDir)
+function seedJournalFor(id: string, value: unknown): void {
+  const target = sessionPath(workDir, id)
   fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.writeFileSync(target, JSON.stringify(value), "utf-8")
 }
@@ -140,8 +144,8 @@ afterEach(() => {
 
 describe("App · picking the session back up after a restart", () => {
   it("opens saying what the previous session left behind", async () => {
-    seedHistory([savedTurn(1, "first task")])
-    seedJournal({
+    const id = seedSession([savedTurn(1, "first task")])
+    seedJournalFor(id, {
       version: SESSION_VERSION,
       queue: ["add tests"],
       inFlight: inFlight(2, "refactor the parser"),
@@ -156,8 +160,8 @@ describe("App · picking the session back up after a restart", () => {
   })
 
   it("lists the interrupted turn as a turn, not a hole in the history", async () => {
-    seedHistory([savedTurn(1, "first task")])
-    seedJournal({ version: SESSION_VERSION, inFlight: inFlight(2, "refactor the parser") })
+    const id = seedSession([savedTurn(1, "first task")])
+    seedJournalFor(id, { version: SESSION_VERSION, inFlight: inFlight(2, "refactor the parser") })
 
     const frame = stripAnsi(
       await driveFrame(<App config={config()} />, { keys: ["/history", "\r"], settleMs: 250 })
@@ -169,7 +173,8 @@ describe("App · picking the session back up after a restart", () => {
   })
 
   it("runs the restored queue only when the user resumes it", async () => {
-    seedJournal({ version: SESSION_VERSION, queue: ["follow up"] })
+    const { id } = createSession(workDir)
+    seedJournalFor(id, { version: SESSION_VERSION, queue: ["follow up"] })
 
     let complete: () => void = () => {}
     const finished = new Promise<void>((resolve) => {
@@ -197,7 +202,10 @@ describe("App · picking the session back up after a restart", () => {
     const seen = (async () => {
       const deadline = Date.now() + 3000
       while (Date.now() < deadline) {
-        const requirement = loadJournal(workDir)?.inFlight?.requirement
+        // The App creates its session on mount, so resolve the id each pass
+        // until the index has it.
+        const id = latestSession(workDir)?.id
+        const requirement = id ? loadJournal(workDir, id)?.inFlight?.requirement : undefined
         if (requirement === "persist me") {
           captured = requirement
           return
@@ -213,8 +221,10 @@ describe("App · picking the session back up after a restart", () => {
     })
 
     expect(captured).toBe("persist me")
+    const id = latestSession(workDir)?.id as string
+    expect(id).toBeDefined()
     // A finished turn must not come back as "interrupted" next time.
-    await until(() => loadJournal(workDir)?.inFlight === undefined)
-    expect(loadJournal(workDir)?.inFlight).toBeUndefined()
+    await until(() => loadJournal(workDir, id)?.inFlight === undefined)
+    expect(loadJournal(workDir, id)?.inFlight).toBeUndefined()
   })
 })

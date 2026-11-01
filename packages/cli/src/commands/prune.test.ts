@@ -14,6 +14,35 @@ function makeItem(
   }
 }
 
+interface SeedSession {
+  id: string
+  title?: string
+  turnCount?: number
+  lastActiveAt?: number
+  /** Written into the session's turns.jsonl so the directory has some size. */
+  turns?: string
+}
+
+/** Seed a sessions index and, for each, its directory under `.multiclaw/sessions`. */
+function seedSessions(root: string, sessions: SeedSession[]): void {
+  const sessionsDir = path.join(root, ".multiclaw", "sessions")
+  fs.mkdirSync(sessionsDir, { recursive: true })
+  const index = sessions.map((s, i) => ({
+    id: s.id,
+    title: s.title ?? "",
+    turnCount: s.turnCount ?? 0,
+    createdAt: i,
+    lastActiveAt: s.lastActiveAt ?? i,
+  }))
+  fs.writeFileSync(path.join(sessionsDir, "index.json"), JSON.stringify(index), "utf-8")
+  for (const s of sessions) {
+    if (s.turns === undefined) continue
+    const dir = path.join(sessionsDir, s.id)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "turns.jsonl"), s.turns, "utf-8")
+  }
+}
+
 describe("scanPruneItems", () => {
   let tmpDir: string
 
@@ -29,20 +58,38 @@ describe("scanPruneItems", () => {
     expect(scanPruneItems(tmpDir)).toEqual([])
   })
 
-  it("finds history with turn count", () => {
-    const consoleDir = path.join(tmpDir, ".multiclaw", "console")
-    fs.mkdirSync(consoleDir, { recursive: true })
+  it("finds sessions with their title and turn count, newest first", () => {
+    seedSessions(tmpDir, [
+      { id: "old", title: "old task", turnCount: 1, lastActiveAt: 1, turns: "{}\n" },
+      { id: "new", title: "new task", turnCount: 5, lastActiveAt: 2, turns: "{}\n" },
+    ])
+
+    const items = scanPruneItems(tmpDir).filter((i) => i.kind === "session")
+    expect(items.map((i) => i.id)).toEqual(["new", "old"])
+    expect(items[0].label).toContain("new task")
+    expect(items[0].label).toContain("5 turns")
+    expect(items[1].label).toContain("old task")
+    expect(items[1].label).toContain("1 turn")
+  })
+
+  it("lists an index-only session with zero size, and a dir-only session as untitled", () => {
+    const sessionsDir = path.join(tmpDir, ".multiclaw", "sessions")
+    fs.mkdirSync(sessionsDir, { recursive: true })
     fs.writeFileSync(
-      path.join(consoleDir, "history.json"),
-      JSON.stringify([{ turn: 1 }, { turn: 2 }]),
+      path.join(sessionsDir, "index.json"),
+      JSON.stringify([{ id: "ghost", title: "never ran", turnCount: 0, lastActiveAt: 9 }]),
       "utf-8"
     )
+    // A directory with no index entry — a hand-deleted index.
+    fs.mkdirSync(path.join(sessionsDir, "orphan"), { recursive: true })
+    fs.writeFileSync(path.join(sessionsDir, "orphan", "turns.jsonl"), "{}\n", "utf-8")
 
-    const items = scanPruneItems(tmpDir)
-    expect(items).toHaveLength(1)
-    expect(items[0].id).toBe("history")
-    expect(items[0].kind).toBe("history")
-    expect(items[0].label).toContain("2 turns")
+    const items = scanPruneItems(tmpDir).filter((i) => i.kind === "session")
+    const ghost = items.find((i) => i.id === "ghost")
+    const orphan = items.find((i) => i.id === "orphan")
+    expect(ghost?.size).toBe(0)
+    expect(ghost?.label).toContain("never ran")
+    expect(orphan?.label).toContain("(untitled)")
   })
 
   it("finds runs with agent count from report.json", () => {
@@ -120,12 +167,16 @@ describe("scanPruneItems", () => {
     expect(run?.size).toBe(1500)
   })
 
-  it("shows malformed history as 0 turns", () => {
-    const consoleDir = path.join(tmpDir, ".multiclaw", "console")
-    fs.mkdirSync(consoleDir, { recursive: true })
-    fs.writeFileSync(path.join(consoleDir, "history.json"), "not json", "utf-8")
+  it("tolerates a corrupt index, still listing on-disk sessions as untitled", () => {
+    const sessionsDir = path.join(tmpDir, ".multiclaw", "sessions")
+    fs.mkdirSync(path.join(sessionsDir, "abc"), { recursive: true })
+    fs.writeFileSync(path.join(sessionsDir, "abc", "turns.jsonl"), "{}\n", "utf-8")
+    fs.writeFileSync(path.join(sessionsDir, "index.json"), "not json", "utf-8")
 
-    const items = scanPruneItems(tmpDir)
+    const items = scanPruneItems(tmpDir).filter((i) => i.kind === "session")
+    expect(items).toHaveLength(1)
+    expect(items[0].id).toBe("abc")
+    expect(items[0].label).toContain("(untitled)")
     expect(items[0].label).toContain("0 turns")
   })
 })
@@ -141,16 +192,47 @@ describe("deletePruneItems", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
-  it("deletes history file", () => {
-    const historyFile = path.join(tmpDir, "history.json")
-    fs.writeFileSync(historyFile, "[]", "utf-8")
+  it("deletes a session directory and drops its index entry", () => {
+    const sessionsDir = path.join(tmpDir, ".multiclaw", "sessions")
+    const dir = path.join(sessionsDir, "sid")
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "turns.jsonl"), "{}\n", "utf-8")
+    fs.writeFileSync(
+      path.join(sessionsDir, "index.json"),
+      JSON.stringify([
+        { id: "sid", title: "gone", turnCount: 1, createdAt: 0, lastActiveAt: 0 },
+        { id: "keep", title: "stays", turnCount: 1, createdAt: 1, lastActiveAt: 1 },
+      ]),
+      "utf-8"
+    )
 
     const { deleted, failed } = deletePruneItems([
-      makeItem({ id: "history", kind: "history", path: historyFile }),
+      makeItem({ id: "sid", kind: "session", path: dir }),
     ])
-    expect(deleted).toEqual(["history"])
+
+    expect(deleted).toEqual(["sid"])
     expect(failed).toEqual([])
-    expect(fs.existsSync(historyFile)).toBe(false)
+    expect(fs.existsSync(dir)).toBe(false)
+    const index = JSON.parse(fs.readFileSync(path.join(sessionsDir, "index.json"), "utf-8"))
+    expect(index.map((e: { id: string }) => e.id)).toEqual(["keep"])
+  })
+
+  it("deletes an index-only session without a directory", () => {
+    const sessionsDir = path.join(tmpDir, ".multiclaw", "sessions")
+    fs.mkdirSync(sessionsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(sessionsDir, "index.json"),
+      JSON.stringify([{ id: "ghost", title: "", turnCount: 0, createdAt: 0, lastActiveAt: 0 }]),
+      "utf-8"
+    )
+
+    const { deleted, failed } = deletePruneItems([
+      makeItem({ id: "ghost", kind: "session", path: path.join(sessionsDir, "ghost") }),
+    ])
+
+    expect(deleted).toEqual(["ghost"])
+    expect(failed).toEqual([])
+    expect(JSON.parse(fs.readFileSync(path.join(sessionsDir, "index.json"), "utf-8"))).toEqual([])
   })
 
   it("deletes a run directory recursively", () => {
@@ -193,45 +275,44 @@ describe("deletePruneItems", () => {
   })
 
   it("reports failures without stopping", () => {
-    const missing = path.join(tmpDir, "does-not-exist")
+    // An `all-runs` item lists its directory; pointing it at a file makes the
+    // listing throw, which is the error path this verifies.
+    const notADir = path.join(tmpDir, "not-a-dir")
+    fs.writeFileSync(notADir, "x", "utf-8")
 
     const { deleted, failed } = deletePruneItems([
-      makeItem({ id: "missing", kind: "history", path: missing }),
+      makeItem({ id: "all-runs", kind: "all-runs", path: notADir }),
     ])
+
     expect(deleted).toEqual([])
     expect(failed).toHaveLength(1)
-    expect(failed[0].path).toBe(missing)
+    expect(failed[0].path).toBe(notADir)
   })
 })
 
 describe("resolvePruneTargets", () => {
   const items: PruneItem[] = [
-    makeItem({ id: "history", kind: "history", path: "/h" }),
+    makeItem({ id: "sid", kind: "session", path: "/s/sid" }),
     makeItem({ id: "run-a", kind: "run", path: "/r/a" }),
     makeItem({ id: "run-b", kind: "run", path: "/r/b" }),
     makeItem({ id: "all-runs", kind: "all-runs", path: "/r" }),
   ]
 
   it("returns all ids when --all is set", () => {
-    expect(resolvePruneTargets({ all: true }, items)).toEqual([
-      "history",
+    expect(resolvePruneTargets({ all: true }, items)).toEqual(["sid", "run-a", "run-b", "all-runs"])
+  })
+
+  it("returns all ids when both --sessions and --runs are set", () => {
+    expect(resolvePruneTargets({ sessions: true, runs: true }, items)).toEqual([
+      "sid",
       "run-a",
       "run-b",
       "all-runs",
     ])
   })
 
-  it("returns all ids when both --history and --runs are set", () => {
-    expect(resolvePruneTargets({ history: true, runs: true }, items)).toEqual([
-      "history",
-      "run-a",
-      "run-b",
-      "all-runs",
-    ])
-  })
-
-  it("returns only history when --history is set alone", () => {
-    expect(resolvePruneTargets({ history: true }, items)).toEqual(["history"])
+  it("returns only sessions when --sessions is set alone", () => {
+    expect(resolvePruneTargets({ sessions: true }, items)).toEqual(["sid"])
   })
 
   it("returns runs and all-runs when --runs is set alone", () => {

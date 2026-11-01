@@ -1,9 +1,9 @@
 import { AgentSessionManager, type EventBus, type MultiClawConfig } from "@multiclawcli/core"
 import { render } from "ink"
 import { createElement } from "react"
-import { App } from "./App"
+import { App, type InitialSession } from "./App"
 
-export type { AppProps } from "./App"
+export type { AppProps, InitialSession } from "./App"
 export * from "./layout"
 export * from "./state"
 
@@ -11,6 +11,8 @@ export interface TuiOptions {
   config: MultiClawConfig
   /** Attach per-turn reporters (e.g. a file log writer) here. */
   onTurnStart?: (eventBus: EventBus, logDir: string) => void | (() => void | Promise<void>)
+  /** How to choose the session on launch; defaults to continuing the latest. */
+  initialSession?: InitialSession
 }
 
 /**
@@ -37,9 +39,16 @@ export async function startTui(options: TuiOptions): Promise<void> {
     cleanup = callback
   }
   try {
-    const app = render(createElement(App, { ...options, sessions, onCleanupReady }), {
-      exitOnCtrlC: false,
-    })
+    const app = render(
+      createElement(App, {
+        config: options.config,
+        onTurnStart: options.onTurnStart,
+        initialSession: options.initialSession,
+        sessions,
+        onCleanupReady,
+      }),
+      { exitOnCtrlC: false }
+    )
     await app.waitUntilExit()
   } finally {
     try {

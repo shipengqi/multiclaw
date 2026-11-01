@@ -43,6 +43,11 @@ export const COMMANDS: readonly CommandSpec[] = [
     availability: "always",
   },
   {
+    name: "sessions",
+    description: "Switch between, or delete, saved sessions",
+    availability: "always",
+  },
+  {
     name: "verbose",
     description: "Toggle tool detail in the stream",
     availability: "always",
@@ -88,9 +93,9 @@ export const COMMANDS: readonly CommandSpec[] = [
     availability: "running",
   },
   {
-    name: "task",
+    name: "new",
     args: "<requirement>",
-    description: "Start a new task with fresh agent sessions",
+    description: "Start a new session with fresh agent sessions",
     availability: "idle",
   },
   {

@@ -5,7 +5,8 @@ import type { MultiClawConfig } from "@multiclawcli/core"
 import { runtimeRegistry } from "@multiclawcli/core"
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { App } from "./App"
-import { historyPath } from "./history"
+import { turnsPath } from "./history"
+import { createSession, latestSession } from "./sessions"
 import { stripAnsi, type TurnView } from "./state"
 import { driveFrame } from "./test-helpers"
 
@@ -74,10 +75,13 @@ function savedTurn(turn: number, requirement: string): TurnView {
   }
 }
 
-function seedHistory(turns: TurnView[]): void {
-  const target = historyPath(workDir)
+/** Create a session and seed its turn log, so the console opens on it. */
+function seedSession(turns: TurnView[]): string {
+  const { id } = createSession(workDir)
+  const target = turnsPath(workDir, id)
   fs.mkdirSync(path.dirname(target), { recursive: true })
-  fs.writeFileSync(target, JSON.stringify(turns), "utf-8")
+  fs.writeFileSync(target, `${turns.map((turn) => JSON.stringify(turn)).join("\n")}\n`, "utf-8")
+  return id
 }
 
 /** Poll a predicate, so a test never races the effect's asynchronous write. */
@@ -116,7 +120,7 @@ describe("App · remembering turns across sessions", () => {
   // The whole point of T9: a restart shows what the last session did, instead of
   // a console that has forgotten every turn.
   it("lists turns restored from disk when /history is opened", async () => {
-    seedHistory([savedTurn(1, "restored task")])
+    seedSession([savedTurn(1, "restored task")])
 
     const frame = stripAnsi(
       await driveFrame(<App config={config()} />, { keys: ["/history", "\r"], settleMs: 200 })
@@ -132,7 +136,7 @@ describe("App · remembering turns across sessions", () => {
     ["failed", "acceptance failed"],
     ["cancelled", "acceptance cancelled"],
   ] as const)("shows acceptance %s in restored history", async (status, label) => {
-    seedHistory([
+    seedSession([
       {
         ...savedTurn(1, "reviewed task"),
         success: status === "approved",
@@ -148,7 +152,7 @@ describe("App · remembering turns across sessions", () => {
   })
 
   it("keeps a cancelled execution distinct from failed history", async () => {
-    seedHistory([{ ...savedTurn(1, "stopped task"), cancelled: true, success: false }])
+    seedSession([{ ...savedTurn(1, "stopped task"), cancelled: true, success: false }])
     const frame = stripAnsi(
       await driveFrame(<App config={config()} />, { keys: ["/history", "\r"], settleMs: 200 })
     )
@@ -174,17 +178,23 @@ describe("App · remembering turns across sessions", () => {
       { keys: ["persist me", "\r"], ready: finished, settleMs: 300 }
     )
 
-    const target = historyPath(workDir)
+    const id = latestSession(workDir)?.id
+    expect(id).toBeDefined()
+    const target = turnsPath(workDir, id as string)
     await until(() => fs.existsSync(target))
 
-    const turns = JSON.parse(fs.readFileSync(target, "utf-8")) as TurnView[]
+    const turns = fs
+      .readFileSync(target, "utf-8")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line)) as TurnView[]
     expect(turns.some((t) => t.requirement === "persist me" && t.phase === "complete")).toBe(true)
   })
 
   it("continues a finished turn's sessions when c is pressed", async () => {
     // The point of `c`: the next instruction lands in the conversation that turn
     // left behind, instead of starting the agents cold.
-    seedHistory([
+    seedSession([
       {
         ...savedTurn(1, "design the thing"),
         agents: {
@@ -221,7 +231,7 @@ describe("App · remembering turns across sessions", () => {
   it("says so when the chosen turn has no sessions to continue", async () => {
     // An old turn can predate session ids, and silently starting a cold turn
     // would look like the continuation worked.
-    seedHistory([savedTurn(1, "ancient task")])
+    seedSession([savedTurn(1, "ancient task")])
 
     const frame = stripAnsi(
       await driveFrame(<App config={config()} />, { keys: ["/history", "\r", "c"], settleMs: 200 })

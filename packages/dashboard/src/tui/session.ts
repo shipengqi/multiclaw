@@ -1,7 +1,8 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { writeJsonFile } from "./atomic"
-import { CONSOLE_DIR, loadHistory } from "./history"
+import { loadTurns } from "./history"
+import { sessionDir } from "./sessions"
 import {
   type AgentView,
   MAX_HISTORY,
@@ -16,10 +17,10 @@ import {
  * Live agent sessions are child processes, and a pending approval is an RPC in
  * flight to one of them — neither survives the process that owns them. So this
  * file deliberately does not try to *continue* a turn. It records the boundary
- * instead: which turn was running, what the user had typed but not run, where
- * the current task began, and how many decisions were waiting. A restart can
- * then say what happened, show the interrupted turn as a turn, and hand the
- * queued input back — without pretending a dead agent is still working.
+ * instead: which turn was running, what the user had typed but not run, and how
+ * many decisions were waiting. A restart can then say what happened, show the
+ * interrupted turn as a turn, and hand the queued input back — without
+ * pretending a dead agent is still working.
  */
 export const SESSION_FILE = "session.json"
 
@@ -60,22 +61,14 @@ export interface JournalTurn {
 
 export interface SessionJournal {
   version: number
-  /**
-   * Turn number the current task began at.
-   *
-   * `/task` closes the previous task's context, and that boundary has to outlive
-   * the process: without it a restart would hand the leader every turn ever run
-   * in the workspace, including the ones the user explicitly closed.
-   */
-  taskStart?: number
   /** Follow-ups typed but never run, in the order they were typed. */
   queue?: string[]
   inFlight?: JournalTurn
 }
 
-/** Where the console keeps its session journal for a workspace. */
-export function sessionPath(workDir: string): string {
-  return path.join(workDir, ".multiclaw", CONSOLE_DIR, SESSION_FILE)
+/** Where a session keeps its journal. */
+export function sessionPath(workDir: string, sessionId: string): string {
+  return path.join(sessionDir(workDir, sessionId), SESSION_FILE)
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -137,25 +130,22 @@ function isJournalTurn(value: unknown): value is JournalTurn {
 }
 
 /**
- * Read the workspace's session journal.
+ * Read a session's journal.
  *
- * Never throws, for the same reason `loadHistory` does not: a corrupted side
- * file means "no journal", and a console that refuses to start over it would be
- * far worse than one that starts with an empty past. A journal written by a
- * newer console (unknown `version`) is ignored rather than guessed at.
+ * Never throws, for the same reason `loadTurns` does not: a corrupted side file
+ * means "no journal", and a console that refuses to start over it would be far
+ * worse than one that starts with an empty past. A journal written by a newer
+ * console (unknown `version`) is ignored rather than guessed at.
  */
-export function loadJournal(workDir: string): SessionJournal | undefined {
+export function loadJournal(workDir: string, sessionId: string): SessionJournal | undefined {
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(sessionPath(workDir), "utf-8"))
+    const parsed: unknown = JSON.parse(fs.readFileSync(sessionPath(workDir, sessionId), "utf-8"))
     if (!isObject(parsed) || parsed.version !== SESSION_VERSION) return undefined
     const queue = Array.isArray(parsed.queue)
       ? parsed.queue.filter((item): item is string => typeof item === "string" && item !== "")
       : []
     return {
       version: SESSION_VERSION,
-      ...(Number.isInteger(parsed.taskStart) && (parsed.taskStart as number) >= 0
-        ? { taskStart: parsed.taskStart as number }
-        : {}),
       ...(queue.length > 0 ? { queue } : {}),
       ...(isJournalTurn(parsed.inFlight) ? { inFlight: parsed.inFlight } : {}),
     }
@@ -166,7 +156,7 @@ export function loadJournal(workDir: string): SessionJournal | undefined {
 
 /** True when the journal has nothing worth keeping a file for. */
 function isEmpty(journal: SessionJournal): boolean {
-  return journal.inFlight === undefined && journal.queue === undefined && !journal.taskStart
+  return journal.inFlight === undefined && journal.queue === undefined
 }
 
 /**
@@ -176,13 +166,17 @@ function isEmpty(journal: SessionJournal): boolean {
  * to survive a process that dies mid-write, so the write itself must never be
  * the thing that leaves a torn file behind.
  *
- * An empty journal does not create the file. A console that was opened and quit
- * without doing anything should not leave `.multiclaw/console/` behind — but an
- * *existing* journal is still rewritten when it empties, because "nothing is in
- * flight" is exactly what the next start needs to read.
+ * An empty journal does not create the file. A session that was opened and quit
+ * without doing anything should not leave a journal behind — but an *existing*
+ * journal is still rewritten when it empties, because "nothing is in flight" is
+ * exactly what the next start needs to read.
  */
-export function saveJournal(workDir: string, journal: SessionJournal): Promise<void> {
-  const target = sessionPath(workDir)
+export function saveJournal(
+  workDir: string,
+  sessionId: string,
+  journal: SessionJournal
+): Promise<void> {
+  const target = sessionPath(workDir, sessionId)
   if (isEmpty(journal) && !fs.existsSync(target)) return Promise.resolve()
   return writeJsonFile(target, JSON.stringify(journal))
 }
@@ -274,7 +268,12 @@ function plural(count: number, word: string): string {
 export interface RestoredConsole {
   history: TurnView[]
   queue: string[]
-  taskStart: number
+  /**
+   * Highest turn number already on disk in `turns.jsonl` — the watermark the
+   * console appends past. Excludes a journal-recovered interrupted turn, which
+   * lives only in the journal until the next save writes it to the log.
+   */
+  persistedTurn: number
   /** The last turn ended by asking the user something, so the console reopens ready for it. */
   awaitingAnswer: boolean
   /** One line for the notice bar, when the previous session left work behind. */
@@ -282,20 +281,21 @@ export interface RestoredConsole {
 }
 
 /**
- * Everything the console should open with, read once at startup.
+ * Everything the console should open a session with, read once at startup.
  *
  * The interrupted turn is appended to the restored history rather than replacing
- * it: the turns before it still happened. It is skipped when history already
- * holds that turn number, because a restored turn is written back to
- * `history.json` on the very next save — a second restart must not add it twice.
- * A journal *behind* the last recorded turn is stale (the history was written by
- * a later session) and is dropped for the same reason.
+ * it: the turns before it still happened. It is skipped when the log already
+ * holds that turn number, because a restored turn is written to the log on the
+ * very next save — a second restart must not add it twice. A journal *behind*
+ * the last recorded turn is stale (the log was written by a later session) and
+ * is dropped for the same reason.
  */
-export function restoreConsole(workDir: string): RestoredConsole {
-  const history = loadHistory(workDir)
-  const journal = loadJournal(workDir)
+export function restoreConsole(workDir: string, sessionId: string): RestoredConsole {
+  const history = loadTurns(workDir, sessionId)
+  const journal = loadJournal(workDir, sessionId)
   const inFlight = journal?.inFlight
   const last = history[history.length - 1]
+  const persistedTurn = last?.turn ?? 0
   const parts: string[] = []
 
   if (inFlight && (!last || inFlight.turn > last.turn)) {
@@ -318,7 +318,7 @@ export function restoreConsole(workDir: string): RestoredConsole {
   return {
     history: restored,
     queue,
-    taskStart: journal?.taskStart ?? 0,
+    persistedTurn,
     // Read from the *final* last turn: a recovered interrupted turn has no
     // reply, so it correctly clears the "waiting for an answer" state.
     awaitingAnswer: restored[restored.length - 1]?.reply?.mode === "ask",

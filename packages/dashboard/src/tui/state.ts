@@ -213,6 +213,23 @@ export type TuiAction =
   | { type: "view:close" }
   /** Flip whether tool detail is shown in the stream. */
   | { type: "verbose:toggle" }
+  /**
+   * Start a fresh session in place: empty history, turn counter back to zero,
+   * roster reseeded. Carries the seeded agents and leader ids the same way
+   * `turn:start` does, so no module-level object is shared into live state.
+   */
+  | { type: "session:reset"; agents: Record<string, AgentView>; leaderIds: string[] }
+  /**
+   * Switch to an existing session: like `session:reset`, but seeded with that
+   * session's finished turns so its history is on screen and the turn counter
+   * continues from where it left off.
+   */
+  | {
+      type: "session:load"
+      agents: Record<string, AgentView>
+      leaderIds: string[]
+      history: TurnView[]
+    }
 
 export function stripAnsi(text: string): string {
   return text.replace(ANSI_PATTERN, "")
@@ -866,6 +883,57 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
 
     case "verbose:toggle":
       return { ...state, verbose: !state.verbose }
+
+    case "session:reset":
+      return seededState(state, action.agents, action.leaderIds, [])
+
+    case "session:load":
+      return seededState(state, action.agents, action.leaderIds, action.history)
+  }
+}
+
+/**
+ * The idle state a session opens in, seeded with a roster and its past turns.
+ *
+ * Mirrors `createInitialState(config, history)` but takes the roster from the
+ * caller, since the reducer has no `config`. Only `name` and `verbose` carry
+ * over from the state being replaced — a session keeps the console's label and
+ * settings, nothing of the previous session's turns. The roster is the caller's
+ * freshly-seeded object, so no module-level value is shared into live state.
+ */
+function seededState(
+  state: TuiState,
+  agents: Record<string, AgentView>,
+  leaderIds: string[],
+  history: TurnView[]
+): TuiState {
+  const ids = Object.keys(agents)
+  return {
+    phase: "idle",
+    name: state.name,
+    turn: history[history.length - 1]?.turn ?? 0,
+    requirement: undefined,
+    effectiveRequirement: undefined,
+    startedAt: undefined,
+    endedAt: undefined,
+    cancelled: undefined,
+    interrupted: undefined,
+    success: undefined,
+    acceptance: undefined,
+    totalDuration: undefined,
+    totalCostUsd: undefined,
+    reason: undefined,
+    warning: undefined,
+    reply: undefined,
+    stages: [],
+    leaderIds,
+    agents,
+    focusId: ids[0],
+    autoFollow: true,
+    scroll: 0,
+    history,
+    view: undefined,
+    verbose: state.verbose,
   }
 }
 

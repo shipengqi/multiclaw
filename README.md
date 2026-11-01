@@ -323,7 +323,9 @@ Type `/` on an empty line for a filtered list.
 | `/agents` | List the configured team |
 | `/focus <id>` | Focus an agent by id |
 | `/clear` | Clear the focused agent's log |
-| `/history` | Browse finished turns (see [History](#history)) |
+| `/history` | Browse finished turns in the current session (see [History](#history)) |
+| `/sessions` | Switch between, or delete, saved sessions (see [Sessions](#sessions)) |
+| `/new <requirement>` | Start a new session with fresh agent sessions |
 | `/steer <text>` | Send a message into the agents running right now |
 | `/cancel` | Cancel the running turn and its queue |
 | `/help` | Key map |
@@ -405,8 +407,8 @@ multi-selects; this is not a general JSON Schema implementation. No question
 handler means unexpected form requests are cancelled, not automatically answered.
 
 Leader clarification remains separate: `/answer <text>` answers a completed leader
-`ask` turn. Previously queued text is not used as that answer. `/task <requirement>`
-starts a new task with fresh agent sessions; `/pause` and `/continue` control the
+`ask` turn. Previously queued text is not used as that answer. `/new <requirement>`
+starts a new session with fresh agent sessions; `/pause` and `/continue` control the
 follow-up queue, not the running agent.
 
 ### Workspace
@@ -430,9 +432,9 @@ never to the turn that is still running.
 The turn currently on screen is not listed, because it is already in front of you. The console keeps
 the last 20 finished turns.
 
-Finished turns are written to `workDir/.multiclaw/console/history.json`, so closing the console and
-reopening it restores the list — and the turn numbering carries on from where it left off rather than
-restarting at one.
+Finished turns are written to `workDir/.multiclaw/sessions/<id>/turns.jsonl`, one line per turn, so
+closing the console and reopening it restores the list — and the turn numbering carries on from where
+it left off rather than restarting at one.
 
 The next leader turn also receives compact execution facts from completed pipeline
 turns: completed agents, failures and their reasons, and acceptance status separately.
@@ -442,11 +444,31 @@ enough facts are not relabeled as successful. This uses no additional model call
 stays within the existing six-turn / 4,000-character conversation budget. A follow-up
 such as “continue” does not implicitly approve tools or automatically retry failures.
 
+### Sessions
+
+A **session** is one continuous line of work — a sequence of turns sharing the same team. It is the
+unit the console saves, resumes and deletes, the way Claude Code and Codex do. Each session lives in
+its own `workDir/.multiclaw/sessions/<id>/` directory, and a small `index.json` holds the summaries
+the picker shows.
+
+- **Launch.** `multiclaw` continues the most recent session, or starts one when the workspace has
+  none. `multiclaw --new` starts a fresh session, and `multiclaw -r [id]` resumes a given session —
+  or opens the picker when no id is passed, the way `claude -r` does.
+- **`/sessions`** opens the picker: every session newest-first with its title (the first
+  requirement), turn count and age, the current one marked. `↑` `↓` select, `enter` switches to the
+  highlighted session — its history comes back and your next instruction continues its agents where
+  they left off — `d` deletes one, and `esc` closes.
+- **`/new <requirement>`** closes the current agents and starts a new session in place.
+
+Sessions are kept until you remove them: `d` in the picker, `multiclaw sessions rm <id>` (a full id
+or a unique prefix), or `multiclaw prune` (which also lists old run directories). `multiclaw sessions
+ls` prints them.
+
 ### Restarting
 
 Closing the console politely and reopening it is the easy case: the turns are on disk, so they come
 back. A console that was killed — a crashed terminal, a reboot, `kill -9` — leaves more behind than
-that, and it is written to `workDir/.multiclaw/console/session.json` while the turn runs:
+that, and it is written to `workDir/.multiclaw/sessions/<id>/session.json` while the turn runs:
 
 - **The turn in flight.** Agent processes die with the console and a pending approval is an RPC to
   one of them, so the turn cannot be continued. Instead it is restored as a turn that ended
@@ -454,8 +476,8 @@ that, and it is written to `workDir/.multiclaw/console/session.json` while the t
   every agent that never reported back marked stopped. Nothing claims it succeeded.
 - **The queue.** Follow-ups you typed but never ran come back — **paused**, because running them the
   instant the console reopens would do work you are not watching. `/continue` starts them.
-- **The task boundary.** `/task` closes the previous task's context, and that boundary now outlives
-  the process: a restart hands the leader the current task's turns, not every turn ever run.
+- **The session.** A restart reopens the session you were in and restores its turns; the leader is
+  handed that session's conversation, not every turn ever run in the workspace.
 - **Pending decisions.** An approval or question that was waiting is gone — the agent that asked no
   longer exists. The console says how many were discarded instead of silently dropping them.
 

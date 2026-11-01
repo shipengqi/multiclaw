@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { historyPath } from "./history"
+import { turnsPath } from "./history"
 import {
   interruptedTurn,
   journalTurn,
@@ -15,6 +15,8 @@ import {
   sessionPath,
 } from "./session"
 import { createInitialState, type TurnView } from "./state"
+
+const SID = "session-1"
 
 let workDir: string
 
@@ -42,13 +44,13 @@ function savedTurn(turn: number, requirement: string): TurnView {
 }
 
 function seedHistory(turns: TurnView[]): void {
-  const target = historyPath(workDir)
+  const target = turnsPath(workDir, SID)
   fs.mkdirSync(path.dirname(target), { recursive: true })
-  fs.writeFileSync(target, JSON.stringify(turns), "utf-8")
+  fs.writeFileSync(target, `${turns.map((turn) => JSON.stringify(turn)).join("\n")}\n`, "utf-8")
 }
 
 function seedJournal(value: unknown): void {
-  const target = sessionPath(workDir)
+  const target = sessionPath(workDir, SID)
   fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.writeFileSync(target, JSON.stringify(value), "utf-8")
 }
@@ -71,37 +73,35 @@ function inFlight(overrides: Partial<SessionJournal["inFlight"]> = {}) {
 }
 
 describe("session journal · on disk", () => {
-  it("round-trips the turn in flight, the queue and the task boundary", async () => {
-    await saveJournal(workDir, {
+  it("round-trips the turn in flight and the queue", async () => {
+    await saveJournal(workDir, SID, {
       version: SESSION_VERSION,
-      taskStart: 4,
       queue: ["add tests", "then document it"],
       inFlight: inFlight() as SessionJournal["inFlight"],
     })
 
-    const loaded = loadJournal(workDir)
-    expect(loaded?.taskStart).toBe(4)
+    const loaded = loadJournal(workDir, SID)
     expect(loaded?.queue).toEqual(["add tests", "then document it"])
     expect(loaded?.inFlight?.requirement).toBe("refactor the parser")
     expect(loaded?.inFlight?.turn).toBe(2)
   })
 
-  it("does not create a file for a console with nothing to remember", async () => {
-    await saveJournal(workDir, { version: SESSION_VERSION, taskStart: 0 })
-    expect(fs.existsSync(sessionPath(workDir))).toBe(false)
+  it("does not create a file for a session with nothing to remember", async () => {
+    await saveJournal(workDir, SID, { version: SESSION_VERSION })
+    expect(fs.existsSync(sessionPath(workDir, SID))).toBe(false)
   })
 
   it("clears an existing journal rather than leaving a stale turn behind", async () => {
     seedJournal({ version: SESSION_VERSION, inFlight: inFlight() })
-    expect(loadJournal(workDir)?.inFlight).toBeDefined()
+    expect(loadJournal(workDir, SID)?.inFlight).toBeDefined()
 
-    await saveJournal(workDir, { version: SESSION_VERSION })
+    await saveJournal(workDir, SID, { version: SESSION_VERSION })
 
     // The file has to survive as "nothing in flight": deleting it would be
-    // indistinguishable from a workspace that never had a journal, and the next
+    // indistinguishable from a session that never had a journal, and the next
     // start could not tell the two apart.
-    expect(fs.existsSync(sessionPath(workDir))).toBe(true)
-    expect(loadJournal(workDir)?.inFlight).toBeUndefined()
+    expect(fs.existsSync(sessionPath(workDir, SID))).toBe(true)
+    expect(loadJournal(workDir, SID)?.inFlight).toBeUndefined()
   })
 
   it.each([
@@ -111,10 +111,10 @@ describe("session journal · on disk", () => {
     ["a non-object payload", JSON.stringify(["nope"])],
   ])("reads %s as no journal", (_label, raw) => {
     if (raw !== undefined) {
-      fs.mkdirSync(path.dirname(sessionPath(workDir)), { recursive: true })
-      fs.writeFileSync(sessionPath(workDir), raw, "utf-8")
+      fs.mkdirSync(path.dirname(sessionPath(workDir, SID)), { recursive: true })
+      fs.writeFileSync(sessionPath(workDir, SID), raw, "utf-8")
     }
-    expect(loadJournal(workDir)).toBeUndefined()
+    expect(loadJournal(workDir, SID)).toBeUndefined()
   })
 
   it("drops a turn in flight that the panes could not render", () => {
@@ -127,12 +127,12 @@ describe("session journal · on disk", () => {
         agents: { leader: { id: "leader", name: "Leader", status: "confused", logs: "" } },
       },
     })
-    expect(loadJournal(workDir)?.inFlight).toBeUndefined()
+    expect(loadJournal(workDir, SID)?.inFlight).toBeUndefined()
   })
 
   it("keeps the queue but drops non-string entries", () => {
     seedJournal({ version: SESSION_VERSION, queue: ["keep me", 7, "", "and me"] })
-    expect(loadJournal(workDir)?.queue).toEqual(["keep me", "and me"])
+    expect(loadJournal(workDir, SID)?.queue).toEqual(["keep me", "and me"])
   })
 })
 
@@ -199,12 +199,12 @@ describe("interruptedTurn · what a restart can honestly claim", () => {
   })
 })
 
-describe("restoreConsole · opening the console again", () => {
-  it("opens empty when the workspace has nothing", () => {
-    expect(restoreConsole(workDir)).toEqual({
+describe("restoreConsole · opening a session again", () => {
+  it("opens empty when the session has nothing", () => {
+    expect(restoreConsole(workDir, SID)).toEqual({
       history: [],
       queue: [],
-      taskStart: 0,
+      persistedTurn: 0,
       awaitingAnswer: false,
     })
   })
@@ -213,25 +213,28 @@ describe("restoreConsole · opening the console again", () => {
     seedHistory([savedTurn(1, "first task")])
     seedJournal({ version: SESSION_VERSION, inFlight: inFlight(), queue: ["follow up"] })
 
-    const restored = restoreConsole(workDir)
+    const restored = restoreConsole(workDir, SID)
 
     expect(restored.history.map((turn) => turn.turn)).toEqual([1, 2])
     expect(restored.history[1].interrupted).toBe(true)
+    // The watermark excludes the journal-recovered turn — it is not on disk yet.
+    expect(restored.persistedTurn).toBe(1)
     expect(restored.queue).toEqual(["follow up"])
     expect(restored.notice).toContain("turn 2 was interrupted by a restart")
     expect(restored.notice).toContain("1 pending decision discarded")
     expect(restored.notice).toContain("1 queued follow-up restored")
   })
 
-  it("does not add a turn the history already holds", () => {
-    // A restored turn is written back to history.json by the very next save, so
-    // a second restart sees both files describing it.
+  it("does not add a turn the log already holds", () => {
+    // A restored turn is written to the log by the very next save, so a second
+    // restart sees both the log and the journal describing it.
     seedHistory([savedTurn(1, "first task"), { ...savedTurn(2, "refactor"), interrupted: true }])
     seedJournal({ version: SESSION_VERSION, inFlight: inFlight() })
 
-    const restored = restoreConsole(workDir)
+    const restored = restoreConsole(workDir, SID)
 
     expect(restored.history).toHaveLength(2)
+    expect(restored.persistedTurn).toBe(2)
     expect(restored.notice).toBeUndefined()
   })
 
@@ -239,13 +242,14 @@ describe("restoreConsole · opening the console again", () => {
     seedHistory([savedTurn(1, "a"), savedTurn(2, "b"), savedTurn(3, "c")])
     seedJournal({ version: SESSION_VERSION, inFlight: inFlight({ turn: 2 }) })
 
-    const restored = restoreConsole(workDir)
+    const restored = restoreConsole(workDir, SID)
 
     expect(restored.history.map((turn) => turn.turn)).toEqual([1, 2, 3])
+    expect(restored.persistedTurn).toBe(3)
     expect(restored.notice).toBeUndefined()
   })
 
-  it("restores the task boundary and the open question", () => {
+  it("restores the open question and the turn watermark", () => {
     seedHistory([
       savedTurn(1, "old task"),
       {
@@ -254,11 +258,11 @@ describe("restoreConsole · opening the console again", () => {
         reply: { mode: "ask", message: "Postgres or SQLite?" },
       },
     ])
-    seedJournal({ version: SESSION_VERSION, taskStart: 1 })
+    seedJournal({ version: SESSION_VERSION })
 
-    const restored = restoreConsole(workDir)
+    const restored = restoreConsole(workDir, SID)
 
-    expect(restored.taskStart).toBe(1)
+    expect(restored.persistedTurn).toBe(2)
     expect(restored.awaitingAnswer).toBe(true)
   })
 
@@ -266,6 +270,6 @@ describe("restoreConsole · opening the console again", () => {
     seedHistory([savedTurn(1, "old task")])
     seedJournal({ version: SESSION_VERSION, inFlight: inFlight({ turn: 2 }) })
 
-    expect(restoreConsole(workDir).awaitingAnswer).toBe(false)
+    expect(restoreConsole(workDir, SID).awaitingAnswer).toBe(false)
   })
 })

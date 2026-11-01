@@ -1920,3 +1920,67 @@ describe("session ids", () => {
     expect(state.agents.a.sessionId).toBeUndefined()
   })
 })
+
+describe("session:reset and session:load", () => {
+  const seeded = () => ({ agents: seedAgents(config()), leaderIds: ["leader"] })
+
+  /** A console with one finished turn and a live one on screen, verbose on. */
+  function withTurns(): TuiState {
+    let state = tuiReducer(initialState, {
+      type: "turn:start",
+      requirement: "one",
+      agents: seedAgents(config()),
+      leaderIds: ["leader"],
+      startedAt: T0,
+    })
+    state = reduceEvent(state, {
+      type: "orchestration:complete",
+      timestamp: TS,
+      payload: {
+        name: "demo",
+        success: true,
+        totalDuration: 1,
+        agentResults: [],
+        startTime: TS,
+        endTime: TS,
+      },
+    })
+    state = tuiReducer(state, {
+      type: "turn:start",
+      requirement: "two",
+      agents: seedAgents(config()),
+      leaderIds: ["leader"],
+      startedAt: T0,
+    })
+    return { ...state, verbose: true }
+  }
+
+  it("session:reset empties the history and resets the turn counter, keeping verbose", () => {
+    const next = tuiReducer(withTurns(), { type: "session:reset", ...seeded() })
+    expect(next.phase).toBe("idle")
+    expect(next.turn).toBe(0)
+    expect(next.history).toEqual([])
+    expect(next.requirement).toBeUndefined()
+    expect(next.view).toBeUndefined()
+    expect(next.verbose).toBe(true)
+    expect(Object.keys(next.agents)).toEqual(["leader", "architect", "dev"])
+  })
+
+  it("session:load seeds the history and continues the turn counter from it", () => {
+    const history: TurnView[] = [
+      { ...initialState, turn: 4, phase: "complete", requirement: "earlier" },
+    ]
+    const next = tuiReducer(withTurns(), { type: "session:load", ...seeded(), history })
+    expect(next.phase).toBe("idle")
+    expect(next.history).toBe(history)
+    expect(next.turn).toBe(4)
+    expect(next.requirement).toBeUndefined()
+    expect(next.view).toBeUndefined()
+  })
+
+  it("session:load with an empty history starts the counter at zero", () => {
+    const next = tuiReducer(withTurns(), { type: "session:load", ...seeded(), history: [] })
+    expect(next.turn).toBe(0)
+    expect(next.history).toEqual([])
+  })
+})

@@ -5,6 +5,8 @@ import type { MultiClawConfig } from "@multiclawcli/core"
 import { agents, runtimeRegistry } from "@multiclawcli/core"
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { App } from "./App"
+import { exportPath, turnsPath } from "./history"
+import { latestSession } from "./sessions"
 import { stripAnsi } from "./state"
 import { driveFrame } from "./test-helpers"
 
@@ -1247,7 +1249,8 @@ describe("App · exporting and searching finished turns", () => {
       keys: ["export me", "\r"],
       ready: new Promise<void>((resolve) => {
         const done = setInterval(() => {
-          if (fs.existsSync(path.join(exportWorkDir, ".multiclaw", "console", "history.json"))) {
+          const id = latestSession(exportWorkDir)?.id
+          if (id && fs.existsSync(turnsPath(exportWorkDir, id))) {
             clearInterval(done)
             resolve()
           }
@@ -1257,7 +1260,9 @@ describe("App · exporting and searching finished turns", () => {
       settleMs: 300,
     })
 
-    const exported = path.join(exportWorkDir, ".multiclaw", "console", "exports", "turn-1.md")
+    const id = latestSession(exportWorkDir)?.id as string
+    expect(id).toBeDefined()
+    const exported = exportPath(exportWorkDir, id, 1)
     expect(fs.readFileSync(exported, "utf-8")).toContain("export me")
   })
 
@@ -1281,9 +1286,9 @@ describe("App · the command palette window", () => {
   // top `MAX_MENU_ROWS` rows and the highlight was clamped inside it, so the
   // eighth command could not be reached with the arrow keys at all.
   const down = "\u001b[B"
-  // `/` opens the palette on every command; seven `↓` moves onto the eighth,
+  // `/` opens the palette on every command; eight `↓` moves onto the ninth,
   // which is `/fork` and sits below the first window.
-  const toFork = ["/", ...Array.from({ length: 7 }, () => down)]
+  const toFork = ["/", ...Array.from({ length: 8 }, () => down)]
 
   it("follows the selection past the first window, and runs the highlighted command", async () => {
     const highlighted = stripAnsi(
@@ -1405,12 +1410,12 @@ describe("App · a command typed mid-run", () => {
 /**
  * A clean workspace before every test.
  *
- * T9 makes the console persist finished turns under `config.workDir`, and every
- * config above points at a fixed `/tmp` path. Without this, a turn written by
- * one test — or by a previous *run* of the suite — would be restored into the
- * next render, so `turn 2` would come back as `turn 7` and the suite would fail
- * on its second run. Wiping the console directory restores the isolation the
- * tests had before anything was written to disk.
+ * The console persists finished turns under `config.workDir`, and every config
+ * above points at a fixed `/tmp` path. Without this, a turn written by one test
+ * — or by a previous *run* of the suite — would be restored into the next
+ * render, so `turn 2` would come back as `turn 7` and the suite would fail on
+ * its second run. Wiping `.multiclaw` restores the isolation the tests had
+ * before anything was written to disk.
  */
 beforeEach(() => {
   for (const { workDir } of [
@@ -1427,6 +1432,6 @@ beforeEach(() => {
     REPLAY_CONFIG,
     GATE_CONFIG,
   ]) {
-    fs.rmSync(path.join(workDir, ".multiclaw", "console"), { recursive: true, force: true })
+    fs.rmSync(path.join(workDir, ".multiclaw"), { recursive: true, force: true })
   }
 })

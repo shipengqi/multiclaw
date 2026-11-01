@@ -44,7 +44,12 @@ import {
   railCellWidths,
 } from "./components/chrome"
 import { PermissionBar, QuestionForm } from "./components/interaction"
-import { HelpOverlay, HistoryOverlay, listWindowStart } from "./components/overlays"
+import {
+  HelpOverlay,
+  HistoryOverlay,
+  listWindowStart,
+  SessionsOverlay,
+} from "./components/overlays"
 import {
   Divider,
   ErrorPanel,
@@ -55,7 +60,7 @@ import {
 } from "./components/panels"
 import { CommandMenu, MARKER_WIDTH, Prompt, promptRowCount } from "./components/prompt"
 import { describeSteering, formatCost, formatDuration } from "./format"
-import { exportPath, exportTurn, historyPath, saveHistory } from "./history"
+import { appendTurns, exportPath, exportTurn, turnsPath } from "./history"
 import {
   clean,
   commitField,
@@ -85,10 +90,17 @@ import {
   sessionPath,
 } from "./session"
 import {
+  createSession,
+  deleteSession,
+  latestSession,
+  listSessions,
+  type SessionMeta,
+  touchSession,
+} from "./sessions"
+import {
   conversationTurns,
   createInitialState,
   leaderAgentIds,
-  MAX_HISTORY,
   plannedAgents,
   progress,
   recordedTurns,
@@ -98,6 +110,16 @@ import {
   turnElapsed,
 } from "./state"
 import { COLOR, GLYPH, SPINNER, STATUS } from "./theme"
+
+/**
+ * How the console should choose its session on launch.
+ *
+ * Absent means the default: continue the most recent session, or start one when
+ * the workspace has none. `new` always starts fresh. `resume` opens the named
+ * session, or — with no id — the most recent one with the picker already open,
+ * so `multiclaw -r` lands on the list the way `claude -r` does.
+ */
+export type InitialSession = { kind: "new" } | { kind: "resume"; id?: string }
 
 export interface AppProps {
   config: MultiClawConfig
@@ -110,6 +132,8 @@ export interface AppProps {
   sessions?: AgentSessionManager
   /** Gives the terminal host an awaitable cleanup barrier, including render failures. */
   onCleanupReady?: (cleanup: () => Promise<void>) => void
+  /** How to choose the session on launch; defaults to continuing the latest. */
+  initialSession?: InitialSession
 }
 
 /** Agents emit output in many small chunks; batching keeps re-renders bounded. */
@@ -318,18 +342,55 @@ function StatusLine({
   )
 }
 
-export function App({ config, onTurnStart, sessions: providedSessions, onCleanupReady }: AppProps) {
+export function App({
+  config,
+  onTurnStart,
+  sessions: providedSessions,
+  onCleanupReady,
+  initialSession,
+}: AppProps) {
   const { exit } = useApp()
   const { columns, rows } = useWindowSize()
 
-  // Open with whatever the last session left on disk. Read once, synchronously,
+  // The session this console is attached to, and how it was chosen (see
+  // {@link InitialSession}). Resolved once, synchronously, before the first
+  // frame — every read and write below is scoped to it. A launch notice and the
+  // "open the picker on mount" flag fall out of the same decision.
+  const sessionIdRef = useRef<string | null>(null)
+  const launchNoticeRef = useRef<string | undefined>(undefined)
+  const openPickerOnMountRef = useRef(false)
+  if (!sessionIdRef.current) {
+    const latest = () => latestSession(config.workDir)?.id ?? createSession(config.workDir).id
+    if (initialSession?.kind === "new") {
+      sessionIdRef.current = createSession(config.workDir).id
+    } else if (initialSession?.kind === "resume" && initialSession.id) {
+      const target = initialSession.id
+      if (listSessions(config.workDir).some((s) => s.id === target)) {
+        sessionIdRef.current = target
+      } else {
+        sessionIdRef.current = latest()
+        launchNoticeRef.current = `session "${target}" not found — opened the most recent instead`
+      }
+    } else {
+      sessionIdRef.current = latest()
+      // `-r` with no id: land on the picker, like `claude -r`.
+      if (initialSession?.kind === "resume") openPickerOnMountRef.current = true
+    }
+  }
+  // Open with whatever that session left on disk. Read once, synchronously,
   // before the first frame: the history list, the interrupted turn the previous
-  // process never finished, the follow-ups it never ran, and the task boundary.
-  // An async load would race the user's first turn and force an "history still
-  // loading" state that nothing else needs.
+  // process never finished, and the follow-ups it never ran. An async load would
+  // race the user's first turn and force a "history still loading" state that
+  // nothing else needs.
   const restoredRef = useRef<ReturnType<typeof restoreConsole> | null>(null)
-  if (!restoredRef.current) restoredRef.current = restoreConsole(config.workDir)
+  if (!restoredRef.current) {
+    restoredRef.current = restoreConsole(config.workDir, sessionIdRef.current)
+  }
   const restored = restoredRef.current
+  // The highest turn number already in the session's log. The save path appends
+  // only turns past this, so an append is O(1) rather than a rewrite — see the
+  // finished-turn effect below.
+  const persistedTurnRef = useRef(restored.persistedTurn)
 
   const [state, dispatch] = useReducer(tuiReducer, config, (c) =>
     createInitialState(c, restored.history)
@@ -351,10 +412,17 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   queueRef.current = queue
   const [cancelled, setCancelled] = useState(false)
   const [error, setError] = useState<string>()
-  const [notice, setNotice] = useState<string | undefined>(restored.notice)
+  const [notice, setNotice] = useState<string | undefined>(
+    launchNoticeRef.current ?? restored.notice
+  )
   const [helpOpen, setHelpOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyCursor, setHistoryCursor] = useState(0)
+  // The session picker: a snapshot of the index taken when it opens, so arrow
+  // keys and deletes do not re-read the disk on every frame.
+  const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [sessionCursor, setSessionCursor] = useState(0)
+  const [sessionList, setSessionList] = useState<SessionMeta[]>([])
   const [menuCursor, setMenuCursor] = useState<{ query: string | undefined; index: number }>({
     query: undefined,
     index: 0,
@@ -371,9 +439,6 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   const closingRef = useRef(false)
   const shutdownRef = useRef<Promise<void> | null>(null)
   const busyRef = useRef(false)
-  // The `/task` boundary, restored from the journal: turns numbered after it
-  // belong to the current task, and the ones before it are closed.
-  const taskStartRef = useRef(restored.taskStart)
   const turnSerialRef = useRef(0)
   const [awaitingAnswer, setAwaitingAnswer] = useState(restored.awaitingAnswer)
   // A restored queue starts paused on purpose. The user typed those follow-ups
@@ -512,24 +577,29 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   // and `JSON.stringify` a history of up to ~1.6MB each time — a frame-rate bug,
   // not a nicety. The turn on screen is read through the existing `stateRef`, so
   // the effect always sees the current state despite the narrow dep list.
-  const lastSaved = useRef<string | undefined>(undefined)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the effect reads state through `stateRef`, so the linter cannot see that `state.history` and `state.phase` are its real inputs; they are exactly the fields whose change can alter the recorded set, and listing `state` itself would re-stringify the whole history on every event.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the effect reads state through `stateRef`, so the linter cannot see that `state.history` and `state.phase` are its real inputs; they are exactly the fields whose change can alter the recorded set, and listing `state` itself would fire on every event.
   useEffect(() => {
-    const turns = recordedTurns(stateRef.current).slice(-MAX_HISTORY)
-    // A workspace that never ran a turn should not sprout an empty file.
-    if (turns.length === 0) return
-    const json = JSON.stringify(turns)
-    // A single turn fires this effect twice: once when `turn:start` pushes the
-    // previous turn into `history`, and again when `orchestration:complete` ends
-    // it. On the first pass the new turn is still `running` and so is not yet in
-    // `recordedTurns`; the two payloads are byte-identical and the second write
-    // is skipped. On startup the first pass rewrites exactly what was just read
-    // (`lastSaved` starts undefined) — one bounded write, accepted.
-    if (json === lastSaved.current) return
-    lastSaved.current = json
-    void saveHistory(config.workDir, turns).catch((err: Error) =>
+    const sessionId = sessionIdRef.current
+    if (!sessionId) return
+    const turns = recordedTurns(stateRef.current)
+    // Append only turns past the watermark. A single turn fires this effect
+    // twice — `turn:start` pushes the previous turn into `history`, then
+    // `orchestration:complete` ends it — and on startup it fires for turns
+    // already on disk; the watermark makes both of those a no-op.
+    const fresh = turns.filter((turn) => turn.turn > persistedTurnRef.current)
+    if (fresh.length === 0) return
+    persistedTurnRef.current = fresh[fresh.length - 1].turn
+    void appendTurns(config.workDir, sessionId, fresh).catch((err: Error) =>
       setNotice(`history not saved: ${err.message}`)
     )
+    // Keep the index in step so the picker can list this session without opening
+    // its log: the title is the session's first requirement, the count its
+    // latest turn number.
+    const title = turns.find((turn) => turn.requirement)?.requirement
+    touchSession(config.workDir, sessionId, {
+      turnCount: fresh[fresh.length - 1].turn,
+      ...(title ? { title } : {}),
+    })
   }, [state.history, state.phase])
 
   /**
@@ -553,9 +623,10 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       if (entry.kind === "permission") waiting.permissions += 1
       else waiting.questions += 1
     }
+    const sessionId = sessionIdRef.current
+    if (!sessionId) return
     const journal: SessionJournal = {
       version: SESSION_VERSION,
-      taskStart: taskStartRef.current,
       ...(queueRef.current.length > 0 ? { queue: [...queueRef.current] } : {}),
       // Only a turn that is actually running is in flight. Writing one for an
       // idle console would invent work the next session would then "recover".
@@ -563,7 +634,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
         ? { inFlight: journalTurn(current, waiting) }
         : {}),
     }
-    void saveJournal(config.workDir, journal).catch((err: Error) => {
+    void saveJournal(config.workDir, sessionId, journal).catch((err: Error) => {
       if (mountedRef.current) setNotice(`session not saved: ${err.message}`)
     })
   }, [config.workDir])
@@ -600,18 +671,18 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   const startTurn = useCallback(
     async (
       requirement: string,
-      opts?: { resume?: MultiClawConfig["resume"]; newTask?: boolean }
+      opts?: { resume?: MultiClawConfig["resume"]; newSession?: boolean }
     ) => {
       if (closingRef.current || busyRef.current) return
       busyRef.current = true
       setRunning(true)
       // Consumed here, whatever happens next: a continuation arms exactly one
-      // instruction. `/task` drops it outright — that command exists to start
-      // over with fresh sessions, which is the opposite of continuing.
-      const continuation = opts?.newTask ? null : continuationRef.current
+      // instruction. `/new` drops it outright — that command exists to start a
+      // fresh session, which is the opposite of continuing.
+      const continuation = opts?.newSession ? null : continuationRef.current
       continuationRef.current = null
       const resume = opts?.resume ?? continuationResume(continuation, sessionsRef.current)
-      if (opts?.newTask) {
+      if (opts?.newSession) {
         try {
           await sessionsRef.current?.reset()
           if (closingRef.current) {
@@ -619,7 +690,18 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
             setRunning(false)
             return
           }
-          taskStartRef.current = stateRef.current.turn
+          // A new session: the old agents are closed above, a clean record is
+          // started, and every write now points at it. The watermark resets
+          // with it, and `session:reset` empties the console on screen — the old
+          // turns live on in their own session, reachable through the picker.
+          const created = createSession(config.workDir)
+          sessionIdRef.current = created.id
+          persistedTurnRef.current = 0
+          dispatch({
+            type: "session:reset",
+            agents: seedAgents(config),
+            leaderIds: leaderAgentIds(config),
+          })
         } catch (err) {
           busyRef.current = false
           setRunning(false)
@@ -638,12 +720,9 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       setCancelled(false)
       setNotice(undefined)
       // Read before the dispatch below: `turn:start` moves the turn on screen
-      // into `history`, and this wants it as it is right now.
-      const earlierTurns = conversationTurns({
-        ...stateRef.current,
-        history: stateRef.current.history.filter((turn) => turn.turn > taskStartRef.current),
-        ...(stateRef.current.turn <= taskStartRef.current ? { phase: "idle" as const } : {}),
-      })
+      // into `history`, and this wants it as it is right now. A new session has
+      // no earlier turns — `session:reset` emptied the history this would read.
+      const earlierTurns = opts?.newSession ? [] : conversationTurns(stateRef.current)
       // Each turn starts from the configured roster, so the team list is
       // populated the instant the turn begins rather than after the leader runs.
       dispatch({
@@ -759,6 +838,53 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     void startTurn(next)
   }, [running, queue, queuePaused, awaitingAnswer, startTurn])
 
+  // Leave the current session for an existing one: close the live agents, load
+  // the target's turns and journal, and point every write at it. The newest
+  // turn that still carries agent sessions arms a continuation, so the next
+  // instruction picks up that conversation rather than starting the team cold —
+  // which is the whole point of resuming a session.
+  const switchSession = useCallback(
+    async (id: string) => {
+      if (id === sessionIdRef.current || busyRef.current || closingRef.current) return
+      try {
+        await sessionsRef.current?.reset()
+      } catch (err) {
+        setError(`session switch failed: ${(err as Error).message}`)
+        return
+      }
+      if (closingRef.current) return
+      const restored = restoreConsole(config.workDir, id)
+      sessionIdRef.current = id
+      persistedTurnRef.current = restored.persistedTurn
+      const resumable = [...restored.history]
+        .reverse()
+        .find((turn) => Object.keys(turnSessions(turn)).length > 0)
+      continuationRef.current = resumable
+        ? { turn: resumable.turn, sessions: turnSessions(resumable) }
+        : null
+      dispatch({
+        type: "session:load",
+        agents: seedAgents(config),
+        leaderIds: leaderAgentIds(config),
+        history: restored.history,
+      })
+      setQueue(restored.queue)
+      queuePausedRef.current = restored.queue.length > 0
+      setQueuePaused(restored.queue.length > 0)
+      awaitingAnswerRef.current = restored.awaitingAnswer
+      setAwaitingAnswer(restored.awaitingAnswer)
+      setError(undefined)
+      setCancelled(false)
+      setNotice(
+        restored.notice ??
+          (resumable
+            ? `switched session · continue with your next instruction`
+            : `switched session · ${restored.history.length} turn${restored.history.length === 1 ? "" : "s"}`)
+      )
+    },
+    [config]
+  )
+
   const cleanup = useCallback(async () => {
     closingRef.current = true
     abortRef.current?.abort()
@@ -766,12 +892,16 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     await activeTurnRef.current
     await sessionsRef.current?.close()
     // State already queued for disk has to land before the caller can exit (or,
-    // in a test, remove the workspace). No new write can be queued after
-    // `closingRef`, so this is the whole set.
-    await Promise.all([
-      pendingWrite(historyPath(config.workDir)),
-      pendingWrite(sessionPath(config.workDir)),
-    ])
+    // in a test, remove the workspace): the finished-turn effect fires as the
+    // aborted turn settles and queues its append, so waiting on both of the
+    // session's files here catches it.
+    const sessionId = sessionIdRef.current
+    if (sessionId) {
+      await Promise.all([
+        pendingWrite(turnsPath(config.workDir, sessionId)),
+        pendingWrite(sessionPath(config.workDir, sessionId)),
+      ])
+    }
     if (reporterErrorRef.current) throw reporterErrorRef.current
   }, [clearInteractions, config.workDir])
 
@@ -783,6 +913,19 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
       void cleanup().catch(() => {})
     }
   }, [cleanup, onCleanupReady])
+
+  // `multiclaw -r` (no id) lands on the picker: open it once the first frame is
+  // up, with the cursor on the session the console is currently attached to.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only — the refs and setters it reads are stable, and it must run exactly once.
+  useEffect(() => {
+    if (!openPickerOnMountRef.current) return
+    openPickerOnMountRef.current = false
+    const list = listSessions(config.workDir)
+    setSessionList(list)
+    const current = list.findIndex((session) => session.id === sessionIdRef.current)
+    setSessionCursor(current === -1 ? 0 : current)
+    setSessionsOpen(true)
+  }, [])
 
   const shutdown = useCallback(() => {
     if (shutdownRef.current) return shutdownRef.current
@@ -798,17 +941,27 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     shutdownRef.current = (async () => {
       try {
         await cleanup()
-        const turns = recordedTurns(stateRef.current).slice(-MAX_HISTORY)
-        if (turns.length) await saveHistory(config.workDir, turns)
-        // A deliberate quit is not an interruption. Whatever turn was in flight
-        // ended as a cancellation, and that cancellation is already in the
-        // history above — journaling it as in-flight would greet the next
-        // session with "interrupted by a restart" for a stop the user asked for.
-        await saveJournal(config.workDir, {
-          version: SESSION_VERSION,
-          taskStart: taskStartRef.current,
-          ...(leftover.length > 0 ? { queue: leftover } : {}),
-        })
+        const sessionId = sessionIdRef.current
+        if (sessionId) {
+          // Append any settled turn the effect had not reached — the just-
+          // cancelled in-flight turn, which `recordedTurns` now reports complete.
+          // The watermark makes this a no-op when the effect already wrote it.
+          const fresh = recordedTurns(stateRef.current).filter(
+            (turn) => turn.turn > persistedTurnRef.current
+          )
+          if (fresh.length) {
+            persistedTurnRef.current = fresh[fresh.length - 1].turn
+            await appendTurns(config.workDir, sessionId, fresh)
+          }
+          // A deliberate quit is not an interruption. Whatever turn was in flight
+          // ended as a cancellation, and that cancellation is already in the
+          // turns above — journaling it as in-flight would greet the next
+          // session with "interrupted by a restart" for a stop the user asked for.
+          await saveJournal(config.workDir, sessionId, {
+            version: SESSION_VERSION,
+            ...(leftover.length > 0 ? { queue: leftover } : {}),
+          })
+        }
         exit()
       } catch (err) {
         setError(`shutdown failed: ${(err as Error).message}`)
@@ -861,10 +1014,12 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
   // `/cancel` is offered. Opening it is a deliberate act (the user typed `/`),
   // so spending the arrows on it is fair — scrolling the stream is still one
   // keystroke away.
-  const menuOpen = !helpOpen && !historyOpen && query !== undefined && matches.length > 0
+  const menuOpen =
+    !helpOpen && !historyOpen && !sessionsOpen && query !== undefined && matches.length > 0
   // The argument palette opens where the command palette closed, and only when
   // there is something to offer — an empty list is not a palette.
-  const argOpen = !helpOpen && !historyOpen && arg !== undefined && argRows.length > 0
+  const argOpen =
+    !helpOpen && !historyOpen && !sessionsOpen && arg !== undefined && argRows.length > 0
   const paletteOpen = menuOpen || argOpen
 
   // The request the console is asking about, and the two pieces of state that
@@ -907,7 +1062,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     columns,
     rows,
     turn: state.turn,
-    overlay: helpOpen || historyOpen,
+    overlay: helpOpen || historyOpen || sessionsOpen,
     menuRows: paletteOpen ? paletteTotal : 0,
     queueRows: queue.length,
     interactionRows: interactionRows(interactions, Math.max(MIN_COLUMNS, columns)),
@@ -1093,16 +1248,16 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
           setNotice(`selected ${clean(option.name)} for ${entry.shortId}`)
           return
         }
-        case "task": {
+        case "new": {
           const text = args.join(" ")
           if (!text) {
-            setNotice("usage: /task <new requirement> — closes prior agent sessions")
+            setNotice("usage: /new <requirement> — starts a new session with fresh agent sessions")
             return
           }
           setQueue([])
           queuePausedRef.current = false
           setQueuePaused(false)
-          void startTurn(text, { newTask: true })
+          void startTurn(text, { newSession: true })
           return
         }
         case "answer": {
@@ -1205,6 +1360,16 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
           setHistoryCursor(0)
           setHistoryOpen(true)
           return
+        case "sessions": {
+          // Snapshot the index as the picker opens, cursor on the current one.
+          const list = listSessions(config.workDir)
+          setSessionList(list)
+          const current = list.findIndex((session) => session.id === sessionIdRef.current)
+          setSessionCursor(current === -1 ? 0 : current)
+          setNotice(undefined)
+          setSessionsOpen(true)
+          return
+        }
         case "verbose":
           // `state.verbose` is the value *before* the toggle, so it names the
           // state the user is about to be in.
@@ -1317,7 +1482,7 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
           }
           const file = args[1]
             ? path.resolve(config.workDir, args[1])
-            : exportPath(config.workDir, target.record.turn)
+            : exportPath(config.workDir, sessionIdRef.current ?? "", target.record.turn)
           void exportTurn(target.record, file)
             .then(() => setNotice(`exported turn ${target.record.turn} to ${file}`))
             .catch((err: Error) => setNotice(`export failed: ${err.message}`))
@@ -1468,6 +1633,8 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
         setHelpOpen(false)
       } else if (historyOpen) {
         setHistoryOpen(false)
+      } else if (sessionsOpen) {
+        setSessionsOpen(false)
       } else if (abortRef.current) {
         abortRef.current.abort()
         clearInteractions()
@@ -1529,6 +1696,52 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
         setNotice(
           `continuing turn ${target.turn} — ${count} ${count === 1 ? "session" : "sessions"} · type your next instruction`
         )
+        return
+      }
+      return
+    }
+
+    // The session picker is modal for the same reason the history list is.
+    if (sessionsOpen) {
+      if (key.escape) {
+        setSessionsOpen(false)
+        return
+      }
+      if (sessionList.length === 0) return
+      const index = Math.min(sessionCursor, sessionList.length - 1)
+      if (key.upArrow) {
+        setSessionCursor((index - 1 + sessionList.length) % sessionList.length)
+        return
+      }
+      if (key.downArrow) {
+        setSessionCursor((index + 1) % sessionList.length)
+        return
+      }
+      if (key.return) {
+        const target = sessionList[index]
+        setSessionsOpen(false)
+        if (target.id === sessionIdRef.current) {
+          setNotice("already on this session")
+          return
+        }
+        if (running || busyRef.current) {
+          setNotice("finish or cancel the current turn before switching sessions")
+          return
+        }
+        void switchSession(target.id)
+        return
+      }
+      if (char === "d") {
+        const target = sessionList[index]
+        if (target.id === sessionIdRef.current) {
+          setNotice("can't delete the current session")
+          return
+        }
+        deleteSession(config.workDir, target.id)
+        const next = listSessions(config.workDir)
+        setSessionList(next)
+        setSessionCursor(Math.min(index, Math.max(0, next.length - 1)))
+        setNotice(`deleted session · ${next.length} left`)
         return
       }
       return
@@ -1847,28 +2060,30 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
     ? "esc close"
     : historyOpen
       ? "↑↓ select · enter open · esc close"
-      : argOpen
-        ? `↑↓ select · tab complete · enter ${arg?.command.name} · esc close`
-        : menuOpen
-          ? "↑↓ select · tab complete · enter run · esc close"
-          : running
-            ? checkpointResolveRef.current
-              ? `/continue · /modify <instruction> · /cancel`
-              : interactions.length > 0
-                ? layout.interactionRows === 0
-                  ? // Too short to dock the bar, so the commands are the only way in.
-                    "decide with /approve 1 · /deny · /respond"
-                  : interactions[0].kind === "question"
-                    ? "tab field · ↑↓ pick · enter next · /dismiss"
-                    : menu.released
-                      ? "/approve 1 and /deny still reach it"
-                      : "↑↓ or 1-9 choose · enter confirm · esc to type"
-                : "enter queues · ctrl+c cancel"
-            : state.view
-              ? "esc live · tab agent · ? help"
-              : state.reply
-                ? "enter sends · / commands · ? help"
-                : "tab switch · / commands · ? help"
+      : sessionsOpen
+        ? "↑↓ select · enter open · d delete · esc close"
+        : argOpen
+          ? `↑↓ select · tab complete · enter ${arg?.command.name} · esc close`
+          : menuOpen
+            ? "↑↓ select · tab complete · enter run · esc close"
+            : running
+              ? checkpointResolveRef.current
+                ? `/continue · /modify <instruction> · /cancel`
+                : interactions.length > 0
+                  ? layout.interactionRows === 0
+                    ? // Too short to dock the bar, so the commands are the only way in.
+                      "decide with /approve 1 · /deny · /respond"
+                    : interactions[0].kind === "question"
+                      ? "tab field · ↑↓ pick · enter next · /dismiss"
+                      : menu.released
+                        ? "/approve 1 and /deny still reach it"
+                        : "↑↓ or 1-9 choose · enter confirm · esc to type"
+                  : "enter queues · ctrl+c cancel"
+              : state.view
+                ? "esc live · tab agent · ? help"
+                : state.reply
+                  ? "enter sends · / commands · ? help"
+                  : "tab switch · / commands · ? help"
 
   // The prompt names what it is editing. While a form is up that is a field and
   // not a follow-up — it is the same line either way, so it has to say which.
@@ -1957,6 +2172,15 @@ export function App({ config, onTurnStart, sessions: providedSessions, onCleanup
             selected={historyIndex}
             width={layout.columns}
             maxRows={layout.bodyHeight}
+          />
+        ) : sessionsOpen ? (
+          <SessionsOverlay
+            sessions={sessionList}
+            selected={Math.min(sessionCursor, Math.max(0, sessionList.length - 1))}
+            currentId={sessionIdRef.current ?? undefined}
+            width={layout.columns}
+            maxRows={layout.bodyHeight}
+            now={now}
           />
         ) : layout.welcome ? (
           <WelcomePanel turn={state} width={layout.columns} />

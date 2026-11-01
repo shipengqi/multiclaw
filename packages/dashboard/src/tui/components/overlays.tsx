@@ -1,6 +1,7 @@
 import { Box, Text } from "ink"
 import { COMMANDS } from "../commands"
-import { formatDuration, padRight, truncate } from "../format"
+import { formatAgo, formatDuration, padRight, truncate } from "../format"
+import type { SessionMeta } from "../sessions"
 import { progress, type TurnView } from "../state"
 import { COLOR, GLYPH, STATUS } from "../theme"
 
@@ -240,6 +241,88 @@ export function HistoryOverlay({
 
       <Box marginTop={1}>
         <Text dimColor>{`↑↓ select · enter open · c continue · esc close${range}`}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+/**
+ * The session picker: every session in the workspace, newest activity first.
+ *
+ * The level above {@link HistoryOverlay}. Where the history list browses the
+ * turns *within* a session, this switches between whole sessions — the thing a
+ * restart, a `/new`, or opening the console again all create. The one the
+ * console is attached to is marked, because "which am I on" is the first
+ * question the list has to answer.
+ */
+export function SessionsOverlay({
+  sessions,
+  selected,
+  currentId,
+  width,
+  maxRows,
+  now,
+}: {
+  sessions: SessionMeta[]
+  selected: number
+  currentId: string | undefined
+  width: number
+  /** Rows available in the body. The list is windowed against this. */
+  maxRows: number
+  now: number
+}) {
+  const capacity = historyCapacity(maxRows)
+  const start = listWindowStart(selected, sessions.length, capacity)
+  const visible = sessions.slice(start, start + capacity)
+  const range =
+    sessions.length > capacity
+      ? ` · showing ${start + 1}–${start + visible.length} of ${sessions.length}`
+      : ""
+
+  return (
+    <Box flexDirection="column" flexShrink={0} paddingLeft={2} paddingTop={1} width={width}>
+      <Box justifyContent="space-between">
+        <Text dimColor>SESSIONS</Text>
+        <Text dimColor>
+          {sessions.length} total{range}
+        </Text>
+      </Box>
+
+      {sessions.length === 0 ? (
+        <Box marginTop={1}>
+          <Text dimColor>No sessions yet.</Text>
+        </Box>
+      ) : (
+        <Box flexDirection="column" marginTop={1}>
+          {visible.map((session, offset) => {
+            const index = start + offset
+            const focused = index === selected
+            const current = session.id === currentId
+            const count = session.turnCount
+            return (
+              <Box key={session.id} flexDirection="column" marginTop={index === 0 ? 0 : 1}>
+                <Box>
+                  <Text color={focused ? COLOR.accent : undefined}>
+                    {focused ? `${GLYPH.caret} ` : "  "}
+                  </Text>
+                  <Text bold={focused} color={focused ? COLOR.accent : undefined}>
+                    {current ? "● " : ""}
+                    {truncate(session.title || "(untitled session)", Math.max(8, width - 30))}
+                  </Text>
+                </Box>
+                <Text dimColor>
+                  {"    "}
+                  {count} turn{count === 1 ? "" : "s"} · {formatAgo(session.lastActiveAt, now)}
+                  {current ? " · current" : ""}
+                </Text>
+              </Box>
+            )
+          })}
+        </Box>
+      )}
+
+      <Box marginTop={1}>
+        <Text dimColor>↑↓ select · enter open · d delete · esc close</Text>
       </Box>
     </Box>
   )

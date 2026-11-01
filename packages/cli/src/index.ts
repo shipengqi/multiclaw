@@ -7,6 +7,7 @@ import { doctorCommand } from "./commands/doctor"
 import { initCommand } from "./commands/init"
 import { pruneCommand } from "./commands/prune"
 import { runCommand } from "./commands/run"
+import { sessionsListCommand, sessionsRemoveCommand } from "./commands/sessions"
 import { tuiCommand } from "./commands/tui"
 import { upgradeCommand } from "./commands/upgrade"
 
@@ -22,7 +23,12 @@ program
   .version(pkg.version, "-v, --version", "Display version number")
   // No subcommand opens the interactive console. Subcommands declare their own
   // `--config` so it is parsed after the subcommand name (commander rule).
-  .action((options: { config?: string }) => tuiCommand(options))
+  .option("--config <path>", "Config file path (default: auto-discover ./multiclaw.config.ts)")
+  .option("--new", "Start a new session instead of continuing the most recent")
+  .option("-r, --resume [id]", "Resume a session by id, or open the session picker")
+  .action((options: { config?: string; new?: boolean; resume?: string | boolean }) =>
+    tuiCommand(options)
+  )
 
 program
   .command("init")
@@ -54,14 +60,26 @@ program
 
 program
   .command("prune")
-  .description("Clean up history entries and old run directories (interactive)")
+  .description("Clean up saved sessions and old run directories (interactive)")
   .option("--config <path>", "Config file path (default: auto-discover ./multiclaw.config.ts)")
-  .option("--history", "Prune console history only (non-interactive)")
+  .option("--sessions", "Prune saved sessions only (non-interactive)")
   .option("--runs", "Prune all runs only (non-interactive)")
   .option("--all", "Prune everything (non-interactive)")
   .option("--dry-run", "Show what would be deleted without deleting")
   .option("--yes", "Skip confirmation prompt")
   .action((opts) => pruneCommand(opts))
+
+const sessions = program.command("sessions").description("Manage saved console sessions")
+sessions
+  .command("ls")
+  .description("List saved sessions, newest first")
+  .option("--config <path>", "Config file path (default: auto-discover ./multiclaw.config.ts)")
+  .action((opts: { config?: string }) => sessionsListCommand(opts))
+sessions
+  .command("rm <id>")
+  .description("Delete a saved session by id (or a unique prefix)")
+  .option("--config <path>", "Config file path (default: auto-discover ./multiclaw.config.ts)")
+  .action((id: string, opts: { config?: string }) => sessionsRemoveCommand(id, opts))
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   // `(err as Error).message` is a cast, not a check: a rejection with `null` or

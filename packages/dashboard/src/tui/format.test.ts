@@ -4,6 +4,7 @@ import {
   describeSteering,
   displayWidth,
   elapsedSince,
+  formatAgo,
   formatCost,
   formatDuration,
   formatTokens,
@@ -274,5 +275,23 @@ describe("describeSteering", () => {
       "no agent was mid-turn — queued as a follow-up"
     )
     expect(describeSteering([])).toBe("no agent was mid-turn — queued as a follow-up")
+  })
+})
+
+describe("formatAgo", () => {
+  const now = 1_700_000_000_000
+
+  it("reads under a minute as 'just now'", () => {
+    expect(formatAgo(now - 30_000, now)).toBe("just now")
+  })
+
+  it("reads minutes, hours and days at their coarsest unit", () => {
+    expect(formatAgo(now - 5 * 60_000, now)).toBe("5m ago")
+    expect(formatAgo(now - 3 * 3_600_000, now)).toBe("3h ago")
+    expect(formatAgo(now - 2 * 86_400_000, now)).toBe("2d ago")
+  })
+
+  it("reads a future timestamp as 'just now' rather than a negative age", () => {
+    expect(formatAgo(now + 10_000, now)).toBe("just now")
   })
 })

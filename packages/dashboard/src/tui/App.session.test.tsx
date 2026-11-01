@@ -268,7 +268,7 @@ describe("App · caller-owned live sessions", () => {
     expect(frame).toContain("turn 2")
   })
 
-  it("/task closes previous sessions and excludes the old conversation", async () => {
+  it("/new closes previous sessions and excludes the old conversation", async () => {
     const tracker = turns(1)
     const logDirs: string[] = []
     vi.spyOn(Date.prototype, "toISOString").mockReturnValue("2026-10-30T12:00:00.000Z")
@@ -284,7 +284,7 @@ describe("App · caller-owned live sessions", () => {
       {
         keys: ["old task", "\r"],
         ready: tracker.ready,
-        thenKeys: ["/task unrelated fresh task", "\r"],
+        thenKeys: ["/new unrelated fresh task", "\r"],
         settleMs: 200,
       }
     )

@@ -5,7 +5,7 @@ import { loadConfig } from "../loader/loadConfig"
 
 export interface PruneOptions {
   config?: string
-  history?: boolean
+  sessions?: boolean
   runs?: boolean
   all?: boolean
   dryRun?: boolean
@@ -17,7 +17,7 @@ export interface PruneItem {
   label: string
   path: string
   size: number
-  kind: "history" | "run" | "all-runs"
+  kind: "session" | "run" | "all-runs"
 }
 
 /** Scan `.multiclaw/` and list prune-able items with their sizes. */
@@ -25,25 +25,37 @@ export function scanPruneItems(workDir: string): PruneItem[] {
   const items: PruneItem[] = []
   const multiclawDir = path.join(workDir, ".multiclaw")
 
-  const historyFile = path.join(multiclawDir, "console", "history.json")
-  if (fs.existsSync(historyFile)) {
-    const stat = fs.statSync(historyFile)
-    const raw = fs.readFileSync(historyFile, "utf-8")
-    let turns = 0
-    try {
-      const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed)) turns = parsed.length
-    } catch {
-      // malformed — still show it, just with 0 turns
-    }
-    items.push({
-      id: "history",
-      label: `Console history (${turns} turn${turns === 1 ? "" : "s"}, ${formatBytes(stat.size)})`,
-      path: historyFile,
-      size: stat.size,
-      kind: "history",
+  // One item per saved session, newest activity first. The index supplies the
+  // title and turn count; the directory supplies the size. A session can appear
+  // in one but not the other — registered-but-never-run has an index entry and
+  // no directory, a hand-deleted index leaves a directory — so both are unioned.
+  const sessionsDir = path.join(multiclawDir, "sessions")
+  const index = readSessionIndex(sessionsDir)
+  const metaById = new Map(index.map((meta) => [meta.id, meta]))
+  const onDisk = fs.existsSync(sessionsDir)
+    ? fs
+        .readdirSync(sessionsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+    : []
+  const sessionItems: Array<PruneItem & { lastActiveAt: number }> = []
+  for (const id of new Set<string>([...metaById.keys(), ...onDisk])) {
+    const dir = path.join(sessionsDir, id)
+    const size = fs.existsSync(dir) ? dirSize(dir) : 0
+    const meta = metaById.get(id)
+    const title = meta?.title && meta.title.trim() !== "" ? meta.title : "(untitled)"
+    const turns = meta?.turnCount ?? 0
+    sessionItems.push({
+      id,
+      label: `${title}  (${turns} turn${turns === 1 ? "" : "s"}, ${formatBytes(size)})`,
+      path: dir,
+      size,
+      kind: "session",
+      lastActiveAt: meta?.lastActiveAt ?? 0,
     })
   }
+  sessionItems.sort((a, b) => b.lastActiveAt - a.lastActiveAt)
+  for (const { lastActiveAt: _unused, ...item } of sessionItems) items.push(item)
 
   const runsDir = path.join(multiclawDir, "runs")
   if (fs.existsSync(runsDir)) {
@@ -91,8 +103,12 @@ export function deletePruneItems(items: PruneItem[]): {
 
   for (const item of items) {
     try {
-      if (item.kind === "history") {
-        fs.unlinkSync(item.path)
+      if (item.kind === "session") {
+        // Remove the directory and its index entry together, so the picker does
+        // not keep listing a session whose turns are gone. `force` keeps it
+        // idempotent for a session that only ever had an index entry.
+        fs.rmSync(item.path, { recursive: true, force: true })
+        removeSessionFromIndex(path.dirname(item.path), path.basename(item.path))
         deleted.push(item.id)
       } else if (item.kind === "run") {
         fs.rmSync(item.path, { recursive: true, force: true })
@@ -130,11 +146,11 @@ export function resolvePruneTargets(
   if (options.all) {
     return items.map((i) => i.id)
   }
-  if (options.history && options.runs) {
+  if (options.sessions && options.runs) {
     return items.map((i) => i.id)
   }
-  if (options.history) {
-    return items.filter((i) => i.kind === "history").map((i) => i.id)
+  if (options.sessions) {
+    return items.filter((i) => i.kind === "session").map((i) => i.id)
   }
   if (options.runs) {
     return items.filter((i) => i.kind === "run" || i.kind === "all-runs").map((i) => i.id)
@@ -147,7 +163,7 @@ export async function pruneCommand(options: PruneOptions): Promise<void> {
   const items = scanPruneItems(config.workDir)
 
   if (items.length === 0) {
-    console.log("Nothing to prune — no history or runs found.")
+    console.log("Nothing to prune — no sessions or runs found.")
     return
   }
 
@@ -221,6 +237,58 @@ export async function pruneCommand(options: PruneOptions): Promise<void> {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+interface SessionIndexEntry {
+  id: string
+  title: string
+  turnCount: number
+  lastActiveAt: number
+}
+
+/** Read the session index, tolerating a missing or corrupt file. */
+function readSessionIndex(sessionsDir: string): SessionIndexEntry[] {
+  try {
+    const parsed: unknown = JSON.parse(
+      fs.readFileSync(path.join(sessionsDir, "index.json"), "utf-8")
+    )
+    if (!Array.isArray(parsed)) return []
+    const entries: SessionIndexEntry[] = []
+    for (const value of parsed) {
+      if (typeof value !== "object" || value === null) continue
+      const entry = value as Record<string, unknown>
+      if (typeof entry.id !== "string") continue
+      entries.push({
+        id: entry.id,
+        title: typeof entry.title === "string" ? entry.title : "",
+        turnCount: typeof entry.turnCount === "number" ? entry.turnCount : 0,
+        lastActiveAt: typeof entry.lastActiveAt === "number" ? entry.lastActiveAt : 0,
+      })
+    }
+    return entries
+  } catch {
+    return []
+  }
+}
+
+/** Drop one session from the index, written atomically. A no-op if absent. */
+function removeSessionFromIndex(sessionsDir: string, id: string): void {
+  const indexPath = path.join(sessionsDir, "index.json")
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fs.readFileSync(indexPath, "utf-8"))
+  } catch {
+    return
+  }
+  if (!Array.isArray(parsed)) return
+  const next = parsed.filter(
+    (entry) =>
+      !(typeof entry === "object" && entry !== null && (entry as { id?: unknown }).id === id)
+  )
+  if (next.length === parsed.length) return
+  const tmp = `${indexPath}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(next), "utf-8")
+  fs.renameSync(tmp, indexPath)
+}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B"

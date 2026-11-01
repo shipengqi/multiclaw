@@ -15,7 +15,8 @@ import {
 import { render } from "ink"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { App, type AppProps } from "./App"
-import { loadHistory } from "./history"
+import { loadTurns } from "./history"
+import { latestSession, listSessions } from "./sessions"
 import { stripAnsi } from "./state"
 import { driveFrame } from "./test-helpers"
 
@@ -29,6 +30,12 @@ function deferred() {
     resolve = done
   })
   return { promise, resolve }
+}
+
+/** The turns on disk for the session the console is currently attached to. */
+function currentTurns() {
+  const id = latestSession(workDir)?.id
+  return id ? loadTurns(workDir, id) : []
 }
 
 interface Handle {
@@ -213,7 +220,7 @@ describe("App · reusable live sessions", () => {
     // Completion precedes React's persistence effect and its atomic disk write,
     // so the answer turn being visible in memory is not the same as the history
     // having landed. Wait for the saved invariant rather than a fixed delay.
-    await vi.waitFor(() => expect(loadHistory(workDir)[1]?.requirement).toBe("Postgres"))
+    await vi.waitFor(() => expect(currentTurns()[1]?.requirement).toBe("Postgres"))
     expect(execute).not.toHaveBeenCalled()
   })
 
@@ -326,7 +333,7 @@ describe("App · reusable live sessions", () => {
     gate.resolve()
     await done.ready
     await vi.waitFor(() => {
-      const history = loadHistory(workDir)
+      const history = currentTurns()
       expect(history).toHaveLength(1)
       expect(history[0].requirement).toBe("restricted task")
       expect(history[0].phase).toBe("complete")
@@ -350,7 +357,7 @@ describe("App · reusable live sessions", () => {
     )
   })
 
-  it("/task closes old handles and starts a fresh conversation", async () => {
+  it("/new closes old handles and starts a fresh session", async () => {
     const first = completions()
     const second = completions(2)
     const tui = await mount((bus, logDir) => {
@@ -359,15 +366,13 @@ describe("App · reusable live sessions", () => {
     })
     await tui.send("old task", "\r")
     await first.ready
-    await tui.send("/task fresh task", "\r")
+    await tui.send("/new fresh task", "\r")
     await second.ready
-    // Completion precedes React's persistence effect and its atomic disk write.
-    // Wait for the saved invariant while mounted, not a fixed render delay.
+    // `/new` switches to a brand-new session, so the console on screen now holds
+    // only the fresh turn — the old one lives on in its own session. Completion
+    // precedes React's persistence effect, so wait for the saved invariant.
     await vi.waitFor(() =>
-      expect(loadHistory(workDir).map((turn) => turn.requirement)).toEqual([
-        "old task",
-        "fresh task",
-      ])
+      expect(currentTurns().map((turn) => turn.requirement)).toEqual(["fresh task"])
     )
     await tui.send("/quit", "\r")
     await tui.exit
@@ -381,7 +386,14 @@ describe("App · reusable live sessions", () => {
     expect(handles[1].close).toHaveBeenCalledOnce()
     expect(handles[2].prompts[0]).toContain("fresh task")
     expect(handles[2].prompts[0]).not.toContain("old task")
-    expect(loadHistory(workDir).map((turn) => turn.requirement)).toEqual(["old task", "fresh task"])
+    // Two distinct sessions on disk: the newest holds the fresh turn, the older
+    // one still holds the task it was started for.
+    const sessions = listSessions(workDir)
+    expect(sessions).toHaveLength(2)
+    expect(loadTurns(workDir, sessions[0].id).map((turn) => turn.requirement)).toEqual([
+      "fresh task",
+    ])
+    expect(loadTurns(workDir, sessions[1].id).map((turn) => turn.requirement)).toEqual(["old task"])
   })
 
   it("pauses prequeued input after ask instead of treating it as an answer", async () => {

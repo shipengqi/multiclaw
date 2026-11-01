@@ -1,20 +1,18 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { writeJsonFile } from "./atomic"
+import { appendLines } from "./atomic"
+import { sessionDir } from "./sessions"
 import { MAX_HISTORY, type TurnView } from "./state"
 
-/** Directory, under a workspace's `.multiclaw/`, that holds console state. */
-export const CONSOLE_DIR = "console"
-
-/** The finished-turn record the console keeps across sessions. */
-export const HISTORY_FILE = "history.json"
+/** The finished-turn log a session keeps, one JSON turn per line. */
+export const TURNS_FILE = "turns.jsonl"
 
 /** Where exported turn markdown files are written by default. */
 export const EXPORT_DIR = "exports"
 
-/** Where the console keeps its turn history for a workspace. */
-export function historyPath(workDir: string): string {
-  return path.join(workDir, ".multiclaw", CONSOLE_DIR, HISTORY_FILE)
+/** Where a session keeps its finished turns. */
+export function turnsPath(workDir: string, sessionId: string): string {
+  return path.join(sessionDir(workDir, sessionId), TURNS_FILE)
 }
 
 /** True for a non-null object — the shape every element the panes walk must have. */
@@ -99,7 +97,7 @@ function isTurnView(value: unknown): value is TurnView {
 }
 
 /**
- * Read the workspace's turn history.
+ * Read a session's turn history.
  *
  * Synchronous on purpose: it runs once, inside the reducer's lazy initialiser,
  * before the first frame. An async load would race the user's first keystroke
@@ -107,35 +105,53 @@ function isTurnView(value: unknown): value is TurnView {
  *
  * Never throws. A missing directory, malformed JSON, or a value of the wrong
  * shape all mean "no history": the console can always start from empty, and
- * crashing on startup because a side file got corrupted would be far worse.
+ * crashing on startup because a side file got corrupted would be far worse. The
+ * log is line-oriented, so a single torn line (a crash mid-append) is skipped
+ * rather than costing the whole session's history.
  */
-export function loadHistory(workDir: string): TurnView[] {
+export function loadTurns(workDir: string, sessionId: string): TurnView[] {
   try {
-    const raw = fs.readFileSync(historyPath(workDir), "utf-8")
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    // Keep only the entries that survive validation; a hand-edited or
-    // older-version file may also exceed the cap, so keep the newest.
-    return parsed.filter(isTurnView).slice(-MAX_HISTORY)
+    const raw = fs.readFileSync(turnsPath(workDir, sessionId), "utf-8")
+    const turns: TurnView[] = []
+    for (const line of raw.split("\n")) {
+      if (line.trim() === "") continue
+      try {
+        const parsed: unknown = JSON.parse(line)
+        if (isTurnView(parsed)) turns.push(parsed)
+      } catch {
+        // A torn or hand-mangled line costs that one turn, not the whole log.
+      }
+    }
+    // A hand-edited or very long session may exceed the cap, so keep the newest.
+    return turns.slice(-MAX_HISTORY)
   } catch {
     return []
   }
 }
 
 /**
- * Write the workspace's turn history.
+ * Append finished turns to a session's log, one JSON object per line.
  *
- * Atomic and serialized per path (see {@link writeJsonFile}), because a crash
- * mid-write must leave the previous history readable rather than half a
- * document: `loadHistory` can only drop a file it cannot parse, so a torn write
- * would cost the user *all* of their history rather than the last one.
+ * Append-only and serialized per path (see {@link appendLines}): each settled
+ * turn is an O(1) write rather than a rewrite of the whole history, and a crash
+ * mid-append can only tear the last line, which {@link loadTurns} skips. Callers
+ * pass only the turns not yet persisted, tracked by the highest turn number
+ * already written.
  */
-export function saveHistory(workDir: string, turns: readonly TurnView[]): Promise<void> {
-  return writeJsonFile(historyPath(workDir), JSON.stringify(turns))
+export function appendTurns(
+  workDir: string,
+  sessionId: string,
+  turns: readonly TurnView[]
+): Promise<void> {
+  if (turns.length === 0) return Promise.resolve()
+  return appendLines(
+    turnsPath(workDir, sessionId),
+    turns.map((turn) => JSON.stringify(turn))
+  )
 }
 
-export function exportPath(workDir: string, turn: number): string {
-  return path.join(workDir, ".multiclaw", CONSOLE_DIR, EXPORT_DIR, `turn-${turn}.md`)
+export function exportPath(workDir: string, sessionId: string, turn: number): string {
+  return path.join(sessionDir(workDir, sessionId), EXPORT_DIR, `turn-${turn}.md`)
 }
 
 export async function exportTurn(turn: TurnView, filePath: string): Promise<void> {

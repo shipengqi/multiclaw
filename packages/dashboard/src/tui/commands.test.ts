@@ -197,7 +197,7 @@ describe("COMMANDS", () => {
     expect(availableCommands(true).map((c) => c.name)).toContain("fork")
   })
 
-  it.each(["task", "answer"])("offers /%s only while idle", (name) => {
+  it.each(["new", "answer"])("offers /%s only while idle", (name) => {
     expect(availableCommands(false).map((c) => c.name)).toContain(name)
     expect(availableCommands(true).map((c) => c.name)).not.toContain(name)
     expect(canRun(name, true)).toBe(false)
@@ -217,12 +217,10 @@ describe("COMMANDS", () => {
     expect(canRun("pause", true)).toBe(true)
   })
 
-  it("shows task and answer text arguments without an agent completer", () => {
-    expect(paletteRows(COMMANDS).find((row) => row.key === "task")?.label).toBe(
-      "/task <requirement>"
-    )
+  it("shows new and answer text arguments without an agent completer", () => {
+    expect(paletteRows(COMMANDS).find((row) => row.key === "new")?.label).toBe("/new <requirement>")
     expect(paletteRows(COMMANDS).find((row) => row.key === "answer")?.label).toBe("/answer <text>")
-    expect(argQuery("/task fresh work")).toBeUndefined()
+    expect(argQuery("/new fresh work")).toBeUndefined()
     expect(argQuery("/answer Postgres")).toBeUndefined()
   })
 })

@@ -50,3 +50,30 @@ export function writeJsonFile(target: string, json: string): Promise<void> {
 export function pendingWrite(target: string): Promise<void> {
   return (writes.get(target) ?? Promise.resolve()).catch(() => {})
 }
+
+/**
+ * Append newline-terminated lines to `target`, serialized per path on the same
+ * chain as {@link writeJsonFile}.
+ *
+ * Unlike the rewrite path this does not go through a temp file: an append is the
+ * cheap O(1) write a JSONL log wants, and a crash mid-append can only tear the
+ * *last* line, which every line-oriented reader here already skips. Sharing the
+ * `writes` chain keeps a `pendingWrite` on the same path able to await it.
+ */
+export function appendLines(target: string, lines: readonly string[]): Promise<void> {
+  if (lines.length === 0) return pendingWrite(target)
+  const payload = `${lines.join("\n")}\n`
+  const write = (writes.get(target) ?? Promise.resolve())
+    .catch(() => {})
+    .then(async () => {
+      await fs.promises.mkdir(path.dirname(target), { recursive: true })
+      await fs.promises.appendFile(target, payload, "utf-8")
+    })
+  writes.set(target, write)
+  void write
+    .finally(() => {
+      if (writes.get(target) === write) writes.delete(target)
+    })
+    .catch(() => {})
+  return write
+}
