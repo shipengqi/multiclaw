@@ -1,4 +1,4 @@
-import { agents, type MultiClawConfig } from "@multiclawcli/core"
+import type { AgentDefinition, MultiClawConfig } from "@multiclawcli/core"
 import { describe, expect, it } from "vitest"
 import { buildDoctorReport, type DoctorReport, formatDoctorReport } from "./doctor"
 

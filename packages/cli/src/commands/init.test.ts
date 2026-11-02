@@ -45,4 +45,18 @@ describe("generateConfig", () => {
     })
     expect(out).toContain('name: "a\\"b"')
   })
+
+  it.each(["auto", "ask"] as const)("records the chosen %s mode in defaults", (mode) => {
+    // The mode is a decision the user made, so it belongs in the file. Leaving
+    // "ask" implicit made the same config mean auto under `multiclaw run`,
+    // which reads the file rather than the console's own default.
+    const out = generateConfig({
+      preset: "backend",
+      workDir: ".",
+      projectName: "demo",
+      provider: "opencode",
+      permissionMode: mode,
+    })
+    expect(out).toContain(`permissions: { mode: "${mode}" }`)
+  })
 })

@@ -1,7 +1,7 @@
 import type { AgentResult, MultiClawConfig, StageInfo } from "@multiclawcli/core"
 import { Text } from "ink"
 import { describe, expect, it } from "vitest"
-import { COMMANDS, paletteRows } from "./commands"
+import { COMMANDS, matchCommands, paletteRows } from "./commands"
 import { Header, HintBar, PipelineRail, QueueStrip, Rule } from "./components/chrome"
 import { HelpOverlay, helpRows, listWindowStart, overlayCapacity } from "./components/overlays"
 import { ErrorPanel, ReplyPanel, StreamPanel, TeamPanel, WelcomePanel } from "./components/panels"
@@ -13,7 +13,6 @@ import {
   reduceEvent,
   stripAnsi,
   type TuiState,
-  type TurnView,
   tuiReducer,
 } from "./state"
 import { DEMO, renderFrame } from "./test-helpers"
@@ -718,6 +717,15 @@ describe("CommandMenu", () => {
       await renderFrame(<CommandMenu rows={paletteRows(COMMANDS)} selected={0} />)
     )
     expect(frame).toContain("/focus <id>")
+  })
+
+  // `/mode` is the only way to reach `deny`, and shift+tab is the only hint that
+  // a mode exists at all. Unregistered, it still worked when typed in full — and
+  // was invisible to everyone who did not already know it was there.
+  it("offers /mode so the permission setting is discoverable", () => {
+    const offered = matchCommands("mo", false).map((command) => command.name)
+    expect(offered).toContain("mode")
+    expect(paletteRows(COMMANDS).map((row) => row.label)).toContain("/mode auto | ask | deny")
   })
 
   it("marks the highlighted row and only that row", async () => {

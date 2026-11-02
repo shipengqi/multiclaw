@@ -62,7 +62,6 @@ export interface RuntimeCapabilities {
   sessions: boolean
   resume: boolean
   permissions: boolean
-  tools: boolean
   models: boolean
   images: boolean
   usage: boolean
@@ -92,7 +91,7 @@ export interface RuntimePermissionRequest extends RuntimeEventBase {
   toolName?: string
   kind?: string
   input?: unknown
-  /** Only choices permitted by the configured tools policy are offered. */
+  /** The provider's offered choices, in the order it presented them. */
   options: Array<{
     optionId: string
     name: string
@@ -100,7 +99,7 @@ export interface RuntimePermissionRequest extends RuntimeEventBase {
   }>
 }
 
-/** Return an offered option id, or undefined to cancel/deny. Never grant outside the tools policy. */
+/** Return an offered option id, or undefined to cancel/deny. */
 export type RuntimePermissionHandler = (
   request: RuntimePermissionRequest,
   signal: AbortSignal
@@ -132,7 +131,7 @@ export interface AgentTask {
   timeout: number
   signal?: AbortSignal
   onEvent?: (event: RuntimeEvent) => void
-  /** Automatic tools policy by default; ask without a handler denies. */
+  /** Approval mode for tool calls; the runtime defaults to `"auto"` when unset. */
   permissionMode?: "auto" | "ask" | "deny"
   onPermission?: RuntimePermissionHandler
   onQuestion?: RuntimeQuestionHandler

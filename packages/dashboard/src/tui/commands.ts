@@ -48,6 +48,12 @@ export const COMMANDS: readonly CommandSpec[] = [
     availability: "always",
   },
   {
+    name: "mode",
+    args: "auto | ask | deny",
+    description: "Set how tool-permission requests are answered",
+    availability: "always",
+  },
+  {
     name: "retry",
     args: "[id]",
     description: "Re-run a failed agent (or all of them)",

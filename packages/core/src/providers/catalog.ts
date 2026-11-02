@@ -41,8 +41,6 @@ export interface ProviderSpec {
    * then falls back to a prompt prefix.
    */
   meta?: (task: AgentTask) => Record<string, unknown> | undefined
-  /** Whether this provider honours a tool allowlist at all. */
-  tools: boolean
   /** How model selection is communicated to the agent. */
   modelSelection: ModelSelectionMode
 
@@ -78,7 +76,6 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     label: "OpenCode",
     command: "opencode",
     args: ["acp"],
-    tools: false,
     modelSelection: "config-option",
     models: [
       { id: "opencode/big-pickle", label: "Big Pickle", tier: "balanced", defaultForTier: true },
@@ -107,7 +104,6 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     label: "Claude",
     command: "claude-agent-acp",
     args: [],
-    tools: true,
     modelSelection: "config-option",
     meta: (task) => {
       const meta: Record<string, unknown> = {}
@@ -132,7 +128,6 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     label: "Codex",
     command: "codex-acp",
     args: [],
-    tools: false,
     modelSelection: "config-option",
     meta: (task) =>
       task.systemPrompt
@@ -156,7 +151,6 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     command: "cursor-agent",
     aliases: ["agent"],
     args: ["acp"],
-    tools: false,
     modelSelection: "config-option",
     // _meta support unverified — falls back to prompt prefix until confirmed.
     meta: undefined,

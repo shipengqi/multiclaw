@@ -49,6 +49,7 @@ type RuntimeEventPayload = RuntimeEvent extends infer E
 
 type AcpModule = typeof import("@agentclientprotocol/sdk")
 type AcpSessionNotification = import("@agentclientprotocol/sdk").SessionNotification
+type AcpPermissionRequest = import("@agentclientprotocol/sdk").RequestPermissionRequest
 type AcpPermissionResponse = import("@agentclientprotocol/sdk").RequestPermissionResponse
 
 /**
@@ -79,7 +80,6 @@ const BASE_CAPABILITIES: RuntimeCapabilities = {
   sessions: true,
   resume: true,
   permissions: true,
-  tools: true,
   models: false,
   images: false,
   usage: true,
@@ -115,6 +115,37 @@ function mapStopReason(reason: string): "success" | "max_turns" | "cancelled" | 
       return "max_turns"
     default:
       return "error"
+  }
+}
+
+/**
+ * Who refused a tool call.
+ *
+ * `mode` is the configured approval mode saying no, `no-handler` is a wiring
+ * gap (ask with nobody to ask), and `user` is a person choosing a reject
+ * option. The stream keeps the distinction so "the mode blocked this" never
+ * reads the same as "I clicked no".
+ */
+type RejectionSource = "mode" | "no-handler" | "user"
+
+/** Human-readable name for a tool call, for warnings and event payloads. */
+function toolLabel(params: AcpPermissionRequest): string {
+  return params.toolCall.name ?? params.toolCall.kind ?? params.toolCall.toolCallId
+}
+
+/** The `raw` event that records a refusal, so the stream can name the call. */
+function rejectionEvent(params: AcpPermissionRequest, source: RejectionSource) {
+  return {
+    type: "raw" as const,
+    vendor: "acp" as const,
+    payload: {
+      type: "permission_rejected",
+      toolCallId: params.toolCall.toolCallId,
+      name: params.toolCall.name ?? undefined,
+      kind: params.toolCall.kind ?? undefined,
+      title: params.toolCall.title ?? undefined,
+      source,
+    },
   }
 }
 
@@ -312,7 +343,6 @@ export class AcpRuntime extends RuntimeBase {
       available: resolveExecutable(command) !== null,
       capabilities: {
         ...BASE_CAPABILITIES,
-        tools: specForCommand(command)?.tools ?? false,
         models: specForCommand(command)?.modelSelection === "config-option",
       },
     }
@@ -626,13 +656,16 @@ export class AcpRuntime extends RuntimeBase {
         }
         // deny: reject all tool calls
         if (mode === "deny") {
-          warn("Tool permission denied by the configured approval mode.")
+          warn(`Tool permission denied by the configured approval mode: ${toolLabel(params)}.`)
+          emit(rejectionEvent(params, "mode"))
           return cancelled
         }
         // ask: escalate to human; no handler means closed
         if (turn.options.onPermission === undefined) {
-          const label = params.toolCall.name ?? params.toolCall.kind ?? "an unnamed tool"
-          warn(`Tool permission cancelled: no approval handler is available (${label}).`)
+          warn(
+            `Tool permission cancelled: no approval handler is available (${toolLabel(params)}).`
+          )
+          emit(rejectionEvent(params, "no-handler"))
           return cancelled
         }
         const signal = AbortSignal.any([turn.decisions.signal, context.signal])
@@ -669,18 +702,7 @@ export class AcpRuntime extends RuntimeBase {
             return cancelled
           }
           if (chosen.kind.startsWith("reject")) {
-            emit({
-              type: "raw",
-              vendor: "acp",
-              payload: {
-                type: "permission_rejected",
-                toolCallId: params.toolCall.toolCallId,
-                name: params.toolCall.name ?? undefined,
-                kind: params.toolCall.kind ?? undefined,
-                title: params.toolCall.title ?? undefined,
-                source: "user",
-              },
-            })
+            emit(rejectionEvent(params, "user"))
           }
           return { outcome: { outcome: "selected", optionId } } as AcpPermissionResponse
         } catch {

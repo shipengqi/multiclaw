@@ -79,7 +79,7 @@ function notifyUpdate(ctx: AgentPromptContext, update: unknown): Promise<void> {
 }
 
 function makeTask(overrides: Record<string, unknown> = {}) {
-  return { agentId: "a1", prompt: "do it", tools: [], workDir: "/tmp/work", ...overrides } as never
+  return { agentId: "a1", prompt: "do it", workDir: "/tmp/work", ...overrides } as never
 }
 
 function collect() {

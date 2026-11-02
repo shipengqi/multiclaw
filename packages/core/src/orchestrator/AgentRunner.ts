@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { resolvePermissionMode } from "../config/permissionMode"
 import type { EventBus } from "../event/EventBus"
 import { resolveArgs, resolveCommand, resolveModel } from "../providers/resolve"
 import { KILL_ESCALATION_MS, runtimeRegistry } from "../runtime"
@@ -67,10 +68,7 @@ export class AgentRunner {
       const runtime = runtimeRegistry.get(agent.runtime ?? "acp")
       const retries = agent.retries ?? 0
       const timeout = agent.timeout ?? 600_000
-      const permissionMode =
-        agent.permissions?.mode ??
-        this.config.permissions?.mode ??
-        this.config.defaults?.permissions?.mode
+      const permissionMode = resolvePermissionMode(this.config, agent)
 
       // The inner timeout bounds one attempt; the outer deadline covers every
       // attempt and its backoff. Include the SIGKILL grace so legacy runtimes

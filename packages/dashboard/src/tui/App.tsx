@@ -17,6 +17,7 @@ import {
   describeResumePlan,
   isAbortError,
   Orchestrator,
+  resolvePermissionMode,
   validateRuntimeQuestionContent,
 } from "@multiclawcli/core"
 import { Box, type Key, Text, useApp, useInput, useWindowSize } from "ink"
@@ -408,11 +409,10 @@ export function App({
   const [cancelled, setCancelled] = useState(false)
   const [error, setError] = useState<string>()
   const [permissionMode, setPermissionMode] = useState<"auto" | "ask" | "deny">(
-    config.permissions?.mode === "auto" || config.defaults?.permissions?.mode === "auto"
-      ? "auto"
-      : config.permissions?.mode === "deny"
-        ? "deny"
-        : "ask"
+    // Same precedence the runner uses, so the header can never announce a mode
+    // the agents are not actually running under. `ask` when nobody configured
+    // one, because a human is sitting here to answer.
+    resolvePermissionMode(config) ?? "ask"
   )
   const [notice, setNotice] = useState<string | undefined>(
     launchNoticeRef.current ?? restored.notice
@@ -762,6 +762,17 @@ export function App({
           permissionMode === "ask"
             ? { mode: "ask", onRequest: requestPermission }
             : { mode: permissionMode },
+        // The console's mode is a live decision, so it outranks any per-agent
+        // `permissions` written in the file: otherwise shift+tab would relabel
+        // the header while an agent that declares its own mode kept the old
+        // behaviour. Per-agent modes stay a headless-run concern.
+        agents: config.agents.map((agent) => ({
+          ...agent,
+          permissions: { mode: permissionMode },
+        })),
+        ...(config.leader
+          ? { leader: { ...config.leader, permissions: { mode: permissionMode } } }
+          : {}),
         questions: config.questions?.onRequest ? config.questions : { onRequest: requestQuestion },
         onCheckpoint: config.onCheckpoint ?? handleCheckpoint,
         // A retry names the agents to redo; a continued conversation carries only
@@ -989,23 +1000,18 @@ export function App({
     [query, running]
   )
 
-  // `shown` is always the live turn now that per-agent history is visible in the
-  // stream panel's timeline. The old "open a finished turn for browsing" mode has
-  // been superseded by scrolling up in the stream.
-  const shown = state
-
   // The palette shows one of two lists, never both: the command names while the
   // command is still being typed, or — once a space commits to arguments — the
   // agents a completer command's first argument could name. `menuQuery` closes
   // on a space and `argQuery` opens there, so the two are mutually exclusive.
   const arg = argQuery(line.text)
   const argRows: PaletteRow[] = arg
-    ? completeAgents(arg.partial, Object.keys(shown.agents)).map((id) => ({
+    ? completeAgents(arg.partial, Object.keys(state.agents)).map((id) => ({
         key: id,
         label: id,
         // The static role, not the per-turn task title: while completing, the
         // user is asking "which agent is this", not "what is it doing now".
-        description: shown.agents[id]?.description ?? shown.agents[id]?.name ?? id,
+        description: state.agents[id]?.description ?? state.agents[id]?.name ?? id,
       }))
     : []
   const allRows: PaletteRow[] = arg ? argRows : paletteRows(matches)
@@ -1074,8 +1080,8 @@ export function App({
     interactionRows: interactionRows(interactions, Math.max(MIN_COLUMNS, columns)),
     promptRows,
     notice: notice !== undefined || (queuePaused && queue.length > 0),
-    hasRail: shown.leaderIds.length > 0 || shown.stages.length > 0,
-    railCells: railCellWidths(shown),
+    hasRail: state.leaderIds.length > 0 || state.stages.length > 0,
+    railCells: railCellWidths(state),
   })
 
   /**
@@ -1136,8 +1142,6 @@ export function App({
         setNotice(unavailableReason(name, running))
         return
       }
-      // Commands always act on the live turn.
-      const shown = state
       if (closingRef.current) return
       switch (name) {
         case "respond":
@@ -1347,7 +1351,7 @@ export function App({
           // A unique prefix is accepted, the same way `/retry` does — typing a
           // whole id is a chore, and the two commands have to agree on what an id
           // means or a prefix that works in one would fail in the other.
-          const resolved = resolveAgentId(input, Object.keys(shown.agents))
+          const resolved = resolveAgentId(input, Object.keys(state.agents))
           if ("error" in resolved) {
             setNotice(resolved.error)
             return
@@ -1357,12 +1361,12 @@ export function App({
           return
         }
         case "clear":
-          if (!shown.focusId) {
+          if (!state.focusId) {
             setNotice("nothing focused")
             return
           }
           dispatch({ type: "stream:clear" })
-          setNotice(`cleared ${shown.focusId}`)
+          setNotice(`cleared ${state.focusId}`)
           return
         case "sessions": {
           // Snapshot the index as the picker opens, cursor on the current one.
@@ -1712,7 +1716,7 @@ export function App({
     }
     if (key.ctrl && char === "l") {
       dispatch({ type: "stream:clear" })
-      setNotice(shown.focusId ? `cleared ${shown.focusId}` : "nothing focused")
+      setNotice(state.focusId ? `cleared ${state.focusId}` : "nothing focused")
       return
     }
     if (key.ctrl && char === "a") {
@@ -2067,7 +2071,7 @@ export function App({
     <Box flexDirection="column" height={layout.rows}>
       <Header
         name={state.name || config.name}
-        right={`turn ${shown.turn} · ${
+        right={`turn ${state.turn} · ${
           running
             ? formatDuration(turnElapsed(state, now) ?? 0)
             : state.phase === "complete"
@@ -2088,13 +2092,13 @@ export function App({
         // the budget reserved and clip, rather than letting the extra rows push
         // the chrome below it off the screen.
         <Box marginTop={1} height={layout.railRows} overflow="hidden" flexShrink={0}>
-          <PipelineRail turn={shown} spinner={spinner} />
+          <PipelineRail turn={state} spinner={spinner} />
         </Box>
       ) : null}
 
-      {shown.reason ? (
+      {state.reason ? (
         <Text dimColor wrap="truncate-end">
-          {`  reason: ${shown.reason}`}
+          {`  reason: ${state.reason}`}
         </Text>
       ) : null}
 
@@ -2131,13 +2135,13 @@ export function App({
           // most urgent thing on screen, and a stale answer underneath it would
           // read as the outcome. The status line keeps a one-line version too.
           <ErrorPanel message={error} width={layout.columns} />
-        ) : shown.reply ? (
-          <ReplyPanel reply={shown.reply} width={layout.columns} />
+        ) : state.reply ? (
+          <ReplyPanel reply={state.reply} width={layout.columns} />
         ) : (
           <Box height={layout.bodyHeight} flexShrink={0} flexDirection="row">
             {layout.showTeam ? (
               <>
-                <TeamPanel turn={shown} width={layout.teamWidth} now={now} spinner={spinner} />
+                <TeamPanel turn={state} width={layout.teamWidth} now={now} spinner={spinner} />
                 <Divider />
               </>
             ) : null}

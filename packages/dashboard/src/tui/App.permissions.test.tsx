@@ -15,6 +15,7 @@ import { render } from "ink"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { App } from "./App"
 import { stripAnsi } from "./state"
+import { renderFrame } from "./test-helpers"
 
 const RUNTIME = "tui-permission-queue"
 let config: MultiClawConfig
@@ -99,7 +100,6 @@ beforeEach(() => {
         sessions: false,
         resume: false,
         permissions: true,
-        tools: true,
         models: false,
         images: false,
         usage: false,
@@ -588,7 +588,7 @@ describe("App · explicit permission decisions", () => {
   })
 
   it.each(["auto", "deny"] as const)(
-    "preserves explicit %s mode from config.permissions",
+    "uses explicit %s mode from config.permissions and never escalates",
     async (mode) => {
       const callback = vi.fn(async () => undefined)
       config.permissions = { mode, onRequest: callback }
@@ -601,6 +601,62 @@ describe("App · explicit permission decisions", () => {
       await ui.send("write files", "\r")
       await vi.waitFor(() => expect(ui.complete()).toBe(1))
       expect(tasks.every((task) => task.permissionMode === mode)).toBe(true)
+      // The console owns the handler: `auto` and `deny` never ask anybody, so a
+      // config-supplied `onRequest` is not carried into the turn.
+      expect(tasks.every((task) => task.onPermission === undefined)).toBe(true)
+      expect(callback).not.toHaveBeenCalled()
     }
   )
+})
+
+describe("App · permission mode switching", () => {
+  it("starts in the mode the config resolves to, project level first", async () => {
+    // `permissions` outranks `defaults.permissions` in the runner, so the
+    // header has to agree — announcing `auto` here would be a lie about what
+    // the agents are running under.
+    config.permissions = { mode: "deny" }
+    config.defaults = { permissions: { mode: "auto" } }
+    expect(stripAnsi(await renderFrame(<App config={config} />))).toContain("· deny")
+  })
+
+  it("/mode applies to the next turn", async () => {
+    const tasks: AgentTask[] = []
+    respond = async (task) => {
+      tasks.push(task)
+      return { output: "done", exitCode: 0 }
+    }
+    const ui = await mount()
+    await ui.send("/mode auto", "\r", "write files", "\r")
+    await vi.waitFor(() => expect(ui.complete()).toBe(1))
+    expect(tasks.every((task) => task.permissionMode === "auto")).toBe(true)
+  })
+
+  it("shift+tab toggles ask → auto for the next turn", async () => {
+    const tasks: AgentTask[] = []
+    respond = async (task) => {
+      tasks.push(task)
+      return { output: "done", exitCode: 0 }
+    }
+    const ui = await mount()
+    // CSI Z is what a terminal sends for shift+tab.
+    await ui.send("\u001b[Z")
+    await ui.send("write files", "\r")
+    await vi.waitFor(() => expect(ui.complete()).toBe(1))
+    expect(tasks.every((task) => task.permissionMode === "auto")).toBe(true)
+  })
+
+  it("the console mode outranks a per-agent mode", async () => {
+    // A file-level per-agent mode must not survive a runtime toggle: otherwise
+    // the header says `auto` while that agent keeps denying everything.
+    config.agents[0].permissions = { mode: "deny" }
+    const tasks: AgentTask[] = []
+    respond = async (task) => {
+      tasks.push(task)
+      return { output: "done", exitCode: 0 }
+    }
+    const ui = await mount()
+    await ui.send("/mode auto", "\r", "write files", "\r")
+    await vi.waitFor(() => expect(ui.complete()).toBe(1))
+    expect(tasks.every((task) => task.permissionMode === "auto")).toBe(true)
+  })
 })

@@ -42,7 +42,7 @@ function attachAgent(child: FakeChild, initialize?: () => unknown): void {
 }
 
 function makeTask(overrides: Record<string, unknown> = {}) {
-  return { agentId: "a1", prompt: "do it", tools: [], workDir: "/tmp/work", ...overrides } as never
+  return { agentId: "a1", prompt: "do it", workDir: "/tmp/work", ...overrides } as never
 }
 
 /** Run and capture the rejection, if any. */

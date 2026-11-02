@@ -142,7 +142,6 @@ describe("assertRuntimesAvailable", () => {
         sessions: true,
         resume: true,
         permissions: true,
-        tools: true,
         models: false,
         images: false,
         usage: true,

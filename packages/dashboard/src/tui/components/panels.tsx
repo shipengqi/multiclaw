@@ -8,7 +8,6 @@ import {
   recordedTurns,
   type TuiState,
   type TurnView,
-  visibleLog,
   visibleTimeline,
 } from "../state"
 import { COLOR, GLYPH, STATUS } from "../theme"
@@ -161,8 +160,9 @@ export function StreamPanel({
   const style = agent ? STATUS[agent.status] : undefined
   const elapsed = agent ? agentElapsed(agent, now) : undefined
   // Count turns this agent produced output in, for the "session · N turns" marker.
-  const turnCount = state.focusId
-    ? recordedTurns(state).filter((t) => (t.agents[state.focusId!]?.logs.length ?? 0) > 0).length
+  const focusId = state.focusId
+  const turnCount = focusId
+    ? recordedTurns(state).filter((turn) => (turn.agents[focusId]?.logs.length ?? 0) > 0).length
     : 0
 
   return (
@@ -220,12 +220,13 @@ export function StreamPanel({
       {window.rows.length === 0 ? (
         <Text dimColor>{state.phase === "running" ? "waiting for output…" : "no output yet"}</Text>
       ) : (
-        // The tail, already wrapped to `width` by `visibleLog` — the pane draws
-        // rows, and one log line is several of them. `visibleLog` also picks
-        // which rows, so the content here is exactly the pane's height and the
-        // oldest rows are the ones already gone: nothing is left to clip, which
-        // is why this box is not bottom-pinned. Pinning it would only leave a
-        // gap under the header whenever an agent has not said much yet.
+        // The tail, already wrapped to `width` by `visibleTimeline` — the pane
+        // draws rows, and one log line is several of them. `visibleTimeline`
+        // also picks which rows, so the content here is exactly the pane's
+        // height and the oldest rows are the ones already gone: nothing is left
+        // to clip, which is why this box is not bottom-pinned. Pinning it would
+        // only leave a gap under the header whenever an agent has not said much
+        // yet.
         //
         // Rows are rendered with `truncate-end` rather than letting Ink wrap
         // them again: they are supposed to fit, and if `width` was ever

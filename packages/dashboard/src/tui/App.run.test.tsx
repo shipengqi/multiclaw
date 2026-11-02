@@ -5,6 +5,7 @@ import type { MultiClawConfig } from "@multiclawcli/core"
 import { agents, runtimeRegistry } from "@multiclawcli/core"
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { App } from "./App"
+import { COMMANDS } from "./commands"
 import { exportPath, turnsPath } from "./history"
 import { latestSession } from "./sessions"
 import { stripAnsi } from "./state"
@@ -23,7 +24,6 @@ function alwaysAvailable(name: string) {
       sessions: false,
       resume: false,
       permissions: false,
-      tools: false,
       models: false,
       images: false,
       usage: false,
@@ -1213,9 +1213,12 @@ describe("App · the command palette window", () => {
   // top `MAX_MENU_ROWS` rows and the highlight was clamped inside it, so the
   // eighth command could not be reached with the arrow keys at all.
   const down = "\u001b[B"
-  // `/` opens the palette on every command; seven `↓` moves onto the eighth,
-  // which is `/fork` and sits below the first window.
-  const toFork = ["/", ...Array.from({ length: 7 }, () => down)]
+  // `/` opens the palette on the first command, so the number of `↓` presses is
+  // `/fork`'s own index. Derived rather than hardcoded: adding a command above it
+  // would otherwise silently retarget this test at whatever moved into slot 7.
+  // It is also below the first window, which is the case being exercised.
+  const forkIndex = COMMANDS.findIndex((command) => command.name === "fork")
+  const toFork = ["/", ...Array.from({ length: forkIndex }, () => down)]
 
   it("follows the selection past the first window, and runs the highlighted command", async () => {
     const highlighted = stripAnsi(

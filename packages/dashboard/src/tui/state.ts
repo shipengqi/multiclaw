@@ -10,7 +10,7 @@ import type {
   TurnOutcome,
   TurnRecord,
 } from "@multiclawcli/core"
-import { renderSegments, wrapLine } from "./format"
+import { displayWidth, renderSegments, wrapLine } from "./format"
 
 /**
  * Per-agent log buffer cap, in characters.
@@ -526,8 +526,9 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
       if (event.type === "agent:failed") {
         if (next.logs.length === 0 && result.output)
           next.logs = appendLog([], result.output, "text")
-        if (result.error && !next.logs.some((s) => s.text.includes(stripAnsi(result.error!)))) {
-          next.logs = appendLog(next.logs, result.error, "system")
+        const error = result.error
+        if (error && !next.logs.some((s) => s.text.includes(stripAnsi(error)))) {
+          next.logs = appendLog(next.logs, error, "system")
         }
       }
       return { ...state, agents: { ...state.agents, [result.agentId]: next } }
@@ -608,14 +609,38 @@ function windowRows(all: string[], viewport: number, scroll: number): LogWindow 
   }
 }
 
-/** One dim horizontal rule with turn number and a clipped requirement snippet. */
+/** Clip to `max` terminal columns, marking the cut with an ellipsis. */
+function clipToColumns(text: string, max: number): string {
+  if (max <= 0) return ""
+  if (displayWidth(text) <= max) return text
+  let head = ""
+  let used = 0
+  for (const char of text) {
+    const width = displayWidth(char)
+    if (used + width > max - 1) break
+    head += char
+    used += width
+  }
+  return `${head}…`
+}
+
+/**
+ * One dim horizontal rule with turn number and a clipped requirement snippet.
+ *
+ * Measured in columns rather than code units: a Chinese requirement is one
+ * code unit per character and *two* columns, so counting code units would size
+ * the rule at half the pane and let the renderer shave it — the divider would
+ * stop being centred exactly when the session is in the language most likely to
+ * be read here.
+ */
 function turnDivider(turn: TurnView, width: number): string {
   const MAX_REQ = 45
-  const req = turn.requirement ? turn.requirement.replace(/\n/g, " ").slice(0, MAX_REQ) : undefined
+  const raw = turn.requirement?.replace(/\s+/g, " ").trim()
+  const req = raw ? clipToColumns(raw, MAX_REQ) : undefined
   const label = req ? ` turn ${turn.turn} · ${req} ` : ` turn ${turn.turn} `
-  const fill = Math.max(1, Math.floor((width - label.length) / 2))
+  const fill = Math.max(1, Math.floor((width - displayWidth(label)) / 2))
   const rule = `${"─".repeat(fill)}${label}${"─".repeat(fill)}`
-  return `\x1b[2m${rule.slice(0, width)}\x1b[0m`
+  return `\x1b[2m${clipToColumns(rule, width)}\x1b[0m`
 }
 
 /** All rows a given agent produced across every finished turn, in order oldest→newest. */
@@ -676,17 +701,6 @@ function snapshot(state: TuiState): TurnView {
     warning: state.warning,
     reply: state.reply,
   }
-}
-
-/**
- * Apply an edit to the live turn.
- *
- * Returning the same object means "nothing changed", which is what keeps the
- * reducer's no-op identity contract intact for the tests and for React.
- */
-function mapShown(state: TuiState, fn: (turn: TurnView) => TurnView): TuiState {
-  const next = fn(state)
-  return next === state ? state : { ...state, ...next }
 }
 
 /**
@@ -853,29 +867,27 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
       }
     }
 
-    case "focus:cycle":
-      return mapShown(state, (turn) => {
-        const ids = Object.keys(turn.agents)
-        if (ids.length === 0) return turn
-        const current = turn.focusId ? ids.indexOf(turn.focusId) : -1
-        const nextIndex = (current + action.delta + ids.length) % ids.length
-        // Nowhere to move to — a single agent, or a delta that lands back on the
-        // current one. Returning the same object keeps the no-op identity
-        // contract, which is what stops React re-rendering the whole tree for a
-        // keypress that changed nothing.
-        if (nextIndex === current) return turn
-        // Switching agent switches the thing being read, so the window resets.
-        return { ...turn, focusId: ids[nextIndex], autoFollow: false, scroll: 0 }
-      })
+    case "focus:cycle": {
+      const ids = Object.keys(state.agents)
+      if (ids.length === 0) return state
+      const current = state.focusId ? ids.indexOf(state.focusId) : -1
+      const nextIndex = (current + action.delta + ids.length) % ids.length
+      // Nowhere to move to — a single agent, or a delta that lands back on the
+      // current one. Returning the same object keeps the no-op identity
+      // contract, which is what stops React re-rendering the whole tree for a
+      // keypress that changed nothing.
+      if (nextIndex === current) return state
+      // Switching agent switches the thing being read, so the window resets.
+      return { ...state, focusId: ids[nextIndex], autoFollow: false, scroll: 0 }
+    }
 
-    case "focus:set":
-      return mapShown(state, (turn) => {
-        if (!turn.agents[action.agentId]) return turn
-        // Already focused *and* already pinned at the tail: the action would
-        // write back exactly what is there, so it is a no-op.
-        if (turn.focusId === action.agentId && !turn.autoFollow && turn.scroll === 0) return turn
-        return { ...turn, focusId: action.agentId, autoFollow: false, scroll: 0 }
-      })
+    case "focus:set": {
+      if (!state.agents[action.agentId]) return state
+      // Already focused *and* already pinned at the tail: the action would
+      // write back exactly what is there, so it is a no-op.
+      if (state.focusId === action.agentId && !state.autoFollow && state.scroll === 0) return state
+      return { ...state, focusId: action.agentId, autoFollow: false, scroll: 0 }
+    }
 
     case "stream:scroll": {
       const focusId = state.focusId
@@ -908,22 +920,22 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "stream:latest":
-      return mapShown(state, (turn) =>
-        turn.scroll === 0 && turn.autoFollow ? turn : { ...turn, scroll: 0, autoFollow: true }
-      )
+      return state.scroll === 0 && state.autoFollow
+        ? state
+        : { ...state, scroll: 0, autoFollow: true }
 
-    case "stream:clear":
-      return mapShown(state, (turn) => {
-        const id = turn.focusId
-        const agent = id ? turn.agents[id] : undefined
-        if (!id || !agent) return turn
-        return { ...turn, agents: { ...turn.agents, [id]: { ...agent, logs: [] } }, scroll: 0 }
-      })
+    case "stream:clear": {
+      const id = state.focusId
+      const agent = id ? state.agents[id] : undefined
+      if (!id || !agent) return state
+      // Only the live turn's buffer: `history` is the record of turns that have
+      // already ended, and editing it in place would rewrite what happened.
+      return { ...state, agents: { ...state.agents, [id]: { ...agent, logs: [] } }, scroll: 0 }
+    }
 
     case "stream:note": {
-      // Written to the live turn even while a past turn is open: the note is
-      // about work happening now, and rewriting the record being read would be
-      // a lie about a turn that has already ended.
+      // A console note is about work happening now, so it belongs to the live
+      // turn. Writing it into `history` would edit a turn that already ended.
       const agent = state.agents[action.agentId]
       if (!agent) return state
       return {
@@ -1053,32 +1065,21 @@ export interface LogWindow {
 }
 
 /**
- * The slice of the focused agent's output that fits the pane.
+ * The slice of the focused agent's session that fits the pane.
  *
  * Wrapped first, then windowed, and both steps are needed: the pane is a fixed
  * number of *rows*, while the buffer is a string of *lines*, and one line can
  * spend several rows. Slicing lines would hand the pane more rows than it has
  * and push the newest output out of sight.
  *
+ * Turn-divider rows are interspersed to give the reader an anchor: they show
+ * the turn number and a clipped requirement snippet so a reader scrolled back
+ * knows which request they are looking at.
+ *
  * Clamping here as well as in the reducer keeps the window correct even when
- * the pane is resized between two scroll actions.
- */
-export function visibleLog(turn: TurnView, viewport: number, width: number): LogWindow {
-  const agent = turn.focusId ? turn.agents[turn.focusId] : undefined
-  const all = agent?.logs ? wrapLog(agent.logs, width) : []
-  return windowRows(all, viewport, turn.scroll)
-}
-
-/**
- * The focused agent's output across every finished turn of this session.
- *
- * Turn-divider rows (one per turn the agent ran) are interspersed to give the
- * reader an anchor: they show the turn number and a clipped requirement snippet
- * so a reader scrolled back knows which request they are looking at.
- *
- * Scroll semantics are identical to {@link visibleLog}: 0 means pinned to the
- * newest output, positive values mean scrolled back, and `following` is true
- * when the window is at the tail.
+ * the pane is resized between two scroll actions. Scroll semantics: 0 means
+ * pinned to the newest output, positive values mean scrolled back, and
+ * `following` is true when the window is at the tail.
  */
 export function visibleTimeline(
   state: TuiState,

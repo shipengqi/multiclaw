@@ -1,4 +1,4 @@
-import type { AgentDefinition } from "./agent"
+import type { AgentDefinition, PermissionMode } from "./agent"
 import type { LeaderMessage } from "./leader"
 import type { RuntimePermissionHandler, RuntimeQuestionHandler } from "./runtime"
 
@@ -145,7 +145,7 @@ export interface MultiClawConfig {
     provider?: string
     model?: string
     command?: string
-    permissions?: { mode: "auto" | "ask" | "deny" }
+    permissions?: { mode: PermissionMode }
   }
 }
 

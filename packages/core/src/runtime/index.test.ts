@@ -25,7 +25,6 @@ describe("runtimeRegistry", () => {
           sessions: false,
           resume: false,
           permissions: false,
-          tools: false,
           models: false,
           images: false,
           usage: false,

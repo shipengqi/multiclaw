@@ -7,6 +7,7 @@ import type {
   StageInfo,
 } from "@multiclawcli/core"
 import { describe, expect, it } from "vitest"
+import { displayWidth } from "./format"
 import {
   type AgentView,
   agentElapsed,
@@ -28,7 +29,6 @@ import {
   type TurnView,
   tuiReducer,
   turnElapsed,
-  visibleLog,
   visibleTimeline,
 } from "./state"
 
@@ -1045,14 +1045,53 @@ describe("live clocks", () => {
   })
 })
 
-describe("visibleLog", () => {
+describe("visibleTimeline", () => {
   /** A focused agent with a known number of log lines. */
   function logged(text: string) {
     return reduceEvent(withAgents("a"), output("a", text))
   }
 
+  /** A finished turn carrying `agents` unchanged, for the history list. */
+  function historyTurn(turn: number, requirement: string, agents: TuiState["agents"]): TurnView {
+    return { ...initialState, turn, requirement, phase: "complete", agents, focusId: "a" }
+  }
+
+  it("sizes a divider in columns, so a CJK requirement cannot overflow the pane", () => {
+    const agents = reduceEvent(withAgents("a"), output("a", "done")).agents
+    const state: TuiState = {
+      ...withAgents("a"),
+      history: [historyTurn(1, "把控制台的会话时间线改成按轮次分组，每一轮都要有分隔行", agents)],
+    }
+    const rows = visibleTimeline(state, "a", 100, 40, 0).rows
+    const divider = rows.find((row) => stripAnsi(row).includes("turn 1"))
+    expect(divider).toBeDefined()
+    // One Chinese character is one code unit and *two* columns. Counting code
+    // units would size this row at half the pane and let the renderer shave it.
+    expect(displayWidth(stripAnsi(divider ?? ""))).toBeLessThanOrEqual(40)
+  })
+
+  it("clamps scrolling against the whole timeline, not just the live turn", () => {
+    const agents = reduceEvent(withAgents("a"), output("a", "one")).agents
+    const state: TuiState = {
+      ...reduceEvent(withAgents("a"), output("a", "two")),
+      history: [historyTurn(1, "first", agents)],
+    }
+    const allRows = visibleTimeline(state, "a", 100, WIDTH, 0).rows.length
+    const scrolled = tuiReducer(state, {
+      type: "stream:scroll",
+      delta: 99,
+      viewport: 2,
+      width: WIDTH,
+    })
+    // The ceiling comes from history + live, so the reader can walk all the way
+    // back into earlier turns instead of stopping at this turn's first row.
+    expect(scrolled.scroll).toBe(allRows - 2)
+    expect(scrolled.scroll).toBeGreaterThan(1)
+  })
+
   it("shows the tail while following", () => {
-    const window = visibleLog(logged("1\n2\n3\n4\n5"), 2, WIDTH)
+    const state = logged("1\n2\n3\n4\n5")
+    const window = visibleTimeline(state, "a", 2, WIDTH, state.scroll)
     expect(window.rows).toEqual(["4", "5"])
     expect(window.following).toBe(true)
     expect(window.scrolledBack).toBe(0)
@@ -1065,7 +1104,7 @@ describe("visibleLog", () => {
       viewport: 2,
       width: WIDTH,
     })
-    const window = visibleLog(state, 2, WIDTH)
+    const window = visibleTimeline(state, "a", 2, WIDTH, state.scroll)
     expect(window.rows).toEqual(["2", "3"])
     expect(window.scrolledBack).toBe(2)
     expect(window.following).toBe(false)
@@ -1076,7 +1115,7 @@ describe("visibleLog", () => {
     const up = tuiReducer(state, { type: "stream:scroll", delta: 2, viewport: 2, width: WIDTH })
     const back = tuiReducer(up, { type: "stream:scroll", delta: -99, viewport: 2, width: WIDTH })
     expect(back.scroll).toBe(0)
-    expect(visibleLog(back, 2, WIDTH).following).toBe(true)
+    expect(visibleTimeline(back, "a", 2, WIDTH, back.scroll).following).toBe(true)
   })
 
   it("clamps at the head", () => {
@@ -1094,8 +1133,8 @@ describe("visibleLog", () => {
   })
 
   it("is empty when nothing is focused, or nothing has been written", () => {
-    expect(visibleLog(initialState, 5, WIDTH).rows).toEqual([])
-    expect(visibleLog(withAgents("a"), 5, WIDTH).rows).toEqual([])
+    expect(visibleTimeline(initialState, "a", 5, WIDTH, initialState.scroll).rows).toEqual([])
+    expect(visibleTimeline(withAgents("a"), "a", 5, WIDTH, 0).rows).toEqual([])
   })
 
   it("re-clamps a parked offset when the pane is resized under it", () => {
@@ -1107,14 +1146,15 @@ describe("visibleLog", () => {
     })
     expect(state.scroll).toBe(2)
     // The pane grew since the scroll, so the offset is re-clamped on read.
-    expect(visibleLog(state, 5, WIDTH).scrolledBack).toBe(0)
+    expect(visibleTimeline(state, "a", 5, WIDTH, state.scroll).scrolledBack).toBe(0)
   })
 
   // The window is a number of *rows*, not a number of log lines. A line wider
   // than the pane spends several rows, and a window that sliced by lines would
   // hand the pane more rows than it has — pushing the newest output out of view.
   it("counts a wrapped line as the rows it spends, not as one", () => {
-    const window = visibleLog(logged("short\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), 2, 10)
+    const state = logged("short\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+    const window = visibleTimeline(state, "a", 2, 10, state.scroll)
     // Four rows in the buffer: the short line, then three of ten `x`. A two-row
     // window can only show the last two, so the short line is gone.
     expect(window.rows).toEqual(["xxxxxxxxxx", "xxxxxxxxxx"])
@@ -1129,7 +1169,10 @@ describe("visibleLog", () => {
     })
     // Three rows of ten, so the head is one row back from the two-row window.
     expect(state.scroll).toBe(1)
-    expect(visibleLog(state, 2, 10).rows).toEqual(["xxxxxxxxxx", "xxxxxxxxxx"])
+    expect(visibleTimeline(state, "a", 2, 10, state.scroll).rows).toEqual([
+      "xxxxxxxxxx",
+      "xxxxxxxxxx",
+    ])
     // And the clamp knows the buffer is three rows, not one line.
     const head = tuiReducer(state, { type: "stream:scroll", delta: 99, viewport: 2, width: 10 })
     expect(head.scroll).toBe(1)
@@ -1148,8 +1191,8 @@ describe("visibleLog", () => {
     // Three rows at ten columns, so there is a row to scroll back to.
     expect(state.scroll).toBe(1)
     // At thirty columns the whole buffer is one row, so the offset is dropped.
-    expect(visibleLog(state, 2, 30).scrolledBack).toBe(0)
-    expect(visibleLog(state, 2, 30).following).toBe(true)
+    expect(visibleTimeline(state, "a", 2, 30, state.scroll).scrolledBack).toBe(0)
+    expect(visibleTimeline(state, "a", 2, 30, state.scroll).following).toBe(true)
   })
 
   it("searches the newest matching wrapped row", () => {
@@ -1162,7 +1205,10 @@ describe("visibleLog", () => {
     })
     expect(searched.scroll).toBe(1)
     expect(searched.autoFollow).toBe(false)
-    expect(visibleLog(searched, 2, WIDTH).rows).toEqual(["gamma", "beta later"])
+    expect(visibleTimeline(searched, "a", 2, WIDTH, searched.scroll).rows).toEqual([
+      "gamma",
+      "beta later",
+    ])
   })
 
   it("latest returns the stream to the tail and re-arms follow", () => {

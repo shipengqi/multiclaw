@@ -4,6 +4,7 @@ import {
   describeResumePlan,
   Orchestrator as OrchestratorImpl,
   type OrchestratorResult,
+  resolvePermissionMode,
 } from "@multiclawcli/core"
 import { assertRuntimesAvailable } from "../lib"
 import { loadConfig } from "../loader/loadConfig"
@@ -78,6 +79,15 @@ export async function runCommand(
   }
 
   await assertRuntimesAvailable(config)
+
+  // `ask` needs somebody to ask. A batch run has nobody, so the runtime fails
+  // closed on every tool call — say it once, up front, instead of letting each
+  // agent report a refusal and leaving the user to work out why nothing landed.
+  if (resolvePermissionMode(config) === "ask" && config.permissions?.onRequest === undefined) {
+    console.warn(
+      '\x1b[33mWarning: permission mode is "ask" but no permissions.onRequest handler is configured — every tool call will be refused. Set mode to "auto", or supply a handler.\x1b[0m'
+    )
+  }
 
   const before = snapshotFiles(config.workDir)
   const orchestrator = new OrchestratorImpl(config)

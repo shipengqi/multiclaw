@@ -1105,9 +1105,9 @@ describe("AcpRuntime · mid-turn input", () => {
 
 describe("AcpRuntime.describe", () => {
   it("reports exactly the capabilities this adapter implements", async () => {
-    // Asked about the one bridge that enforces an allowlist, so this is the
-    // adapter's full capability set. `tools` and `models` are provider-dependent
-    // and have their own tests below.
+    // Asked about the one bridge that selects models through config options, so
+    // this is the adapter's full capability set. `models` is provider-dependent
+    // and has its own test below.
     const info = await new AcpRuntime().describe({ command: "claude-agent-acp" })
     expect(info).toMatchObject({
       name: "acp",
@@ -1116,7 +1116,6 @@ describe("AcpRuntime.describe", () => {
         sessions: true,
         resume: true,
         permissions: true,
-        tools: true,
         models: true,
         images: false,
         usage: true,
@@ -1124,21 +1123,6 @@ describe("AcpRuntime.describe", () => {
         sandbox: false,
       },
     })
-  })
-
-  it("reports tools only for a bridge that can enforce an allowlist", async () => {
-    // Only some bridges read an allowlist out of `_meta`, and none negotiates
-    // it. Claiming it for one that ignores `task.tools` would tell the caller a
-    // restriction landed while the agent runs with its binary's defaults.
-    const tools = async (command?: string) =>
-      (await new AcpRuntime().describe(command === undefined ? undefined : { command }))
-        .capabilities.tools
-
-    expect(await tools("claude-agent-acp")).toBe(true)
-    expect(await tools("codex-acp")).toBe(false)
-    expect(await tools("opencode")).toBe(false)
-    // The default command is `opencode`, which has no known `_meta` contract.
-    expect(await tools()).toBe(false)
   })
 
   it("is available when the default command resolves on PATH", async () => {
@@ -1915,7 +1899,7 @@ describe("AcpRuntime · agent context delivery", () => {
       },
     })
 
-    await runWith(child, { command: "codex-acp", systemPrompt: "sys", tools: ["Read"] })
+    await runWith(child, { command: "codex-acp", systemPrompt: "sys" })
 
     // codex-acp has no tool-restriction key at any granularity, so an allowlist
     // is dropped rather than sent to a namespace that would ignore it.
@@ -2049,7 +2033,7 @@ describe("AcpRuntime · session/request_permission", () => {
         return { stopReason: "end_turn" }
       },
     })
-    await runWith(child, { tools: ["Read"] })
+    await runWith(child, {})
     expect(decisions).toEqual([
       { outcome: { outcome: "cancelled" } },
       { outcome: { outcome: "cancelled" } },
@@ -2113,30 +2097,58 @@ describe("AcpRuntime · session/request_permission", () => {
     }
   })
 
-  it("denies an allowlisted tool in deny mode even though the list covers it", async () => {
+  it("denies every tool call in deny mode", async () => {
     const child = new FakeChild()
+    const { events, onEvent } = collect()
     let decision: unknown
     attachAgent(child, {
       prompt: async (ctx) => {
-        decision = await askPermission(ctx, { name: "Read", options: PERMISSION_OPTIONS })
+        decision = await askPermission(ctx, {
+          toolCallId: "tc-blocked",
+          name: "Read",
+          options: PERMISSION_OPTIONS,
+        })
         return { stopReason: "end_turn" }
       },
     })
-    await runWith(child, { permissionMode: "deny" })
+    await runWith(child, { permissionMode: "deny", onEvent })
     expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
+    // A refusal the user never saw is indistinguishable from a broken tool, so
+    // the mode's decision has to reach the stream with the call named.
+    expect(events.find((e) => e.type === "raw")).toMatchObject({
+      payload: {
+        type: "permission_rejected",
+        toolCallId: "tc-blocked",
+        name: "Read",
+        source: "mode",
+      },
+    })
   })
 
   it("fails closed in ask mode when there is no handler to ask", async () => {
     const child = new FakeChild()
+    const { events, onEvent } = collect()
     let decision: unknown
     attachAgent(child, {
       prompt: async (ctx) => {
-        decision = await askPermission(ctx, { name: "Write", options: PERMISSION_OPTIONS })
+        decision = await askPermission(ctx, {
+          toolCallId: "tc-orphan",
+          name: "Write",
+          options: PERMISSION_OPTIONS,
+        })
         return { stopReason: "end_turn" }
       },
     })
-    await runWith(child, { permissionMode: "ask" })
+    await runWith(child, { permissionMode: "ask", onEvent })
     expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
+    // Missing wiring, not a human decision — the event has to say which.
+    expect(events.find((e) => e.type === "raw")).toMatchObject({
+      payload: {
+        type: "permission_rejected",
+        toolCallId: "tc-orphan",
+        source: "no-handler",
+      },
+    })
   })
 
   it("escalates every tool to the handler in ask mode", async () => {
@@ -2199,7 +2211,6 @@ describe("AcpRuntime · session/request_permission", () => {
       },
     })
     await runWith(child, {
-      tools: ["Read"],
       permissionMode: "ask",
       onPermission: async () => "reject-once",
       onEvent,
@@ -2423,7 +2434,7 @@ describe("AcpRuntime · session/request_permission", () => {
       },
     })
 
-    await runWith(child, { tools: ["Read"] })
+    await runWith(child, {})
     expect(decisions).toEqual([
       { outcome: { outcome: "cancelled" } },
       { outcome: { outcome: "cancelled" } },
@@ -2445,7 +2456,7 @@ describe("AcpRuntime · session/request_permission", () => {
       },
     })
 
-    await runWith(child, { tools: ["Read"], onEvent })
+    await runWith(child, { onEvent })
     expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
     // A foreign request is not a rejection of this run's tool use.
     expect(events.some((e) => e.type === "raw")).toBe(false)

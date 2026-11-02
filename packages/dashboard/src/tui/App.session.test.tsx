@@ -83,7 +83,6 @@ describe("App · caller-owned live sessions", () => {
             sessions: true,
             resume: true,
             permissions: false,
-            tools: false,
             models: false,
             images: false,
             usage: false,

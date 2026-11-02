@@ -1,5 +1,13 @@
 import type { AgentOutput } from "./runtime"
 
+/**
+ * How a runtime answers a provider's tool-permission request.
+ *
+ * `auto` approves every request, `ask` hands it to a human (and refuses when
+ * nobody is listening), `deny` refuses every request.
+ */
+export type PermissionMode = "auto" | "ask" | "deny"
+
 export interface AgentDefinition {
   id: string
   name: string
@@ -50,7 +58,7 @@ export interface AgentDefinition {
   taskTitle?: string
   agentScope?: string
   agentPlan?: string
-  permissions?: { mode: "auto" | "ask" | "deny" }
+  permissions?: { mode: PermissionMode }
   dependsOn?: string[]
   timeout?: number
   retries?: number

@@ -33,11 +33,11 @@ export const HELP_GROUPS: readonly HelpGroup[] = [
   {
     title: "panes",
     rows: [
-      ["tab  ⇧tab", "Next / previous agent"],
+      ["tab", "Next agent"],
+      ["⇧tab", "Toggle permission mode"],
       ["↑ ↓", "Scroll the stream one line"],
       ["pgup pgdn", "Scroll the stream a page"],
-      ["ctrl+l", "Clear the focused log"],
-      ["esc", "Stop reading a past turn"],
+      ["ctrl+l", "Clear the current turn's output"],
     ],
   },
   {

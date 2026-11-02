@@ -95,7 +95,7 @@ export function generateConfig(opts: {
 }): string {
   const name = JSON.stringify(opts.projectName)
   const workDir = JSON.stringify(opts.workDir)
-  const permissions = opts.permissionMode === "auto" ? `\n    permissions: { mode: "auto" },` : ""
+  const permissions = `\n    permissions: { mode: "${opts.permissionMode}" },`
 
   return `import { defineConfig, agents } from "multiclaw"
 
