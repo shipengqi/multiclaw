@@ -1135,6 +1135,51 @@ describe("visibleTimeline", () => {
     expect(narrow.every((row) => displayWidth(row) <= 4)).toBe(true)
   })
 
+  // History rows are memoised per (history array, agent, width). All three are
+  // load-bearing: the array is replaced when a turn ends, and rows are per-agent
+  // and measured in the pane's columns — sharing any of them would draw another
+  // agent's session, or a session measured for a pane that is no longer there.
+  it("keeps each agent's history rows apart", () => {
+    const seeded = reduceEvent(withAgents("a", "b"), output("a", "from-a"))
+    const live = reduceEvent(seeded, output("b", "from-b"))
+    const state: TuiState = { ...live, history: [historyTurn(1, "first", seeded.agents)] }
+    const forA = visibleTimeline(state, "a", 100, WIDTH, 0).rows.map(stripAnsi)
+    const forB = visibleTimeline(state, "b", 100, WIDTH, 0).rows.map(stripAnsi)
+    expect(forA).toContain("from-a")
+    expect(forA).not.toContain("from-b")
+    expect(forB).toContain("from-b")
+    expect(forB).not.toContain("from-a")
+  })
+
+  it("rebuilds the history rows when a turn ends", () => {
+    const agents = reduceEvent(withAgents("a"), output("a", "done")).agents
+    const oneTurn: TuiState = { ...withAgents("a"), history: [historyTurn(1, "first", agents)] }
+    const before = visibleTimeline(oneTurn, "a", 100, WIDTH, 0).rows.map(stripAnsi)
+    expect(before.some((row) => row.includes("turn 2"))).toBe(false)
+
+    // A finished turn replaces `history` with a new array, which is the cache's
+    // version stamp. Serving the old rows here would hide the turn that just ran.
+    const twoTurns: TuiState = {
+      ...oneTurn,
+      history: [...oneTurn.history, historyTurn(2, "second", agents)],
+    }
+    const after = visibleTimeline(twoTurns, "a", 100, WIDTH, 0).rows.map(stripAnsi)
+    expect(after.some((row) => row.includes("turn 2"))).toBe(true)
+  })
+
+  it("re-measures the history dividers when the pane is resized", () => {
+    const agents = reduceEvent(withAgents("a"), output("a", "done")).agents
+    const state: TuiState = {
+      ...withAgents("a"),
+      history: [historyTurn(1, "把控制台的会话时间线改成按轮次分组", agents)],
+    }
+    const wide = visibleTimeline(state, "a", 100, 60, 0).rows
+    const narrow = visibleTimeline(state, "a", 100, 20, 0).rows
+    // Same history array, narrower pane: the divider must be rebuilt, not reused.
+    expect(narrow[0]).not.toBe(wide[0])
+    expect(displayWidth(stripAnsi(narrow[0]))).toBeLessThanOrEqual(20)
+  })
+
   it("clamps at the head", () => {
     const state = logged("1\n2\n3\n4\n5")
     expect(

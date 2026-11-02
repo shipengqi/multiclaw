@@ -620,17 +620,44 @@ function wrapLog(logs: LogSegment[], width: number): string[] {
   return rows
 }
 
-/** Shared tail-slice math used by both single-turn and timeline windowing. */
-function windowRows(all: string[], viewport: number, scroll: number): LogWindow {
+/** How many rows the timeline spends in total, across all its parts. */
+function totalRows(parts: string[][]): number {
+  let total = 0
+  for (const part of parts) total += part.length
+  return total
+}
+
+/**
+ * The tail slice of a timeline, which arrives as parts rather than as one array.
+ *
+ * Parts exist so a scroll does not have to concatenate the session first: the
+ * finished turns are memoised and the live one is a single turn, and copying
+ * both into a fresh array on every keypress would put back the O(whole session)
+ * cost the cache is meant to remove. Slicing walks the parts and copies only
+ * the rows inside the window, so the work is proportional to what is drawn.
+ */
+function windowParts(parts: string[][], viewport: number, scroll: number): LogWindow {
   const height = Math.max(1, viewport)
-  const maxScroll = Math.max(0, all.length - height)
+  const total = totalRows(parts)
+  const maxScroll = Math.max(0, total - height)
   const scrolledBack = Math.min(Math.max(0, scroll), maxScroll)
-  const end = all.length - scrolledBack
-  return {
-    rows: all.slice(Math.max(0, end - height), end),
-    scrolledBack,
-    following: scrolledBack === 0,
+  const end = total - scrolledBack
+  const start = Math.max(0, end - height)
+  const rows: string[] = []
+  let offset = 0
+  for (const part of parts) {
+    const partEnd = offset + part.length
+    if (partEnd <= start) {
+      offset = partEnd
+      continue
+    }
+    if (offset >= end) break
+    const from = Math.max(0, start - offset)
+    const to = Math.min(part.length, end - offset)
+    for (let i = from; i < to; i++) rows.push(part[i])
+    offset = partEnd
   }
+  return { rows, scrolledBack, following: scrolledBack === 0 }
 }
 
 /** Clip to `max` terminal columns, marking the cut with an ellipsis. */
@@ -667,26 +694,100 @@ function turnDivider(turn: TurnView, width: number): string {
   return `\x1b[2m${clipToColumns(rule, width)}\x1b[0m`
 }
 
-/** All rows a given agent produced across every finished turn, in order oldest→newest. */
-function timelineRows(state: TuiState, agentId: string, width: number): string[] {
-  const all: string[] = []
-  // History turns: always add the divider (which carries the requirement text) even
-  // when the agent was silent in that turn — so the session context stays readable.
-  for (const turn of state.history) {
+/** Append every row, without the argument-count limit of `push(...rows)`. */
+function pushRows(target: string[], rows: string[]): void {
+  for (const row of rows) target.push(row)
+}
+
+/**
+ * Rows for the finished turns of one agent, memoised per (history, agent, width).
+ *
+ * `history` is replaced wholesale when a turn ends — never edited in place — so
+ * the array's identity is a version stamp: a new turn is a new array, which is
+ * a cache miss. Turn records are immutable for the same reason (`snapshot`
+ * shares `agents` by reference and every reducer path replaces rather than
+ * edits), so rows derived from them cannot go stale while the array is the same.
+ *
+ * The agent id and the width are both part of the key: rows are per-agent and
+ * measured in the pane's columns, so sharing either across agents or across a
+ * resize would draw one agent's session, or a session measured for a pane that
+ * is no longer on screen.
+ */
+const historyCache = new WeakMap<TurnView[], Map<string, Map<number, string[]>>>()
+
+function historyRows(history: TurnView[], agentId: string, width: number): string[] {
+  if (history.length === 0) return []
+  let byAgent = historyCache.get(history)
+  if (byAgent === undefined) {
+    byAgent = new Map()
+    historyCache.set(history, byAgent)
+  }
+  let byWidth = byAgent.get(agentId)
+  if (byWidth === undefined) {
+    byWidth = new Map()
+    byAgent.set(agentId, byWidth)
+  }
+  const cached = byWidth.get(width)
+  if (cached !== undefined) return cached
+
+  const rows: string[] = []
+  // Always draw the divider, even for a turn this agent sat out: it carries the
+  // requirement, and without it a silent turn would leave a gap in the stream
+  // with nothing to say what happened in between.
+  for (const turn of history) {
+    rows.push(turnDivider(turn, width))
     const agent = turn.agents[agentId]
-    all.push(turnDivider(turn, width))
-    if (agent && agent.logs.length > 0) {
-      all.push(...wrapLog(agent.logs, width))
+    if (agent && agent.logs.length > 0) pushRows(rows, wrapLog(agent.logs, width))
+  }
+  // Bounded like the wrap cache, so dragging a window narrower cannot keep a
+  // full re-measure of the session per column.
+  if (byWidth.size >= MAX_CACHED_WIDTHS) byWidth.clear()
+  byWidth.set(width, rows)
+  return rows
+}
+
+/**
+ * The live turn as rows: a divider when there is history above it, then the
+ * focused agent's output so far — shown while it runs, not only once it ends.
+ */
+function liveRows(state: TuiState, agentId: string, width: number): string[] {
+  const agent = state.agents[agentId]
+  if (!agent || agent.logs.length === 0) return []
+  const rows = wrapLog(agent.logs, width)
+  // With no history above it there is no divider, so the wrapped rows *are* the
+  // part — hand them over instead of copying a whole turn on every render.
+  if (state.history.length === 0) return rows
+  const out: string[] = [turnDivider(state, width)]
+  pushRows(out, rows)
+  return out
+}
+
+/**
+ * The focused agent's session as parts, oldest first: finished turns, then the
+ * live one. Empty parts are dropped so windowing has nothing to skip over.
+ */
+function timelineParts(state: TuiState, agentId: string, width: number): string[][] {
+  const history = historyRows(state.history, agentId, width)
+  const live = liveRows(state, agentId, width)
+  if (live.length === 0) return history.length === 0 ? [] : [history]
+  return history.length === 0 ? [live] : [history, live]
+}
+
+/** Index of the last row matching `needle`, counted from the top of the timeline. */
+function lastMatchingRow(parts: string[][], needle: string): number {
+  let base = 0
+  const bases: number[] = []
+  for (const part of parts) {
+    bases.push(base)
+    base += part.length
+  }
+  for (let p = parts.length - 1; p >= 0; p--) {
+    const part = parts[p]
+    for (let i = part.length - 1; i >= 0; i--) {
+      if (part[i].toLowerCase().includes(needle)) return bases[p] + i
     }
   }
-  // Current live turn — include even while running, so output appears in real time.
-  // Add a divider only when there is history above it, to mark the turn boundary.
-  const liveAgent = state.agents[agentId]
-  if (liveAgent && liveAgent.logs.length > 0) {
-    if (state.history.length > 0) all.push(turnDivider(state, width))
-    all.push(...wrapLog(liveAgent.logs, width))
-  }
-  return all
+  return -1
 }
 /**
  * Freeze the live turn into a record that can be read back later.
@@ -916,7 +1017,7 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
     case "stream:scroll": {
       const focusId = state.focusId
       if (!focusId) return state
-      const rows = timelineRows(state, focusId, action.width).length
+      const rows = totalRows(timelineParts(state, focusId, action.width))
       const maxScroll = Math.max(0, rows - Math.max(1, action.viewport))
       const next = Math.min(Math.max(0, state.scroll + action.delta), maxScroll)
       return next === state.scroll ? state : { ...state, scroll: next }
@@ -925,19 +1026,13 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
     case "stream:search": {
       const focusId = state.focusId
       if (!focusId || action.query === "") return state
-      const all = timelineRows(state, focusId, action.width)
-      const needle = action.query.toLowerCase()
-      let index = -1
-      for (let i = all.length - 1; i >= 0; i--) {
-        if (all[i].toLowerCase().includes(needle)) {
-          index = i
-          break
-        }
-      }
+      const parts = timelineParts(state, focusId, action.width)
+      const index = lastMatchingRow(parts, action.query.toLowerCase())
       if (index === -1) return state
+      const total = totalRows(parts)
       const height = Math.max(1, action.viewport)
-      const maxScroll = Math.max(0, all.length - height)
-      const scroll = Math.min(Math.max(0, all.length - 1 - index), maxScroll)
+      const maxScroll = Math.max(0, total - height)
+      const scroll = Math.min(Math.max(0, total - 1 - index), maxScroll)
       return scroll === state.scroll && !state.autoFollow
         ? state
         : { ...state, scroll, autoFollow: false }
@@ -1112,5 +1207,5 @@ export function visibleTimeline(
   width: number,
   scroll: number
 ): LogWindow {
-  return windowRows(timelineRows(state, agentId, width), viewport, scroll)
+  return windowParts(timelineParts(state, agentId, width), viewport, scroll)
 }
