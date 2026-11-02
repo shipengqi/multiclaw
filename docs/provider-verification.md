@@ -35,7 +35,7 @@ bridged：`claude-agent-acp`、`codex-acp`（两者由 multiclaw 自带，用户
 | 1.1 | PATH 上装有 `opencode`，跑 `multiclaw doctor` | OpenCode 行 `✓ present`，`source` 列 = `path`，无 `bundled bridge:` 明细行 | `providers/detect.ts` |
 | 1.2 | 未安装 `claude` CLI（PATH 无 `claude`，也无 `claude-agent-acp`），重跑 doctor | Claude 行 `✓ present`，`source` = `bundled`，并在表格下打印 `bundled bridge: <绝对路径>` | `providers/bridge.ts`（`resolveExecutable` 优先 PATH、兜底 bundled）+ `providers/detect.ts` |
 | 1.3 | 同 1.2 但安装了 `codex` CLI | Codex 行 `✓ present`，`source` = `bundled`（除非 PATH 上有 `codex-acp`） | 同上 |
-| 1.4 | config 里 agent 显式配 `tools: ["Read"]` 且 provider 为 `codex` | Config 检查段出现黄色警告：`agent(s) use a provider that cannot enforce tool allowlists: ...` | `cli/src/commands/doctor.ts`（`tools: false` 的 provider 见 catalog） |
+| 1.4 | config 里 `permissions: { mode: "ask" }` 且未提供 `onRequest`，跑 `multiclaw run` | 开跑前打印 `Warning: permission mode is "ask" but no permissions.onRequest handler is configured — every tool call will be refused.`；实际每次工具调用都被拒 | `cli/src/commands/run.ts`（`resolvePermissionMode` + 警告）+ `runtime/AcpRuntime.ts` |
 | 1.5 | config 里 agent 的 `provider` 指向一个未安装的 provider | Config 检查段列出该 agent，`runnable: false` | `cli/src/commands/doctor.ts` + `cli/src/lib.ts`（唯一可用性门禁） |
 
 > 1.2/1.3 是「present ≠ 用户自己装了」的证明：显示 present 可能只是 multiclaw 自带的桥在兜底。
@@ -51,36 +51,30 @@ bridged：`claude-agent-acp`、`codex-acp`（两者由 multiclaw 自带，用户
 
 ## 3. `session/request_permission` 真机（claude-agent-acp）
 
-背景：权限应答是 **name-first + fail-closed**——工具名命中 `task.tools` 才批准，其余一律拒绝；
-默认 `tools = ["Read", "Write", "Bash"]`（未显式配置时）。条目按**大小写不敏感的通配**匹配
-（`*` = 任意串，`mcp__graft__*` 覆盖整个 MCP server），其余字符按字面量比较，不支持字符类。
-拒绝会以 `raw`/`acp` 事件（payload `{ type: "permission_rejected", … }`）显式暴露，不是静默失败，
-并且警告行会点名是哪个工具被拒。
+背景：权限应答由 `permissions.mode` 决定，没有白名单、没有按工具名的过滤：
 
-`permissions.mode` 决定**谁能推翻白名单**，而不是谁需要被问：
+| mode | 行为 |
+| --- | --- |
+| `auto`（`run` 默认） | 每个请求都选 `allow_once`，不弹任何提示 |
+| `ask`（控制台默认） | 每个请求都交给 `onPermission`；没有 handler 时 fail-closed |
+| `deny` | 每个请求都拒绝 |
 
-| mode | 白名单内 | 白名单外 |
-| --- | --- | --- |
-| `auto`（默认） | 直接放行 | 直接拒绝 |
-| `ask` | 直接放行（不问） | 交给 `onPermission` 问人；拒绝时记 `source: "user"` |
-| `deny` | 拒绝 | 拒绝 |
+每次拒绝都会以 `raw`/`acp` 事件（payload `{ type: "permission_rejected", … }`）显式暴露，带工具名，
+`source` 区分拒绝来源：`mode`（deny）、`no-handler`（ask 但没有处理函数）、`user`（人工点了拒绝）。
 
-`ask` 是唯一的升级路径，必须显式打开；没有 handler 时白名单外仍然 fail-closed。
+> `auto` 不是沙箱：它批准的是 provider 发来的请求，`Bash` 仍能 `rm`、能 `grep`。README 里
+> 「这不是沙箱，也不是细粒度的路径或命令授权」是准确表述。
 
 | # | 步骤 | 预期 | 代码落点 |
 | --- | --- | --- | --- |
-| 3.1 | agent 不配 `tools`（用默认三项），任务：「读取 `<workDir>/secret.txt` 并原样汇报内容」；事先放入 `secret.txt` | 运行成功，agent 输出**包含文件内容**；全程无 `PERMISSION_DENIED`、无 `permission_rejected` 事件 | `runtime/AcpRuntime.ts` `decidePermission`（name-first）；`orchestrator/AgentRunner.ts` 默认 tools |
-| 3.2 | 同上配置，任务改为：「用 shell 命令删除 `<workDir>/secret.txt`」 | **记录实际行为**，不要预设被拒：默认 allowlist 含 `Bash`，而 `rm` 是 Bash 内部命令 → 执行成功、文件被删、全程无审批请求 | 同上 |
-| 3.3 | 任务包含需要搜索/抓取的步骤 | **记录实际行为**：模型通常用 `Bash` 或 `Read` 就完成了，不必然以 `Grep`/`WebFetch` 的名义请求；只有真以这些名字请求时才被拒（不在默认三项内） | `KIND_TO_TOOLS`（`search`/`fetch` 仅作 kind 兜底） |
+| 3.1 | `auto`（默认），任务：「读取 `<workDir>/secret.txt` 并原样汇报内容」；事先放入 `secret.txt` | 运行成功，agent 输出**包含文件内容**；全程无 `PERMISSION_DENIED`、无 `permission_rejected` 事件 | `runtime/AcpRuntime.ts`（auto 分支） |
+| 3.2 | 同上配置，任务改为：「用 shell 命令删除 `<workDir>/secret.txt`」 | **记录实际行为**：auto 下不会被拦——执行成功、文件被删、全程无审批请求 | 同上 |
+| 3.3 | `ask` + 控制台，任务触发写文件 | 权限栏出现，展示 agent、工具输入与 provider 选项；选 allow 后继续；选 reject 后流里出现 `permission_rejected`，`source: "user"`，带工具名 | `runtime/AcpRuntime.ts`（ask 分支）+ `dashboard/src/tui/interaction.ts` |
+| 3.4 | `deny`，任意需要工具的任务 | 每次调用都被拒；流里出现 `permission_rejected`，`source: "mode"`；warning 行点名被拒的工具 | `runtime/AcpRuntime.ts`（deny 分支） |
+| 3.5 | `ask` 但未提供 `onRequest`（如 `multiclaw run`） | 每次调用都被拒；`permission_rejected` 的 `source` 为 `no-handler` | `runtime/AcpRuntime.ts` + `orchestrator/AgentRunner.ts` |
 
 > 3.1 是历史遗留的专项：bridge 早期对某些内置工具的 `name` 传递有问题，曾被误杀成
 > `PERMISSION_DENIED`。若复现，先记录 bridge 版本再开 issue。
->
-> **3.2/3.3 的原预期在 2026-10-31 实测中被推翻**，两处都已改成「记录实际行为」：默认
-> `tools` 里有 `Bash`，而 `Bash` 能 `rm`、能 `grep`，所以「删除被拒」不会发生。fail-closed
-> 只在**工具名**这一层成立——`tools` 是审批白名单，不是能力上限，更不是沙箱。README 里
-> 「这不是沙箱，也不是细粒度的路径或命令授权」是准确表述；把这里写成「删除会被拒」会让
-> 下一个验证者去报一个不存在的 bug。
 
 ## 4. codex-acp：AIR `customInstructions` 遵从度
 
@@ -92,15 +86,6 @@ diffPatch/subagent 等未映射格式），只发这一个 key。
 | --- | --- | --- | --- |
 | 4.1 | 给 leader 或某 agent 一个**可观测**的系统提示，例如「每次回答必须以 `CODEX-OK` 开头」；用 codex provider 跑一轮 | 指令被真实遵从（输出带 `CODEX-OK`），而不是被忽略或只体现在思考段 | `providers/catalog.ts` codex `meta` + `runtime/AcpRuntime.ts` session 创建处 |
 | 4.2 | 对比：同一配置改用 claude provider（走 `_meta.systemPrompt`） | 两者遵从度应同档；若 codex 明显更弱，记录现象——这决定 codex 的角色提示词策略 | 同上 |
-
-## 5. codex：无工具限制落点时的实际行为
-
-背景：catalog 中 codex `tools: false`（无 allowlist 落点），显式配置的 `tools` 被**静默丢弃**
-（不报错），doctor 只给警告（§1.4）。开放问题：是否要改成「显式配置即硬报错」。
-
-| # | 步骤 | 预期（记录**实际**行为） | 用途 |
-| --- | --- | --- | --- |
-| 5.1 | agent 显式 `tools: ["Read"]` + provider codex，任务需要写文件 | 记录：agent 是否仍能写文件？（预期能——没有落点） | 为「静默丢弃 vs 硬报错」的拍板提供事实依据（硬报错需先给 `AgentTask` 加显式配置标记） |
 
 ## 6. Session 续接：`/retry` 与 `multiclaw run --resume`
 

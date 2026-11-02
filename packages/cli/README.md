@@ -114,6 +114,7 @@ export default defineConfig({
   defaults: {
     provider: "claude",     // which agent product runs the team
     model: "sonnet",        // default model (overridable per agent)
+    permissions: { mode: "auto" }, // optional; "auto" | "ask" | "deny"
   },
 
   agents: [
@@ -127,7 +128,7 @@ export default defineConfig({
       systemPrompt: "You are a software architect.", // optional
       taskPrompt: `Design the system for {{requirement}}.
 Read the brief at {{file:brief.md}} and write architecture.md.`,
-      tools: ["Read", "Write"],
+      permissions: { mode: "ask" }, // optional; overrides the project mode here
       dependsOn: [],          // optional; list of agent ids this agent waits for
       timeout: 600_000,       // optional; ms, default: 600 000 (10 min)
       retries: 0,             // optional; retry count on failure, default: 0
@@ -138,7 +139,6 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
       name: "Developer",
       model: "sonnet",        // override model for this agent
       taskPrompt: "Read architecture.md and implement the code.",
-      tools: ["Read", "Write", "Bash"],
       dependsOn: ["architect"],
     },
   ],
@@ -159,6 +159,7 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `logDir` | string | | Log output directory. Default: `workDir/.multiclaw/logs`. |
 | `continueOnError` | boolean | | Keep running when an agent fails. Default: `false`. |
 | `maxConcurrency` | number | | Max agents running in parallel. Default: unlimited. |
+| `permissions` | `{ mode: "auto" \| "ask" \| "deny", onRequest? }` | | Approval mode for tool calls, plus the handler `"ask"` escalates to. Default: `"auto"` for `run`, `"ask"` in the console. |
 
 ### Agent fields
 
@@ -175,7 +176,7 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `modelTier` | `"strong"` \| `"balanced"` \| `"fast"` | | Declares the capability this agent needs; the catalog maps each tier to a provider-specific model id. Ignored when `model` is set. |
 | `model` | string | | Override the model id for this agent (provider-specific, e.g. `"opus"`, `"sonnet"`, `"haiku"` for Claude). Takes precedence over `modelTier` and `models`. |
 | `models` | Record<string, string> | | Map of provider id (or the legacy `"acp"`) to a model id, e.g. `{ claude: "sonnet", opencode: "opencode/big-pickle" }`. Used when `model`/`modelTier` are unset. |
-| `tools` | string[] | | Allowed tools. Default: `["Read", "Write", "Bash"]`. |
+| `permissions` | `{ mode: "auto" \| "ask" \| "deny" }` | | Approval mode for this agent's tool calls. Overrides `permissions` and `defaults.permissions`. |
 | `dependsOn` | string[] | | Agent ids that must complete before this agent starts. |
 | `timeout` | number | | Per-agent timeout in ms. Default: `600000` (10 min). |
 | `retries` | number | | Number of retry attempts on failure. Default: `0`. |
@@ -229,9 +230,8 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 | Header | Project name, turn number, and the phase or elapsed time |
 | Pipeline rail | The leader, then each stage in order, joined by `──▸` |
 | Team panel | One row per agent: status glyph, name, live time, and progress (`1/4`) |
-| Stream panel | Live output of the focused agent, with a `▼` live / `⏸` parked marker |
+| Stream panel | The focused agent's output across every turn of this session, with a `▼` live / `⏸` parked marker |
 | Reply panel | What the leader answered, when a turn needed no pipeline |
-| Review banner | `viewing turn N …` while a past turn is open |
 | Queue strip | Follow-ups typed mid-run, in the order they will run |
 | Prompt | Where you type — live even while a turn is running |
 | Hint bar | Aggregate status on the left, the keys that work *right now* on the right |
@@ -257,13 +257,14 @@ which is what keeps typing a requirement from tripping over shortcuts.
 | Key | Action |
 |-----|--------|
 | `enter` | Run the typed requirement — or queue it while a turn is running |
-| `tab` / `shift+tab` | Cycle the focused agent |
+| `tab` | Cycle the focused agent |
+| `shift+tab` | Toggle the permission mode (`auto` ↔ `ask`) |
 | `↑` `↓` `pgup` `pgdn` | Scroll the focused agent's stream |
 | `←` `→` `home` `end` | Move the caret |
-| `esc` | Stop reading a past turn, clear the line, or close an overlay |
+| `esc` | Clear the line, or close an overlay |
 | `?` | Key map (idle, empty line only) |
 | `/` | Command menu (empty line only) |
-| `ctrl+l` | Clear the focused agent's log |
+| `ctrl+l` | Clear the focused agent's output for the current turn |
 | `ctrl+c` | Cancel the running turn *and its queue*; again when idle to quit |
 
 Scrolling up parks the stream and scrolling back to the bottom resumes it, so there is no follow
@@ -286,8 +287,9 @@ Type `/` on an empty line for a filtered list.
 |---------|--------|
 | `/agents` | List the configured team |
 | `/focus <id>` | Focus an agent by id |
-| `/clear` | Clear the focused agent's log |
-| `/history` | Browse finished turns |
+| `/clear` | Clear the focused agent's output for the current turn |
+| `/mode auto\|ask\|deny` | Set the permission mode |
+| `/sessions` | Switch between, or delete, saved sessions |
 | `/cancel` | Cancel the running turn and its queue |
 | `/help` | Key map |
 | `/quit` | Exit |
@@ -306,11 +308,29 @@ are per-run: `workDir/.multiclaw/runs/run-<timestamp>/logs/`.
 
 ### History
 
-`/history` lists finished turns newest first, with each turn's outcome, duration, agent count and
-requirement. `↑` `↓` select and `enter` opens one for reading — the panes render that turn behind a
-`viewing turn N` banner, and `esc` returns to the live turn. Scrolling and `tab` apply to what you
-are reading, never to the turn that is still running. The turn on screen is not listed, and the last
-20 finished turns are kept.
+The stream panel shows the focused agent's whole session: every turn it took part in, oldest first,
+separated by dim `──── turn N · <requirement> ────` rows. Scrolling up walks back through it — there
+is no separate "open a past turn" mode and no `esc` to leave one. `tab` switches agent, and each
+agent keeps its own timeline. The header appends `· N turns` once an agent has run more than once.
+The last 20 finished turns are kept.
+
+The team panel and the pipeline rail stay bound to the live turn, so the orchestration context does
+not change while you are reading history.
+
+### Permission modes
+
+`permissions: { mode: ... }` decides what happens to a provider's tool-permission request:
+
+| Mode | Behaviour |
+|------|-----------|
+| `"auto"` | Every request is approved. No prompts. |
+| `"ask"` | Every request is escalated to a human — the console's permission bar, or `permissions.onRequest`. With nobody to ask, it is refused. |
+| `"deny"` | Every request is refused. |
+
+`multiclaw run` has nobody to ask, so `"ask"` without an `onRequest` handler refuses every tool call;
+the run warns about this before it starts. The console starts in `"ask"` unless the config says
+otherwise. `shift+tab` toggles between `auto` and `ask` at runtime, and `/mode auto|ask|deny` sets any
+of the three; the active mode is shown in the header.
 
 On a narrow terminal (under 72 columns) the team panel is dropped and the stream takes the full
 width; on a short one (under 16 rows) the pipeline rail goes too. The header, prompt and hint bar are

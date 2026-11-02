@@ -169,7 +169,7 @@ export default defineConfig({
       systemPrompt: "You are a software architect.", // optional
       taskPrompt: `Design the system for {{requirement}}.
 Read the brief at {{file:brief.md}} and write architecture.md.`,
-      tools: ["Read", "Write"],
+      permissions: { mode: "ask" }, // optional; overrides the project mode here
       dependsOn: [],          // optional; list of agent ids this agent waits for
       timeout: 600_000,       // optional; ms, default: 600 000 (10 min)
       retries: 0,             // optional; retry count on failure, default: 0
@@ -180,7 +180,6 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
       name: "Developer",
       model: "sonnet",        // override model for this agent
       taskPrompt: "Read architecture.md and implement the code.",
-      tools: ["Read", "Write", "Bash"],
       dependsOn: ["architect"],
     },
   ],
@@ -196,12 +195,12 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `agents` | AgentDefinition[] | ✓ | The agent pipeline (see Agent fields below). |
 | `leader` | AgentDefinition | | Optional routing agent (see [Leader](#leader)). |
 | `useLeader` | boolean | | Enable or disable the leader agent. Default: `true` when leader is configured. |
-| `defaults` | object | | Project-wide `{ provider?, model?, command?, tools? }` applied to every agent that does not override them. Keeps generated configs short. |
+| `defaults` | object | | Project-wide `{ provider?, model?, command?, permissions? }` applied to every agent that does not override them. Keeps generated configs short. |
 | `context` | Record<string, string> | | Variables available as `{{key}}` in every prompt. `requirement` is injected automatically. |
 | `logDir` | string | | Log output directory. Default: `workDir/.multiclaw/logs`. |
 | `continueOnError` | boolean | | Keep running when an agent fails. Default: `false`. |
 | `maxConcurrency` | number | | Max agents running in parallel. Default: unlimited. |
-| `permissions` | object | | Permission mode: `{ mode: "auto" \| "ask" \| "deny" }`. Controls how tool-permission requests are handled. Default (`"auto"`): listed tools run without prompting; unlisted are refused. `"ask"` escalates unlisted tools to `permissions.onRequest`. `"deny"` refuses every request. |
+| `permissions` | object | | Permission mode: `{ mode: "auto" \| "ask" \| "deny", onRequest? }`. `"auto"` approves every tool request, `"ask"` escalates each one to `onRequest`, `"deny"` refuses all of them. Default: `"auto"` for `run`, `"ask"` in the console. |
 
 ### Agent fields
 
@@ -218,7 +217,7 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `modelTier` | `"strong"` \| `"balanced"` \| `"fast"` | | Declares the capability this agent needs; the catalog maps each tier to a provider-specific model id. Ignored when `model` is set. |
 | `model` | string | | Override the model id for this agent (provider-specific, e.g. `"opus"`, `"sonnet"`, `"haiku"` for Claude). Takes precedence over `modelTier` and `models`. |
 | `models` | Record<string, string> | | Map of provider id (or the legacy `"acp"`) to a model id, e.g. `{ claude: "sonnet", opencode: "opencode/big-pickle" }`. Used when `model`/`modelTier` are unset. |
-| `tools` | string[] | | Allowed tools. Case-insensitive globs, where `*` matches any run of characters (`mcp__graft__*`). Default: `["Read", "Write", "Bash"]`. Explicit restrictions require runtime enforcement support (see below). |
+| `permissions` | `{ mode: "auto" \| "ask" \| "deny" }` | | Approval mode for this agent's tool calls. Overrides `permissions` and `defaults.permissions`. |
 | `dependsOn` | string[] | | Agent ids that must complete before this agent starts. |
 | `timeout` | number | | Per-agent timeout in ms. Default: `600000` (10 min). |
 | `retries` | number | | Number of retry attempts on failure. Default: `0`. |
@@ -272,9 +271,8 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 | Header | Project name, turn number, and the phase or elapsed time |
 | Pipeline rail | The leader, then each stage in order, joined by `──▸` |
 | Team panel | One row per agent: status glyph, name, live time, and progress (`1/4`) |
-| Stream panel | Live output of the focused agent, with a `▼` live / `⏸` parked marker |
+| Stream panel | The focused agent's output across every turn of this session, with a `▼` live / `⏸` parked marker |
 | Reply panel | What the leader answered, when a turn needed no pipeline |
-| Review banner | `viewing turn N …` while a past turn is open |
 | Queue strip | Follow-ups typed mid-run, in the order they will run |
 | Prompt | Where you type — live even while a turn is running |
 | Hint bar | Aggregate status on the left, the keys that work *right now* on the right |
@@ -300,13 +298,14 @@ which is what keeps typing a requirement from tripping over shortcuts.
 | Key | Action |
 |-----|--------|
 | `enter` | Run the typed requirement — or queue it while a turn is running |
-| `tab` / `shift+tab` | Cycle the focused agent |
+| `tab` | Cycle the focused agent |
+| `shift+tab` | Toggle the permission mode (`auto` ↔ `ask`) |
 | `↑` `↓` `pgup` `pgdn` | Scroll the focused agent's stream |
 | `←` `→` `home` `end` | Move the caret |
-| `esc` | Stop reading a past turn, clear the line, or close an overlay |
+| `esc` | Clear the line, or close an overlay |
 | `?` | Key map (idle, empty line only) |
 | `/` | Command menu (empty line only) |
-| `ctrl+l` | Clear the focused agent's log |
+| `ctrl+l` | Clear the focused agent's output for the current turn |
 | `ctrl+c` | Cancel the running turn *and its queue*; again when idle to quit |
 
 Scrolling up parks the stream and scrolling back to the bottom resumes it, so there is no follow
@@ -351,8 +350,9 @@ Type `/` on an empty line for a filtered list.
 |---------|--------|------|
 | `/agents` | List the configured team | always |
 | `/focus <id>` | Focus an agent by id | always |
-| `/clear` | Clear the focused agent's log | always |
+| `/clear` | Clear the focused agent's output for the current turn | always |
 | `/verbose` | Toggle tool detail in the stream | always |
+| `/mode auto\|ask\|deny` | Set the permission mode | always |
 | `/search <text>` | Search the focused stream | always |
 | `/latest` | Jump the stream to latest output | always |
 | `/sessions` | Switch between, or delete, saved sessions (see [Sessions](#sessions)) | always |
@@ -384,66 +384,51 @@ never dropped.
 > **No TTY?** The console needs an interactive terminal. In CI, in a pipe, or over a non-TTY SSH
 > session it exits with a message pointing at `multiclaw run`, which runs the same pipeline headless.
 
-### Explicit tool restrictions
+### Tool approvals and agent questions
 
-An explicit `tools` setting, including `tools: []`, is checked against the runtime's
-capability for the **resolved command** before any leader, worker, reviewer, or repair
-agent starts. Unsupported restrictions fail with the agent and command named: choose
-an enforcing provider or remove the explicit setting. multiclaw never silently removes
-the restriction or changes providers. The same check protects dry-run previews and retries.
-
-Built-in presets keep their existing implicit tool defaults and remain usable with
-providers that cannot enforce allowlists. Factory overrides, replacement arrays (even
-with the same values), and changed array contents count as explicit settings. Ordinary
-spreads preserve preset defaults; a same-reference, unchanged-array assignment cannot
-be distinguished from an unchanged preset. These defaults are **not** an enforcement
-guarantee on unsupported providers. Tool policy is not a sandbox: allowing `Bash` does
-not restrict its commands or filesystem paths.
-
-`defaults.tools` applies the same tools list to every agent that does not declare its own `tools`. An agent with an explicit `tools` field overrides it completely (no merging). `defaults.tools` triggers the same runtime capability check as a per-agent setting, but does not affect built-in preset agents, which always use their own preset tools regardless.
-
-### Human approvals and agent questions
-
-multiclaw has three permission modes, configured via `permissions: { mode: ... }`:
+multiclaw has three permission modes, configured via `permissions: { mode: ... }`. The
+agent's own `permissions.mode` wins, then the project's, then `defaults.permissions`:
 
 | Mode | Behaviour |
 |------|-----------|
-| `"auto"` **(default)** | Tools on the agent's allowlist run without any prompt. Tools not on the list are automatically refused with a warning. |
-| `"ask"` | Tools on the allowlist still run without prompting. Tools **not** on the list are escalated to `permissions.onRequest` (the console's interactive UI, or a caller-supplied handler). |
-| `"deny"` | Every tool request is refused, even those on the allowlist. |
+| `"auto"` **(default)** | Every tool request is approved. No prompts. |
+| `"ask"` | Every tool request is escalated to a human — `permissions.onRequest`, or the console's permission bar. With nobody to answer, it is refused. |
+| `"deny"` | Every tool request is refused. |
 
 ```typescript
 // multiclaw.config.ts — override the default if needed
 export default defineConfig({
-  permissions: { mode: "ask" }, // prompt for any tool not on the allowlist
+  permissions: { mode: "ask" }, // ask a person before any tool runs
 })
 ```
 
-The console defaults to **ask** for ACP tool-permission requests. It shows the
-requesting agent, tool input, and the provider's offered choices. Requests from
-concurrent agents are queued with unique aliases; normal input still queues a
-follow-up and never grants approval.
+`multiclaw run` has nobody to ask, so `"ask"` without an `onRequest` handler refuses
+every tool call; it warns about this before the team starts. The console starts in
+**ask** unless the config says otherwise, and shows the active mode in the header.
+`shift+tab` toggles between `auto` and `ask` at runtime and `/mode auto|ask|deny` sets
+any of the three — a runtime choice outranks a per-agent mode, so the header always
+describes what the agents are actually doing.
+
+The console's permission bar shows the requesting agent, the tool input, and the
+provider's offered choices. Requests from concurrent agents are queued with unique
+aliases; normal input still queues a follow-up and never grants approval.
 
 - `/approve p1 1` selects option 1 for request `p1`; `/deny p1` cancels that request.
 - Request aliases do not repeat within the console session. Stale ids and invalid
   option numbers cannot decide another request.
-- A tool the agent's `tools` policy already covers runs without asking; the
-  console only asks about the tools it does not cover.
 - Waiting counts toward the agent's existing timeout. Cancel, quit, and session
   cleanup release outstanding decisions; they do not leave agents waiting forever.
+- A refusal is reported on the stream as a `permission_rejected` event naming the
+  tool, with `source` saying whether the mode, a missing handler, or a person said no.
 
-For headless runs and direct core callers, the default remains automatic matching
-against `tools`: a listed tool runs, anything else is refused. `permissions: { mode: "ask" }`
-keeps that for listed tools and escalates everything else to `permissions.onRequest`
-(refused when no handler is supplied); `permissions: { mode: "deny" }` refuses every request.
 Permission handlers are turn-local, not saved in reusable provider sessions.
 
 **This handles requests the provider actually sends, not every tool invocation.**
 Claude may allow reads or safe commands without asking; its permission settings
 still apply. This is neither a sandbox nor fine-grained path/command enforcement.
 An `allow_always` choice has the scope shown by the provider, not a multiclaw-wide
-approval cache and may change provider settings. Automatic policy matching selects
-one-time approval only; it never silently grants a durable permission. Denying a tool
+approval cache and may change provider settings. `auto` selects one-time approval
+only; it never silently grants a durable permission. Denying a tool
 does not itself mean the agent turn failed: use the
 optional delivery review gate when completion must satisfy acceptance criteria.
 
@@ -460,8 +445,8 @@ bridge maps to `AskUserQuestion`. The console queues these alongside approvals:
 
 Core callers supply `questions.onRequest` (or `AgentTask.onQuestion`); live-session
 callers open with `questionForms: true` and provide `onQuestion` on each prompt.
-Form support is negotiated only when the caller supports it. The tool must also
-be available in the agent's configured `tools`, e.g. `"AskUserQuestion"` for Claude.
+Form support is negotiated only when the caller supports it. The provider must also
+offer the tool, e.g. `"AskUserQuestion"` for Claude.
 URL elicitation, custom schema types, and arbitrary prose questions are not
 supported. Supported forms include strings, numbers, integers, booleans, and enum
 multi-selects; this is not a general JSON Schema implementation. No question
@@ -488,10 +473,11 @@ Finished turns are written to `workDir/.multiclaw/sessions/<id>/turns.jsonl`, on
 closing the console and reopening it restores the session — and the turn numbering carries on from
 where it left off rather than restarting at one.
 
-Switching to a session via `/sessions` automatically opens its last turn for reading: the panes
-render that turn — its roster, its stream, its pipeline — behind a `viewing turn N` banner. `esc`
-returns to the idle state so you can type your next instruction. Reading a past turn is harmless:
-scrolling and `tab` apply to what you are reading, never to any running turn.
+Switching to a session via `/sessions` restores its history into the stream. The stream panel
+shows the focused agent's whole session — every turn it took part in, oldest first, separated by
+dim `──── turn N · <requirement> ────` rows — and scrolling up walks back through it. There is no
+separate "open a past turn" mode: the team panel and pipeline rail stay on the live turn, so the
+orchestration context does not move while you read.
 
 The console keeps the last 20 finished turns per session.
 

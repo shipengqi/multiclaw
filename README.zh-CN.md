@@ -164,7 +164,7 @@ export default defineConfig({
       systemPrompt: "你是一名软件架构师。", // 可选
       taskPrompt: `为 {{requirement}} 设计系统架构。
 读取 {{file:brief.md}} 中的需求说明，并输出 architecture.md。`,
-      tools: ["Read", "Write"],
+      permissions: { mode: "ask" }, // 可选；在此 Agent 上覆盖项目级模式
       dependsOn: [],          // 可选；此 Agent 等待哪些 Agent 完成后再启动
       timeout: 600_000,       // 可选；超时时间（毫秒），默认 600 000（10 分钟）
       retries: 0,             // 可选；失败后重试次数，默认 0
@@ -175,7 +175,6 @@ export default defineConfig({
       name: "开发者",
       model: "sonnet",        // 指定此 Agent 的模型
       taskPrompt: "读取 architecture.md 并实现代码。",
-      tools: ["Read", "Write", "Bash"],
       dependsOn: ["architect"],
     },
   ],
@@ -191,12 +190,12 @@ export default defineConfig({
 | `agents` | AgentDefinition[] | ✓ | Agent 流水线（见下方 Agent 字段说明）。 |
 | `leader` | AgentDefinition | | 可选的路由 Agent（见 [Leader](#leader)）。 |
 | `useLeader` | boolean | | 是否启用 leader agent。默认当配置了 leader 时为 `true`。 |
-| `defaults` | object | | 项目级 `{ provider?, model?, command?, tools? }` 默认值，应用到所有未单独覆盖的 Agent，使生成的配置更简洁。 |
+| `defaults` | object | | 项目级 `{ provider?, model?, command?, permissions? }` 默认值，应用到所有未单独覆盖的 Agent，使生成的配置更简洁。 |
 | `context` | Record<string, string> | | 可在每个 prompt 中通过 `{{key}}` 引用的变量，`requirement` 由 CLI 自动注入。 |
 | `logDir` | string | | 日志输出目录，默认 `workDir/.multiclaw/logs`。 |
 | `continueOnError` | boolean | | 某个 Agent 失败后是否继续运行，默认 `false`。 |
 | `maxConcurrency` | number | | 最大并行 Agent 数，默认不限制。 |
-| `permissions` | object | | 权限模式：`{ mode: "auto" \| "ask" \| "deny" }`。控制工具权限请求的处理方式。默认（`"auto"`）：白名单内的工具直接放行，白名单外的自动拒绝。`"ask"` 会将白名单外的工具升级到 `permissions.onRequest` 让人工决定。`"deny"` 拒绝所有请求。 |
+| `permissions` | object | | 权限模式：`{ mode: "auto" \| "ask" \| "deny", onRequest? }`。`"auto"` 批准所有工具请求，`"ask"` 把每个请求交给 `onRequest`，`"deny"` 全部拒绝。默认：`run` 为 `"auto"`，控制台为 `"ask"`。 |
 
 ### Agent 字段说明
 
@@ -213,7 +212,7 @@ export default defineConfig({
 | `modelTier` | `"strong"` \| `"balanced"` \| `"fast"` | | 声明此 Agent 所需的能力层级；目录会把每个层级映射到该 Provider 对应的具体模型 id。设置了 `model` 时此项被忽略。 |
 | `model` | string | | 指定此 Agent 的模型 id（与 Provider 相关，例如 Claude 的 `"opus"`、`"sonnet"`、`"haiku"`）。优先级高于 `modelTier` 和 `models`。 |
 | `models` | Record<string, string> | | Provider id（或旧别名 `"acp"`）到模型 id 的映射，例如 `{ claude: "sonnet", opencode: "opencode/big-pickle" }`。当未设置 `model`/`modelTier` 时使用。 |
-| `tools` | string[] | | 允许使用的工具列表，大小写不敏感、支持 `*` 通配（`mcp__graft__*`），默认 `["Read", "Write", "Bash"]`。显式限制要求运行时支持执行该限制，见下文。 |
+| `permissions` | `{ mode: "auto" \| "ask" \| "deny" }` | | 该 Agent 工具调用的审批模式。覆盖 `permissions` 与 `defaults.permissions`。 |
 | `dependsOn` | string[] | | 必须在此 Agent 启动前完成的 Agent id 列表。 |
 | `timeout` | number | | 单个 Agent 超时时间（毫秒），默认 `600000`（10 分钟）。 |
 | `retries` | number | | 失败后的重试次数，默认 `0`。 |
@@ -269,9 +268,8 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 | 页眉 | 项目名、轮次编号，以及当前阶段或已用时 |
 | 管线栏 | leader，随后按顺序排列各 Stage，用 `──▸` 连接 |
 | 团队面板 | 每个 Agent 一行：状态符号、名称、实时耗时、进度（`1/4`） |
-| 日志面板 | 当前聚焦 Agent 的实时输出，`▼` 表示跟随中、`⏸` 表示已定格 |
+| 日志面板 | 当前聚焦 Agent 在整个会话里的输出，`▼` 表示跟随中、`⏸` 表示已定格 |
 | 回复面板 | 这一轮无需流水线时，leader 给出的回答 |
-| 回看横幅 | 打开历史轮次时显示 `viewing turn N …` |
 | 队列条 | 运行期间输入的后继需求，按将要执行的顺序排列 |
 | 输入行 | 输入位置——运行期间同样可输入 |
 | 提示栏 | 左侧是汇总状态，右侧是**此刻可用**的按键 |
@@ -289,13 +287,14 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 | 按键 | 作用 |
 |------|------|
 | `enter` | 执行输入的需求；若当前有轮次在跑，则改为加入队列 |
-| `tab` / `shift+tab` | 切换聚焦的 Agent |
+| `tab` | 切换聚焦的 Agent |
+| `shift+tab` | 切换权限模式（`auto` ↔ `ask`） |
 | `↑` `↓` `pgup` `pgdn` | 滚动当前 Agent 的输出 |
 | `←` `→` `home` `end` | 移动光标 |
-| `esc` | 退出历史回看，清空输入行，或关闭浮层 |
+| `esc` | 清空输入行，或关闭浮层 |
 | `?` | 快捷键帮助（空闲、且输入行为空时） |
 | `/` | 命令面板（仅输入行为空时） |
-| `ctrl+l` | 清空当前 Agent 的日志 |
+| `ctrl+l` | 清空当前 Agent 本轮的输出 |
 | `ctrl+c` | 取消当前轮次**及其队列**；空闲时再按一次退出 |
 
 向上滚动即定格日志，滚回底部自动恢复跟随——所以不需要记"跟随开关"。轮次运行期间，日志面板会自动跟随下一个启动的 Agent，直到你手动切换聚焦项为止。
@@ -320,8 +319,9 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 |------|------|------|
 | `/agents` | 列出配置的团队 | 始终 |
 | `/focus <id>` | 按 id 聚焦某个 Agent | 始终 |
-| `/clear` | 清空当前 Agent 的日志 | 始终 |
+| `/clear` | 清空当前 Agent 本轮的输出 | 始终 |
 | `/verbose` | 切换流中工具详情的显示 | 始终 |
+| `/mode auto\|ask\|deny` | 设置权限模式 | 始终 |
 | `/search <text>` | 在当前流中搜索 | 始终 |
 | `/latest` | 跳到流的最新输出 | 始终 |
 | `/sessions` | 切换或删除已保存的会话（见 [会话](#会话)） | 始终 |
@@ -350,37 +350,33 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 
 > **没有 TTY？** 控制台需要交互式终端。在 CI、管道或非 TTY 的 SSH 会话中，它会直接退出并提示改用 `multiclaw run`——后者以无头方式运行同一条流水线。
 
-### 显式工具限制
+### 工具审批与 Agent 提问
 
-显式配置 `tools`（包括 `tools: []`）时，multiclaw 会在任何 leader、工作 Agent、审查或修复 Agent 启动之前，检查**实际解析出的命令**对应运行时能否执行该限制。不支持时会明确指出 Agent 和命令：请改用支持限制的 provider，或移除显式设置。不会静默删除限制或切换 provider；dry-run 预览与重试也受同一检查保护。
-
-内置预设保留原有的隐式工具默认值，仍可搭配不支持 allowlist 的 provider 使用。工具策略也不是沙箱：允许 `Bash` 不代表限制其中的命令或文件路径。
-
-`defaults.tools` 会将同一份工具列表应用到所有未单独声明 `tools` 的 Agent。有显式 `tools` 字段的 Agent 会完全覆盖它（不做合并）。`defaults.tools` 触发的运行时能力校验与逐 Agent 设置相同，但不影响内置预设 Agent——预设 Agent 始终使用自己的预设工具列表。
-
-### 人工审批与 Agent 提问
-
-multiclaw 通过 `permissions: { mode: ... }` 提供三种权限模式：
+multiclaw 通过 `permissions: { mode: ... }` 提供三种权限模式。优先级：Agent 自身的 `permissions.mode` > 项目级 `permissions` > `defaults.permissions`：
 
 | 模式 | 行为 |
 |------|------|
-| `"auto"` **（默认）** | `tools` 白名单内的工具直接放行，不弹任何提示。白名单外的工具自动拒绝并打 warning。 |
-| `"ask"` | 白名单内的工具仍直接放行。白名单**外**的工具升级到 `permissions.onRequest`（控制台的交互 UI 或调用方提供的处理函数）。 |
-| `"deny"` | 拒绝所有工具请求，包括白名单内的。 |
+| `"auto"` **（默认）** | 所有工具请求直接批准，不弹任何提示。 |
+| `"ask"` | 每个工具请求都交给人工——`permissions.onRequest` 或控制台的权限栏。没有处理函数时一律拒绝。 |
+| `"deny"` | 拒绝所有工具请求。 |
 
 ```typescript
 // multiclaw.config.ts — 如需修改默认行为
 export default defineConfig({
-  permissions: { mode: "ask" }, // 对白名单外的工具弹出确认
+  permissions: { mode: "ask" }, // 每次工具调用都先问人
 })
 ```
 
-控制台默认以 **ask** 模式处理 ACP 工具权限请求，展示请求的 Agent、工具输入和 provider 提供的选项。并发请求按顺序排队，各自有唯一别名；普通输入仍只会加入后续需求队列，绝不会自动授权。
+`multiclaw run` 没有人可问，因此 `"ask"` 且未提供 `onRequest` 时会拒绝所有工具调用——它在开跑前就会警告一次。控制台除非配置另有指定，否则以 **ask** 启动，并在头部显示当前模式。`shift+tab` 在 `auto` 与 `ask` 之间即时切换，`/mode auto|ask|deny` 可设为任意一种；运行时选择优先于逐 Agent 的配置，所以头部显示的永远是 Agent 实际执行的模式。
+
+控制台展示请求的 Agent、工具输入和 provider 提供的选项。并发请求按顺序排队，各自有唯一别名；普通输入仍只会加入后续需求队列，绝不会自动授权。
 
 - `/approve p1 1` 为请求 `p1` 选择第 1 个选项；`/deny p1` 取消该请求。
 - 请求别名在同一次控制台会话中不重复。过期 ID 或无效选项不能误答另一条请求。
-- 已在 `tools` 白名单内的工具直接放行、不弹审批；控制台只对白名单覆盖不到的工具发问。
 - 等待人工操作计入 Agent 原有超时。取消、退出和会话清理都会解除未决请求，不让 Agent 永久等待。
+- 每次拒绝都会以 `permission_rejected` 事件出现在日志流里，带上工具名，`source` 区分是模式拒绝、缺少处理函数，还是人工点了拒绝。
+
+权限处理函数是轮次局部的，不会存进可复用的 provider 会话。
 
 **运行中的结构化问题** 使用 ACP form elicitation；已安装的 Claude bridge 会将其回传到 `AskUserQuestion`。控制台将问题与审批放进同一个决策队列：
 
@@ -399,7 +395,7 @@ leader 澄清是独立机制：`/answer <text>` 回答已经结束的 leader `as
 
 已完成的轮次会写入 `workDir/.multiclaw/sessions/<id>/turns.jsonl`，每行一条，因此关掉控制台再打开，轮次记录会原样恢复，编号也从上次继续，而不是从 1 重新开始。
 
-通过 `/sessions` 切换到某个会话时，该会话的最后一轮会自动打开：面板会渲染那一轮的团队、日志与管线，并显示 `viewing turn N` 横幅。按 `esc` 回到空闲状态，即可输入下一条指令。回看是无副作用的：滚动和 `tab` 只作用于你正在看的那一轮，绝不会影响仍在运行的轮次。
+通过 `/sessions` 切换到某个会话时，历史会恢复进日志面板。日志面板展示当前 Agent 的**整个会话**——它参与过的每一轮，从旧到新，用暗色的 `──── turn N · <需求> ────` 分隔行隔开——向上滚动即可一路回看。不再有单独的"打开历史轮次"模式：团队面板和管线栏始终跟着当前轮次，所以你在回看时编排上下文不会移动。
 
 控制台每个会话最多保留最近 20 个已完成的轮次。
 
@@ -408,7 +404,7 @@ leader 澄清是独立机制：`/answer <text>` 回答已经结束的 leader `as
 **会话（session）** 是一段连续的工作线——一系列共享同一团队的轮次。它是控制台保存、续接和删除的基本单位，与 Claude Code 和 Codex 的做法相同。每个会话存储在独立的 `workDir/.multiclaw/sessions/<id>/` 目录中，一个小型 `index.json` 保存选择器所需的摘要信息。
 
 - **启动。** `multiclaw` 始终开始**新会话**，与 `multiclaw --new` 等效。`multiclaw -r [id]` 续接指定会话——不传 id 时打开选择器，与 `claude -r` 的方式相同。
-- **`/sessions`** 打开选择器：所有会话按最新排序，显示标题（首次需求原文）、轮次数量和时间，当前会话有标记。`↑` `↓` 选择，`enter` 切换到高亮的会话——该会话的最后一轮自动打开，让你看清上下文，下一条指令将在它的 Agent 上继续——`d` 删除某个会话，`esc` 关闭选择器。
+- **`/sessions`** 打开选择器：所有会话按最新排序，显示标题（首次需求原文）、轮次数量和时间，当前会话有标记。`↑` `↓` 选择，`enter` 切换到高亮的会话——历史会填进日志面板，下一条指令将在它的 Agent 上继续——`d` 删除某个会话，`esc` 关闭选择器。
 - **`/new <requirement>`** 关闭当前 Agent 并就地开始新会话。
 
 会话会一直保留，直到你主动删除：选择器里按 `d`、执行 `multiclaw sessions rm <id>`（完整 id 或唯一前缀），或运行 `multiclaw prune`（同时列出旧运行目录）。`multiclaw sessions ls` 打印会话列表。

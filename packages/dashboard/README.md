@@ -30,12 +30,13 @@ rules are therefore testable without a terminal.
 | Type | Holds |
 |------|-------|
 | `TurnView` | Everything that describes *a turn*: agents, stages, focus, scroll, phase, reply |
-| `TuiState extends TurnView` | The above, for the live turn, plus `name`, `history` and `view` |
+| `TuiState extends TurnView` | The above, for the live turn, plus `name` and `history` |
 
 A finished turn is just a `TurnView` kept in `history`, and every pane takes a `TurnView` — so a past
-turn renders through exactly the same components as the live one. `view` is a *detached* copy of the
-turn being read: `mapShown` routes `tab`, scroll and `/clear` to `view` when one is open, so browsing
-cannot move the focus out from under a run in progress, and cannot rewrite history either.
+turn renders through exactly the same components as the live one. The stream panel reads *past* the
+single turn: `visibleTimeline` concatenates the focused agent's logs from `history` and the live turn,
+with a divider row per turn, and `stream:scroll` / `stream:search` clamp against that whole timeline.
+History is never edited in place — `stream:clear` only empties the live turn's buffer.
 
 ## Source layout
 
