@@ -193,7 +193,7 @@ export type TuiAction =
    */
   | { type: "stream:scroll"; delta: number; viewport: number; width: number }
   /** Jump the focused stream to the newest wrapped row containing `query`. */
-  | { type: "stream:search"; query: string; viewport: number; width: number }
+  | { type: "stream:search"; query: string; match?: number; viewport: number; width: number }
   /** Return the focused stream to the tail and re-arm live follow. */
   | { type: "stream:latest" }
   /** Drop the focused agent's buffered output without touching its status. */
@@ -773,22 +773,15 @@ function timelineParts(state: TuiState, agentId: string, width: number): string[
   return history.length === 0 ? [live] : [history, live]
 }
 
-/** Index of the last row matching `needle`, counted from the top of the timeline. */
-function lastMatchingRow(parts: string[][], needle: string): number {
-  let base = 0
-  const bases: number[] = []
-  for (const part of parts) {
-    bases.push(base)
-    base += part.length
-  }
-  for (let p = parts.length - 1; p >= 0; p--) {
-    const part = parts[p]
-    for (let i = part.length - 1; i >= 0; i--) {
-      if (part[i].toLowerCase().includes(needle)) return bases[p] + i
-    }
-  }
-  return -1
+/** Matching wrapped rows in the focused agent's entire session. */
+export function streamMatches(state: TuiState, query: string, width: number): number[] {
+  if (!state.focusId || !query.trim()) return []
+  const needle = query.toLowerCase()
+  return timelineParts(state, state.focusId, width)
+    .flat()
+    .flatMap((row, index) => (row.toLowerCase().includes(needle) ? [index] : []))
 }
+
 /**
  * Freeze the live turn into a record that can be read back later.
  *
@@ -1027,8 +1020,9 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
       const focusId = state.focusId
       if (!focusId || action.query === "") return state
       const parts = timelineParts(state, focusId, action.width)
-      const index = lastMatchingRow(parts, action.query.toLowerCase())
-      if (index === -1) return state
+      const matches = streamMatches(state, action.query, action.width)
+      const index = matches[action.match ?? matches.length - 1]
+      if (index === undefined) return state
       const total = totalRows(parts)
       const height = Math.max(1, action.viewport)
       const maxScroll = Math.max(0, total - height)

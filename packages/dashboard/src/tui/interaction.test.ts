@@ -210,7 +210,7 @@ describe("bar heights", () => {
   })
 
   it("reserves a row per field plus the detail and hint rows", () => {
-    expect(questionBarRows(formFields(DATABASE))).toBe(2 + 5 + 1 + 1)
+    expect(questionBarRows(formFields(DATABASE))).toBe(2 + 5 + 1 + 2)
   })
 
   it("asks for nothing when nothing is pending", () => {

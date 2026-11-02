@@ -34,19 +34,24 @@ export function PermissionBar({
   cursor,
   released,
   width,
+  maxRows = Number.POSITIVE_INFINITY,
 }: {
   request: RuntimePermissionRequest
   /** Requests behind this one, shown so "2 waiting" is not a bare number. */
   others: readonly RuntimePermissionRequest[]
   /** Highlighted option, or `undefined` when nothing has been picked yet. */
   cursor: number | undefined
-  /** The user asked for the keyboard back; only the commands still reach it. */
+  /** The user asked for the keyboard back; escape returns to its options. */
   released: boolean
   width: number
+  maxRows?: number
 }) {
   const choices = permissionChoices(request)
-  const impact = describeImpact(request, Math.max(8, width - 6))
-  const also = waitingLine(others)
+  const capacity = Math.max(1, Math.min(choices.length, maxRows - 3))
+  const start = listWindowStart(cursor ?? 0, choices.length, capacity)
+  const extra = Math.max(0, maxRows - 3 - capacity)
+  const impact = describeImpact(request, Math.max(8, width - 6)).slice(0, extra)
+  const also = extra > impact.length ? waitingLine(others) : undefined
   const tool = clean(request.toolName ?? request.kind ?? "tool")
 
   return (
@@ -60,8 +65,8 @@ export function PermissionBar({
           {`  ${line}`}
         </Text>
       ))}
-      {choices.map((choice, index) => {
-        const active = index === cursor
+      {choices.slice(start, start + capacity).map((choice, index) => {
+        const active = start + index === cursor
         return (
           <Text
             key={choice.optionId}
@@ -78,11 +83,13 @@ export function PermissionBar({
           {`  ${also}`}
         </Text>
       )}
-      <Text dimColor wrap="truncate-end">
-        {released
-          ? "  typing · /approve 1 or /deny still reach it"
-          : "  ↑↓ or 1-9 choose · enter confirm · esc to type instead"}
-      </Text>
+      {maxRows < 4 ? null : (
+        <Text dimColor wrap="truncate-end">
+          {released
+            ? "  typing · esc to return to permission options"
+            : "  ↑↓ or 1-9 choose · enter confirm · esc to type instead"}
+        </Text>
+      )}
     </Box>
   )
 }
@@ -90,13 +97,8 @@ export function PermissionBar({
 /**
  * The question, as a form.
  *
- * The old path asked for `/respond q1 {"database":"postgres"}` — a hand-written
- * JSON object matching a schema the user could only read in the same terminal
- * that was now occupied by what they were typing. Here every field is a row, the
- * focused row is the one the keystrokes go to, and choices are picked rather
- * than spelled. The prompt below still does the typing: it already owns the
- * caret, the wrapping and the paste handling, so a text field reuses it instead
- * of growing a second editor.
+ * Fields are edited in the prompt, while choice fields use the arrow keys.
+ * Submit, skip and cancel are explicit actions after the last field.
  */
 export function QuestionForm({
   request,
@@ -105,6 +107,7 @@ export function QuestionForm({
   form,
   draft,
   width,
+  maxRows = Number.POSITIVE_INFINITY,
 }: {
   request: RuntimeQuestionRequest
   others: readonly RuntimeQuestionRequest[]
@@ -113,21 +116,31 @@ export function QuestionForm({
   /** Text in the prompt, which is the focused text field's editor. */
   draft: string
   width: number
+  maxRows?: number
 }) {
   const focused = fields[form.field]
   const titleWidth = Math.min(
     24,
     Math.max(4, ...fields.map((field) => field.title.length + (field.required ? 2 : 0)))
   )
-  // The list is windowed like every other list in the console: a form taller
-  // than the body would otherwise scroll its own focused row out of sight.
-  const capacity = Math.min(fields.length, MAX_FORM_FIELDS)
-  const start = listWindowStart(form.field, fields.length, Math.max(1, capacity))
+  const actions = ["Submit answers", "Skip question", "Cancel request"]
+  const actionIndex = form.field - fields.length
+  const compact = maxRows < 7
+  const capacity = compact
+    ? focused
+      ? 1
+      : 0
+    : Math.min(fields.length, MAX_FORM_FIELDS, maxRows - 5)
+  const start = listWindowStart(
+    Math.min(form.field, fields.length - 1),
+    fields.length,
+    Math.max(1, capacity)
+  )
   const visible = fields.slice(start, start + capacity)
   const range =
-    fields.length > capacity ? ` · ${start + 1}–${start + visible.length}/${fields.length}` : ""
-
-  const detail = focused === undefined ? [] : detailLines(focused, width)
+    fields.length > capacity && focused ? ` · field ${form.field + 1}/${fields.length}` : ""
+  const detail =
+    focused && (!compact || maxRows >= 5) ? detailLines(focused, width).slice(0, 1) : []
 
   return (
     <Box flexDirection="column" flexShrink={0} paddingLeft={2} width={width}>
@@ -156,9 +169,22 @@ export function QuestionForm({
           {`  ${line}`}
         </Text>
       ))}
-      <Text dimColor wrap="truncate-end">
-        {`  tab next · ↑↓ pick · space toggle · enter next${range} · esc clear`}
-      </Text>
+      {compact && focused ? null : (
+        <Text color={actionIndex >= 0 ? COLOR.accent : undefined} wrap="truncate-end">
+          {compact || width < 72
+            ? actionIndex >= 0
+              ? `› ${actions[actionIndex]}`
+              : "tab to submit / skip / cancel"
+            : actions
+                .map((label, index) => (actionIndex === index ? "› " : "  ") + label)
+                .join(" · ")}
+        </Text>
+      )}
+      {maxRows < 4 ? null : (
+        <Text dimColor wrap="truncate-end">
+          {`  tab next · ↑↓ pick · space toggle · enter next${range} · esc clear`}
+        </Text>
+      )}
     </Box>
   )
 }

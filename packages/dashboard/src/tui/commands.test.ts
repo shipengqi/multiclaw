@@ -16,13 +16,13 @@ import {
 
 describe("availableCommands", () => {
   it("offers cancel only while a turn is running", () => {
-    expect(availableCommands(true).map((c) => c.name)).toContain("cancel")
-    expect(availableCommands(false).map((c) => c.name)).not.toContain("cancel")
+    expect(availableCommands(true).map((c) => c.name)).toContain("steer")
+    expect(availableCommands(false).map((c) => c.name)).not.toContain("steer")
   })
 
   it("always offers the rest", () => {
     const idle = availableCommands(false).map((c) => c.name)
-    for (const name of ["agents", "focus", "clear", "help", "quit", "verbose"]) {
+    for (const name of ["sessions", "focus", "latest", "verbose", "mode", "verbose"]) {
       expect(idle).toContain(name)
     }
   })
@@ -47,12 +47,12 @@ describe("canRun", () => {
   })
 
   it("blocks a running-only command while idle", () => {
-    expect(canRun("cancel", false)).toBe(false)
+    expect(canRun("steer", false)).toBe(false)
   })
 
   it("lets a phase-agnostic command through in both phases", () => {
-    expect(canRun("fork", true)).toBe(true)
-    expect(canRun("fork", false)).toBe(true)
+    expect(canRun("edit", true)).toBe(true)
+    expect(canRun("edit", false)).toBe(true)
   })
 
   it("lets an unknown name through, so the caller can still report it", () => {
@@ -69,12 +69,12 @@ describe("unavailableReason", () => {
 
   it("tells a running-only command it only applies to a running turn", () => {
     // The other direction means something different: there is nothing to cancel.
-    expect(unavailableReason("cancel", false)).toBe("/cancel only applies while a turn is running")
+    expect(unavailableReason("steer", false)).toBe("/steer only applies while a turn is running")
   })
 
   it("has no reason for a command that may run in this phase", () => {
     expect(unavailableReason("replay", false)).toBeUndefined()
-    expect(unavailableReason("cancel", true)).toBeUndefined()
+    expect(unavailableReason("steer", true)).toBeUndefined()
   })
 
   it("has no reason for an unknown name, which the caller still reports", () => {
@@ -98,20 +98,18 @@ describe("matchCommands", () => {
     expect(matchCommands("", false)).toHaveLength(availableCommands(false).length)
   })
 
-  it("ranks a name prefix above a description hit", () => {
-    // `ag` is a prefix of /agents and also appears inside "an agent" in the
-    // description of /focus. The prefix has to win.
-    const names = matchCommands("ag", false).map((c) => c.name)
-    expect(names[0]).toBe("agents")
-    expect(names).toContain("focus")
+  it("ranks a name prefix above description hits", () => {
+    const names = matchCommands("fo", false).map((c) => c.name)
+    expect(names[0]).toBe("focus")
+    expect(names).toContain("search")
   })
 
-  it("still finds a command by its description", () => {
-    expect(matchCommands("key map", false).map((c) => c.name)).toEqual(["help"])
+  it("finds commands by their description", () => {
+    expect(matchCommands("permission mode", false).map((c) => c.name)).toEqual(["mode"])
   })
 
   it("is case-insensitive", () => {
-    expect(matchCommands("AG", false)[0].name).toBe("agents")
+    expect(matchCommands("FO", false)[0].name).toBe("focus")
   })
 
   it("returns nothing for a query that matches nothing", () => {
@@ -123,14 +121,14 @@ describe("matchCommands", () => {
   })
 
   it("does not surface a running-only command when idle", () => {
-    expect(matchCommands("cancel", false).map((command) => command.name)).not.toContain("cancel")
+    expect(matchCommands("steer", false).map((command) => command.name)).not.toContain("steer")
   })
 })
 
 describe("isCommandLine", () => {
   it("is true only for a leading slash", () => {
-    expect(isCommandLine("/agents")).toBe(true)
-    expect(isCommandLine(" /agents")).toBe(false)
+    expect(isCommandLine("/sessions")).toBe(true)
+    expect(isCommandLine(" /sessions")).toBe(false)
     expect(isCommandLine("run the tests")).toBe(false)
   })
 })
@@ -156,7 +154,7 @@ describe("parseCommand", () => {
   })
 
   it("accepts a bare command", () => {
-    expect(parseCommand("/agents")).toEqual({ name: "agents", args: [] })
+    expect(parseCommand("/sessions")).toEqual({ name: "sessions", args: [] })
   })
 
   it("collapses extra whitespace", () => {
@@ -192,12 +190,12 @@ describe("COMMANDS", () => {
     expect(availableCommands(true).map((c) => c.name)).not.toContain("replay")
   })
 
-  it("offers /fork in both phases, since it only edits the prompt", () => {
-    expect(availableCommands(false).map((c) => c.name)).toContain("fork")
-    expect(availableCommands(true).map((c) => c.name)).toContain("fork")
+  it("offers /edit in both phases, since it only edits the prompt", () => {
+    expect(availableCommands(false).map((c) => c.name)).toContain("edit")
+    expect(availableCommands(true).map((c) => c.name)).toContain("edit")
   })
 
-  it.each(["new", "answer"])("offers /%s only while idle", (name) => {
+  it.each(["new", "sessions"])("offers /%s only while idle", (name) => {
     expect(availableCommands(false).map((c) => c.name)).toContain(name)
     expect(availableCommands(true).map((c) => c.name)).not.toContain(name)
     expect(canRun(name, true)).toBe(false)
@@ -217,11 +215,55 @@ describe("COMMANDS", () => {
     expect(canRun("pause", true)).toBe(true)
   })
 
-  it("shows new and answer text arguments without an agent completer", () => {
-    expect(paletteRows(COMMANDS).find((row) => row.key === "new")?.label).toBe("/new <requirement>")
-    expect(paletteRows(COMMANDS).find((row) => row.key === "answer")?.label).toBe("/answer <text>")
-    expect(argQuery("/new fresh work")).toBeUndefined()
-    expect(argQuery("/answer Postgres")).toBeUndefined()
+  it("opens a new session without a required argument", () => {
+    expect(paletteRows(COMMANDS).find((row) => row.key === "new")?.label).toBe("/new")
+  })
+
+  it("removes operations covered by direct interaction", () => {
+    for (const name of [
+      "answer",
+      "modify",
+      "respond",
+      "approve",
+      "deny",
+      "skip",
+      "dismiss",
+      "clear",
+      "help",
+      "quit",
+      "cancel",
+      "agents",
+      "fork",
+    ]) {
+      expect(COMMANDS.some((command) => command.name === name)).toBe(false)
+    }
+  })
+
+  it("filters actions by history, failures, queue and checkpoints", () => {
+    const context = {
+      history: false,
+      retry: false,
+      queue: 0,
+      paused: false,
+      awaitingAnswer: false,
+      checkpoint: false,
+    }
+    const names = availableCommands(false, context).map((command) => command.name)
+    for (const name of ["retry", "replay", "edit", "export", "pause", "continue"])
+      expect(names).not.toContain(name)
+    expect(
+      availableCommands(true, { ...context, checkpoint: true }).map((command) => command.name)
+    ).toEqual(["continue"])
+    expect(
+      availableCommands(false, { ...context, queue: 1, paused: true }).map(
+        (command) => command.name
+      )
+    ).toContain("continue")
+    expect(
+      availableCommands(false, { ...context, queue: 1, paused: true, awaitingAnswer: true }).map(
+        (command) => command.name
+      )
+    ).not.toContain("continue")
   })
 })
 
@@ -233,12 +275,12 @@ describe("paletteRows", () => {
   })
 
   it("includes the argument hint when a command takes one", () => {
-    expect(paletteRows(COMMANDS).find((row) => row.key === "focus")?.label).toBe("/focus <id>")
+    expect(paletteRows(COMMANDS).find((row) => row.key === "focus")?.label).toBe("/focus [id]")
   })
 
   it("keeps each command's description", () => {
-    expect(paletteRows(COMMANDS).find((row) => row.key === "agents")?.description).toBe(
-      "List the configured team"
+    expect(paletteRows(COMMANDS).find((row) => row.key === "sessions")?.description).toBe(
+      "Switch or delete saved sessions"
     )
   })
 })
@@ -260,7 +302,7 @@ describe("argQuery", () => {
   })
 
   it("stays closed for a command that takes no completer", () => {
-    expect(argQuery("/agents x")).toBeUndefined()
+    expect(argQuery("/sessions x")).toBeUndefined()
   })
 
   it("stays closed outside command mode", () => {

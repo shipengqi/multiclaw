@@ -28,138 +28,86 @@ export interface CommandSpec {
 }
 
 export const COMMANDS: readonly CommandSpec[] = [
-  { name: "agents", description: "List the configured team", availability: "always" },
+  { name: "new", description: "Start an empty session", availability: "idle" },
+  { name: "sessions", description: "Switch or delete saved sessions", availability: "idle" },
   {
     name: "focus",
-    args: "<id>",
-    description: "Focus an agent by id",
+    args: "[id]",
+    description: "Choose the focused agent",
     availability: "always",
     completes: "agent",
   },
-  { name: "clear", description: "Clear the focused agent's log", availability: "always" },
-  {
-    name: "sessions",
-    description: "Switch between, or delete, saved sessions",
-    availability: "always",
-  },
-  {
-    name: "verbose",
-    description: "Toggle tool detail in the stream",
-    availability: "always",
-  },
   {
     name: "mode",
-    args: "auto | ask | deny",
-    description: "Set how tool-permission requests are answered",
+    args: "[auto | ask | deny]",
+    description: "Choose the permission mode",
     availability: "always",
   },
+  { name: "verbose", description: "Toggle tool detail in the stream", availability: "always" },
+  {
+    name: "search",
+    args: "[text]",
+    description: "Search the focused stream",
+    availability: "always",
+  },
+  { name: "latest", description: "Jump to latest output", availability: "always" },
   {
     name: "retry",
     args: "[id]",
-    description: "Re-run a failed agent (or all of them)",
+    description: "Choose failed agents to retry",
     availability: "idle",
   },
   {
     name: "replay",
     args: "[turn]",
-    description: "Run an earlier turn again",
+    description: "Choose a turn to run again",
     availability: "idle",
   },
   {
-    name: "fork",
+    name: "edit",
     args: "[turn]",
-    description: "Edit an earlier turn's requirement",
+    description: "Edit a previous requirement",
     availability: "always",
   },
   {
     name: "export",
     args: "[turn] [path]",
-    description: "Export a finished turn as Markdown",
+    description: "Export a turn as Markdown",
     availability: "always",
-  },
-  {
-    name: "search",
-    args: "<text>",
-    description: "Search the focused stream",
-    availability: "always",
-  },
-  {
-    name: "latest",
-    description: "Jump the stream to latest output",
-    availability: "always",
-  },
-  {
-    name: "cancel",
-    description: "Cancel the running turn and its queue",
-    availability: "running",
-  },
-  {
-    name: "new",
-    args: "<requirement>",
-    description: "Start a new session with fresh agent sessions",
-    availability: "idle",
   },
   {
     name: "steer",
-    args: "<text>",
-    description: "Send a message into the agents running right now",
+    args: "[text]",
+    description: "Send a message to running agents",
     availability: "running",
   },
-  {
-    name: "answer",
-    args: "<text>",
-    description: "Answer the leader's pending question",
-    availability: "idle",
-  },
-  {
-    name: "pause",
-    description: "Pause queued turns, not the active agent",
-    availability: "always",
-  },
+  { name: "pause", description: "Pause queued turns", availability: "always" },
   {
     name: "continue",
-    description: "Resume queued turns or pass a checkpoint",
+    description: "Resume the queue or continue a checkpoint",
     availability: "always",
   },
-  {
-    name: "modify",
-    args: "<instruction>",
-    description: "Provide feedback at a checkpoint and continue",
-    availability: "running",
-  },
-  {
-    name: "respond",
-    args: "<question id> <JSON object>",
-    description: "Answer a question in one line of JSON",
-    availability: "always",
-  },
-  {
-    name: "skip",
-    args: "<question id>",
-    description: "Decline a structured tool question",
-    availability: "always",
-  },
-  {
-    name: "dismiss",
-    args: "<question id>",
-    description: "Cancel a structured tool question",
-    availability: "always",
-  },
-  {
-    name: "approve",
-    args: "[id] <number>",
-    description: "Approve the request on screen, or a named one",
-    availability: "always",
-  },
-  {
-    name: "deny",
-    args: "[id]",
-    description: "Deny the request on screen, or a named one",
-    availability: "always",
-  },
-  { name: "help", description: "Show the key map", availability: "always" },
-  { name: "quit", description: "Exit the console", availability: "always" },
 ]
+
+export interface CommandContext {
+  history: boolean
+  retry: boolean
+  queue: number
+  paused: boolean
+  awaitingAnswer: boolean
+  checkpoint: boolean
+}
+
+/** The current operation must have something to act on. */
+function relevant(name: string, context?: CommandContext): boolean {
+  if (!context) return true
+  if (context.checkpoint) return name === "continue"
+  if (["replay", "edit", "export"].includes(name)) return context.history
+  if (name === "retry") return context.retry
+  if (name === "pause") return context.queue > 0 && !context.paused
+  if (name === "continue") return context.queue > 0 && context.paused && !context.awaitingAnswer
+  return true
+}
 
 export interface ParsedCommand {
   name: string
@@ -167,9 +115,11 @@ export interface ParsedCommand {
 }
 
 /** Commands that make sense in the current phase. */
-export function availableCommands(running: boolean): CommandSpec[] {
+export function availableCommands(running: boolean, context?: CommandContext): CommandSpec[] {
   const phase: Availability = running ? "running" : "idle"
-  return COMMANDS.filter((c) => c.availability === "always" || c.availability === phase)
+  return COMMANDS.filter(
+    (c) => (c.availability === "always" || c.availability === phase) && relevant(c.name, context)
+  )
 }
 
 /**
@@ -180,10 +130,10 @@ export function availableCommands(running: boolean): CommandSpec[] {
  * entirely. An unknown name is not "unavailable" — it is let through so the
  * caller's `default:` branch can report it.
  */
-export function canRun(name: string, running: boolean): boolean {
+export function canRun(name: string, running: boolean, context?: CommandContext): boolean {
   const command = COMMANDS.find((c) => c.name === name)
   if (!command) return true
-  return availableCommands(running).includes(command)
+  return availableCommands(running, context).includes(command)
 }
 
 /**
@@ -192,14 +142,19 @@ export function canRun(name: string, running: boolean): boolean {
  * The mirror of {@link canRun}, and the message names the phase the command
  * *wants* rather than just saying it is unavailable: the two directions mean
  * different things to the user. A mid-run `/replay` has to read as "wait for the
- * turn to finish", while an idle `/cancel` has to read as "this only applies to
+ * turn to finish", while an idle `/steer` has to read as "this only applies to
  * a running turn" — one string for both would leave the user without the fact
  * they need to act on. An unknown name has no reason; it is let through so the
  * caller's `default:` branch can report it.
  */
-export function unavailableReason(name: string, running: boolean): string | undefined {
+export function unavailableReason(
+  name: string,
+  running: boolean,
+  context?: CommandContext
+): string | undefined {
   const command = COMMANDS.find((c) => c.name === name)
-  if (!command || availableCommands(running).includes(command)) return undefined
+  if (!command || availableCommands(running, context).includes(command)) return undefined
+  if (!relevant(name, context)) return `/${name} has nothing to act on right now`
   return running
     ? `/${name} waits for the current turn to finish`
     : `/${name} only applies while a turn is running`
@@ -208,12 +163,16 @@ export function unavailableReason(name: string, running: boolean): string | unde
 /**
  * Commands matching what has been typed after the slash.
  *
- * Name prefixes outrank description hits: someone typing `/ag` wants `/agents`,
+ * Name prefixes outrank description hits: someone typing `/fo` wants `/focus`,
  * not whichever command happens to mention "agent" in its blurb.
  */
-export function matchCommands(query: string, running: boolean): CommandSpec[] {
+export function matchCommands(
+  query: string,
+  running: boolean,
+  context?: CommandContext
+): CommandSpec[] {
   const q = query.trim().toLowerCase()
-  const pool = availableCommands(running)
+  const pool = availableCommands(running, context)
   if (!q) return pool
 
   const byName: CommandSpec[] = []

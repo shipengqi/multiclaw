@@ -202,7 +202,7 @@ describe("App · caller-owned live sessions", () => {
           // `/retry` is idle-only, so it is typed once the first turn has
           // actually ended rather than after a guessed delay.
           ready: firstTurn.ready,
-          thenKeys: ["/retry", "\r"],
+          thenKeys: ["/retry", "\r", "\r"],
           thenReady: tracker.ready,
         }
       )
@@ -283,7 +283,7 @@ describe("App · caller-owned live sessions", () => {
       {
         keys: ["old task", "\r"],
         ready: tracker.ready,
-        thenKeys: ["/new unrelated fresh task", "\r"],
+        thenKeys: ["/new", "\r", "unrelated fresh task", "\r"],
         settleMs: 200,
       }
     )
@@ -332,7 +332,7 @@ describe("App · caller-owned live sessions", () => {
       await driveFrame(<App config={config()} sessions={sessions} onTurnStart={tracker.start} />, {
         keys: ["build a web app", "\r", "queued unrelated work", "\r"],
         ready: tracker.ready,
-        thenKeys: ["/continue", "\r", "/answer Postgres", "\r"],
+        thenKeys: ["/continue", "\r", "Postgres", "\r"],
         settleMs: 220,
       })
     )
@@ -424,7 +424,7 @@ describe("App · caller-owned live sessions", () => {
     expect(frame).toContain("done")
   })
 
-  it("/quit does not claim successful cleanup after a reporter disposer rejects", async () => {
+  it("Ctrl+D does not claim successful cleanup after a reporter disposer rejects", async () => {
     const disposed = deferred()
     // Both sessions being closed is the last step of the shutdown this test can
     // observe from the outside, and polling for it is what makes the frame
@@ -446,7 +446,7 @@ describe("App · caller-owned live sessions", () => {
         {
           keys: ["first task", "\r"],
           ready: disposed.promise,
-          thenKeys: ["/quit", "\r"],
+          thenKeys: ["\u0004"],
           thenReady: settled,
         }
       )
@@ -456,7 +456,7 @@ describe("App · caller-owned live sessions", () => {
     expect(frame).toContain("shutdown failed: reporter drain failed")
   })
 
-  it("/quit waits for cancellation, reporter disposal and delayed session close before exit", async () => {
+  it("Ctrl+D waits for cancellation, reporter disposal and delayed session close before exit", async () => {
     const cancellationStarted = deferred()
     const cancellationFinished = deferred()
     const disposalStarted = deferred()
@@ -517,7 +517,7 @@ describe("App · caller-owned live sessions", () => {
           order.push("reporter disposed")
         }}
       />,
-      { keys: ["active work", "\r", "/quit", "\r"], ready: release, settleMs: 0 }
+      { keys: ["active work", "\r", "\u0004"], ready: release, settleMs: 0 }
     )
     expect(exit).toHaveBeenCalledTimes(1)
     expect(order.slice(0, 4)).toEqual([
@@ -562,7 +562,7 @@ describe("App · caller-owned live sessions", () => {
           {
             keys: ["build API", "\r"],
             ready: runningNow.promise,
-            thenKeys: ["/steer use postgres not sqlite", "\r"],
+            thenKeys: ["/steer", "\r", "use postgres not sqlite", "\r"],
             thenReady: tracker.ready,
           }
         )
@@ -605,7 +605,14 @@ describe("App · caller-owned live sessions", () => {
             ready: runningNow.promise,
             // Paused so the queued text is still on screen in the final frame;
             // that a resumed queue runs is covered by the queue tests.
-            thenKeys: ["/pause", "\r", "/steer tighten the error handling", "\r"],
+            thenKeys: [
+              "queued work",
+              "\r",
+              "/pause",
+              "\r",
+              "/steer tighten the error handling",
+              "\r",
+            ],
             thenReady: tracker.ready,
           }
         )
@@ -641,7 +648,14 @@ describe("App · caller-owned live sessions", () => {
           {
             keys: ["build API", "\r"],
             ready: runningNow.promise,
-            thenKeys: ["/pause", "\r", "/steer also cover the empty case", "\r"],
+            thenKeys: [
+              "queued work",
+              "\r",
+              "/pause",
+              "\r",
+              "/steer also cover the empty case",
+              "\r",
+            ],
             thenReady: tracker.ready,
           }
         )
@@ -690,7 +704,14 @@ describe("App · caller-owned live sessions", () => {
           {
             keys: ["build API", "\r"],
             ready: runningNow.promise,
-            thenKeys: ["/pause", "\r", "/steer tighten the error handling", "\r"],
+            thenKeys: [
+              "queued work",
+              "\r",
+              "/pause",
+              "\r",
+              "/steer tighten the error handling",
+              "\r",
+            ],
             thenReady: tracker.ready,
           }
         )

@@ -27,7 +27,6 @@ import {
   argQuery,
   canRun,
   completeAgents,
-  isCommandLine,
   matchCommands,
   menuQuery,
   type PaletteRow,
@@ -97,10 +96,10 @@ import {
   conversationTurns,
   createInitialState,
   leaderAgentIds,
-  plannedAgents,
   progress,
   recordedTurns,
   seedAgents,
+  streamMatches,
   type TurnView,
   tuiReducer,
   turnElapsed,
@@ -161,6 +160,22 @@ interface Line {
 
 const EMPTY_LINE: Line = { text: "", cursor: 0 }
 
+type OperationPicker = { command: string; rows: PaletteRow[]; cursor: number }
+type OperationInput = "search" | "steer"
+
+function retryCandidates(state: ReturnType<typeof tuiReducer>): string[] {
+  const turn = recordedTurns(state).slice(-1)[0]
+  if (!turn?.requirement) return []
+  if (turn.acceptance && turn.acceptance.status !== "approved") {
+    return [
+      ...new Set(turn.stages.flatMap((stage) => stage.agents.map((agent) => agent.id))),
+    ].filter((id) => id !== turn.acceptance?.reviewer)
+  }
+  return Object.values(turn.agents)
+    .filter((agent) => agent.status === "failed")
+    .map((agent) => agent.id)
+}
+
 type PendingInteraction =
   | {
       kind: "permission"
@@ -176,7 +191,7 @@ type PendingInteraction =
     }
 
 /**
- * The turn `/replay` or `/fork` should act on, or the reason there is none.
+ * The turn `/replay` or `/edit` should act on, or the reason there is none.
  *
  * Shared by both commands so "which turn" — the last one by default, or the one
  * whose number was typed — is one rule rather than two. The empty-case wording
@@ -418,6 +433,9 @@ export function App({
     launchNoticeRef.current ?? restored.notice
   )
   const [helpOpen, setHelpOpen] = useState(false)
+  const [picker, setPicker] = useState<OperationPicker | null>(null)
+  const [operationInput, setOperationInput] = useState<OperationInput | null>(null)
+  const [searchResult, setSearchResult] = useState<{ query: string; index: number } | null>(null)
   // The session picker: a snapshot of the index taken when it opens, so arrow
   // keys and deletes do not re-read the disk on every frame.
   const [sessionsOpen, setSessionsOpen] = useState(false)
@@ -534,16 +552,21 @@ export function App({
   const handleCheckpoint = useCallback<CheckpointHandler>((info, signal) => {
     if (closingRef.current || signal.aborted) return Promise.resolve({ action: "cancel" })
     return new Promise<CheckpointResponse>((resolve) => {
-      checkpointResolveRef.current = resolve
+      const settle = (response: CheckpointResponse) => {
+        signal.removeEventListener("abort", onAbort)
+        if (checkpointResolveRef.current === settle) {
+          checkpointResolveRef.current = null
+          checkpointLabelRef.current = ""
+        }
+        resolve(response)
+      }
+      checkpointResolveRef.current = settle
       checkpointLabelRef.current = info.label
       const names = info.completedAgents.map((a) => a.name).join(", ")
       setNotice(
-        `checkpoint: ${info.label} — ${names} done · /continue /modify <instruction> /cancel`
+        `checkpoint: ${info.label} — ${names} done · /continue · type feedback · ctrl+c cancel`
       )
-      const onAbort = () => {
-        checkpointResolveRef.current = null
-        resolve({ action: "cancel" })
-      }
+      const onAbort = () => settle({ action: "cancel" })
       signal.addEventListener("abort", onAbort, { once: true })
     })
   }, [])
@@ -731,6 +754,13 @@ export function App({
       setError(undefined)
       setCancelled(false)
       setNotice(undefined)
+      if (opts?.newSession && !requirement) {
+        busyRef.current = false
+        setRunning(false)
+        setSearchResult(null)
+        setNotice("new session — type a requirement to begin")
+        return
+      }
       // Read before the dispatch below: `turn:start` moves the turn on screen
       // into `history`, and this wants it as it is right now. A new session has
       // no earlier turns — `session:reset` emptied the history this would read.
@@ -877,6 +907,7 @@ export function App({
         return
       }
       if (closingRef.current) return
+      setSearchResult(null)
       const restored = restoreConsole(config.workDir, id)
       sessionIdRef.current = id
       persistedTurnRef.current = restored.persistedTurn
@@ -994,17 +1025,22 @@ export function App({
     return shutdownRef.current
   }, [config.workDir, exit, cleanup])
 
-  const query = menuQuery(line.text)
-  const matches = useMemo(
-    () => (query === undefined ? [] : matchCommands(query, running)),
-    [query, running]
-  )
+  const commandContext = {
+    history: recordedTurns(state).length > 0,
+    retry: retryCandidates(state).length > 0,
+    queue: queue.length,
+    paused: queuePaused,
+    awaitingAnswer,
+    checkpoint: checkpointResolveRef.current !== null,
+  }
+  const query = interactions[0]?.kind === "question" ? undefined : menuQuery(line.text)
+  const matches = query === undefined ? [] : matchCommands(query, running, commandContext)
 
   // The palette shows one of two lists, never both: the command names while the
   // command is still being typed, or — once a space commits to arguments — the
   // agents a completer command's first argument could name. `menuQuery` closes
   // on a space and `argQuery` opens there, so the two are mutually exclusive.
-  const arg = argQuery(line.text)
+  const arg = interactions[0]?.kind === "question" ? undefined : argQuery(line.text)
   const argRows: PaletteRow[] = arg
     ? completeAgents(arg.partial, Object.keys(state.agents)).map((id) => ({
         key: id,
@@ -1014,7 +1050,7 @@ export function App({
         description: state.agents[id]?.description ?? state.agents[id]?.name ?? id,
       }))
     : []
-  const allRows: PaletteRow[] = arg ? argRows : paletteRows(matches)
+  const allRows: PaletteRow[] = picker ? picker.rows : arg ? argRows : paletteRows(matches)
   // One cursor serves both lists; the key it resets on is whichever list is open.
   const paletteKey = arg ? `${arg.command.name} ${arg.partial}` : query
   const paletteTotal = allRows.length
@@ -1022,17 +1058,26 @@ export function App({
   // row the user never looked at. Derived rather than reset in an effect, so no
   // frame is ever rendered with a stale index.
   const menuIndex = menuCursor.query === paletteKey ? menuCursor.index : 0
-  const selected = paletteTotal === 0 ? 0 : Math.min(menuIndex, paletteTotal - 1)
+  const selected = paletteTotal === 0 ? 0 : Math.min(picker?.cursor ?? menuIndex, paletteTotal - 1)
 
-  // The command palette is allowed mid-run too, which is the only place
-  // `/cancel` is offered. Opening it is a deliberate act (the user typed `/`),
-  // so spending the arrows on it is fair — scrolling the stream is still one
-  // keystroke away.
-  const menuOpen = !helpOpen && !sessionsOpen && query !== undefined && matches.length > 0
+  // Opening a menu gives its list the arrow keys; closing it returns them to the stream.
+  const menuOpen =
+    !picker &&
+    !operationInput &&
+    !helpOpen &&
+    !sessionsOpen &&
+    query !== undefined &&
+    matches.length > 0
   // The argument palette opens where the command palette closed, and only when
   // there is something to offer — an empty list is not a palette.
-  const argOpen = !helpOpen && !sessionsOpen && arg !== undefined && argRows.length > 0
-  const paletteOpen = menuOpen || argOpen
+  const argOpen =
+    !picker &&
+    !operationInput &&
+    !helpOpen &&
+    !sessionsOpen &&
+    arg !== undefined &&
+    argRows.length > 0
+  const paletteOpen = picker !== null || menuOpen || argOpen
 
   // The request the console is asking about, and the two pieces of state that
   // belong to it. Both are keyed by the alias so a decision made on one request
@@ -1118,7 +1163,7 @@ export function App({
   }, [])
 
   const runCommand = useCallback(
-    (name: string, args: string[], rawText?: string) => {
+    (name: string, args: string[]) => {
       setLine(EMPTY_LINE)
       // The palette only *offers* commands valid for the phase, but a command can
       // also be *typed* out, which bypasses the palette entirely — so the phase
@@ -1127,14 +1172,9 @@ export function App({
       // `default:` below still reports it. The notice names the phase the command
       // wants, so the user knows whether to wait or that it does not apply yet.
       // When a checkpoint is waiting, only the checkpoint commands are valid.
-      if (
-        checkpointResolveRef.current &&
-        name !== "continue" &&
-        name !== "modify" &&
-        name !== "cancel"
-      ) {
+      if (checkpointResolveRef.current && name !== "continue") {
         setNotice(
-          `checkpoint: ${checkpointLabelRef.current} · /continue /modify <instruction> /cancel`
+          `checkpoint: ${checkpointLabelRef.current} · /continue · type feedback · ctrl+c cancel`
         )
         return
       }
@@ -1143,118 +1183,78 @@ export function App({
         return
       }
       if (closingRef.current) return
-      switch (name) {
-        case "respond":
-        case "skip":
-        case "dismiss": {
-          const [id, ...jsonParts] = args
-          if (!id || (name === "respond" ? jsonParts.length === 0 : args.length !== 1)) {
-            setNotice(
-              name === "respond"
-                ? "usage: /respond <question id> <JSON object>"
-                : `usage: /${name} <question id>`
-            )
-            return
-          }
-          const matches = interactionsRef.current.filter(
-            (entry) => entry.request.requestId === id || entry.shortId === id
+      const choose = (rows: PaletteRow[]) => {
+        setPicker({ command: name, rows, cursor: 0 })
+        setNotice(`choose ${name} · enter confirm · esc cancel`)
+      }
+      if (args.length === 0) {
+        if (name === "mode") {
+          choose(
+            ["ask", "auto", "deny"].map((mode) => ({
+              key: mode,
+              label: mode,
+              description:
+                mode === "ask"
+                  ? "Ask before tools run"
+                  : mode === "auto"
+                    ? "Allow tools automatically"
+                    : "Refuse tool requests",
+            }))
           )
-          const entry = matches.length === 1 ? matches[0] : undefined
-          if (entry?.kind !== "question") {
-            setNotice(`unknown or stale question request: ${id}`)
-            return
-          }
-          if (name !== "respond") {
-            entry.settle({ action: name === "skip" ? "decline" : "cancel" })
-            setNotice(`${name === "skip" ? "skipped" : "dismissed"} ${entry.shortId}`)
-            return
-          }
-          let content: unknown
-          try {
-            // Preserve whitespace within JSON strings, unlike generic slash args.
-            const rawJson = /^\/respond\s+\S+\s+([\s\S]+)$/.exec(rawText ?? "")?.[1] ?? ""
-            content = JSON.parse(rawJson)
-          } catch {
-            setNotice("response must be a valid JSON object")
-            return
-          }
-          if (!validateRuntimeQuestionContent(entry.request.requestedSchema, content)) {
-            setNotice(
-              "response does not match the question schema; check required fields and choices"
-            )
-            return
-          }
-          entry.settle({
-            action: "accept",
-            content,
-          })
-          setNotice(`responded to ${entry.shortId}`)
           return
         }
-        case "approve":
-        case "deny": {
-          // The alias is optional. The request on screen is the default target,
-          // so `/approve 1` and a bare `/deny` are the shapes the bar itself
-          // advertises; naming the id is only how you reach a request behind
-          // the one on screen.
-          const onScreen = interactionsRef.current[0]
-          const byId = (id: string): PendingInteraction | undefined => {
-            const found = interactionsRef.current.filter(
-              (item) => item.request.requestId === id || item.shortId === id
-            )
-            if (found.length !== 1) setNotice(`unknown or stale permission request: ${id}`)
-            return found.length === 1 ? found[0] : undefined
-          }
-
-          let entry: PendingInteraction | undefined
-          let number: string | undefined
-          if (name === "approve" && args.length === 1 && /^\d+$/.test(args[0])) {
-            number = args[0]
-            entry = onScreen
-          } else if (name === "approve" && args.length === 2) {
-            number = args[1]
-            entry = byId(args[0])
-          } else if (name === "deny" && args.length === 0) {
-            entry = onScreen
-          } else if (name === "deny" && args.length === 1) {
-            entry = byId(args[0])
-          } else {
-            setNotice(
-              name === "approve" ? "usage: /approve [id] <option number>" : "usage: /deny [id]"
-            )
-            return
-          }
-
-          if (entry === undefined) {
-            // `byId` has already said why when an id was given; a bare command
-            // with nothing on screen has to say so itself.
-            if (args.length === 0 || /^\d+$/.test(args[0] ?? "")) {
-              setNotice("no permission request on screen")
-            }
-            return
-          }
-          if (entry.kind !== "permission") {
-            setNotice("the request on screen is a question, not a permission")
-            return
-          }
-          if (name === "deny") {
-            entry.settle()
-            setNotice(`denied ${entry.shortId}`)
-            return
-          }
-          const option = /^\d+$/.test(number ?? "")
-            ? entry.request.options[Number(number) - 1]
-            : undefined
-          if (!option) {
-            setNotice(
-              `invalid option for ${entry.shortId}; choose 1–${entry.request.options.length}`
-            )
-            return
-          }
-          entry.settle(option.optionId)
-          setNotice(`selected ${clean(option.name)} for ${entry.shortId}`)
+        if (name === "focus") {
+          choose(
+            Object.values(state.agents).map((agent) => ({
+              key: agent.id,
+              label: agent.name,
+              description: agent.description ?? agent.id,
+            }))
+          )
           return
         }
+        if (name === "retry") {
+          const ids = retryCandidates(state)
+          if (ids.length === 0) {
+            setNotice("nothing failed")
+            return
+          }
+          choose([
+            { key: "all", label: "All failed / repair agents", description: ids.join(", ") },
+            ...ids.map((id) => ({
+              key: id,
+              label: state.agents[id]?.name ?? id,
+              description: state.agents[id]?.error ?? "Retry this agent",
+            })),
+          ])
+          return
+        }
+        if (["replay", "edit", "export"].includes(name)) {
+          const turns = recordedTurns(state).slice().reverse()
+          if (turns.length === 0) {
+            setNotice(`nothing to ${name} yet`)
+            return
+          }
+          choose(
+            turns.map((turn) => ({
+              key: String(turn.turn),
+              label: `Turn ${turn.turn}`,
+              description: turn.requirement?.replace(/\s+/g, " ") ?? "(no requirement)",
+            }))
+          )
+          return
+        }
+        if (name === "search" || name === "steer") {
+          setOperationInput(name)
+          setNotice(
+            name === "search"
+              ? "search the focused stream · enter find · esc cancel"
+              : "message running agents · enter send · esc cancel"
+          )
+          return
+        }
+      }
+      switch (name) {
         case "mode": {
           const m = args[0]
           if (m === "auto" || m === "ask" || m === "deny") {
@@ -1267,23 +1267,14 @@ export function App({
         }
         case "new": {
           const text = args.join(" ")
-          if (!text) {
-            setNotice("usage: /new <requirement> — starts a new session with fresh agent sessions")
+          if (text) {
+            setNotice("/new opens an empty session — enter the requirement afterwards")
             return
           }
           setQueue([])
           queuePausedRef.current = false
           setQueuePaused(false)
           void startTurn(text, { newSession: true })
-          return
-        }
-        case "answer": {
-          const text = args.join(" ")
-          if (!awaitingAnswerRef.current || !text) {
-            setNotice("usage: /answer <text> — only when the leader is waiting for an answer")
-            return
-          }
-          void startTurn(text)
           return
         }
         case "steer": {
@@ -1296,6 +1287,10 @@ export function App({
           return
         }
         case "pause":
+          if (queueRef.current.length === 0) {
+            setNotice("no queued turns to pause")
+            return
+          }
           queuePausedRef.current = true
           setQueuePaused(true)
           setNotice("queue paused — the active turn continues")
@@ -1313,35 +1308,15 @@ export function App({
             setNotice("answer the leader first; queued input is not an answer")
             return
           }
+          if (queueRef.current.length === 0) {
+            setNotice("no queued turns to resume")
+            return
+          }
           queuePausedRef.current = false
           setQueuePaused(false)
           setNotice("queue resumed")
           return
         }
-        case "modify": {
-          const instruction = args.join(" ")
-          if (!instruction) {
-            setNotice("usage: /modify <instruction> — only at a checkpoint")
-            return
-          }
-          if (!checkpointResolveRef.current) {
-            setNotice("no checkpoint is waiting")
-            return
-          }
-          const resolve = checkpointResolveRef.current
-          checkpointResolveRef.current = null
-          checkpointLabelRef.current = ""
-          resolve({ action: "modify", instruction })
-          setNotice("modifying and continuing…")
-          return
-        }
-        case "agents":
-          setNotice(
-            `team: ${plannedAgents(config)
-              .map((agent) => agent.id)
-              .join(", ")}`
-          )
-          return
         case "focus": {
           const input = args[0]
           if (!input) {
@@ -1356,18 +1331,11 @@ export function App({
             setNotice(resolved.error)
             return
           }
+          setSearchResult(null)
           dispatch({ type: "focus:set", agentId: resolved.id })
           setNotice(`focused ${resolved.id}`)
           return
         }
-        case "clear":
-          if (!state.focusId) {
-            setNotice("nothing focused")
-            return
-          }
-          dispatch({ type: "stream:clear" })
-          setNotice(`cleared ${state.focusId}`)
-          return
         case "sessions": {
           // Snapshot the index as the picker opens, cursor on the current one.
           const list = listSessions(config.workDir)
@@ -1387,30 +1355,36 @@ export function App({
         case "retry": {
           // Retrying acts on the *last* turn, not the one being read: a past
           // turn is not what "run that again" can mean.
-          if (state.phase !== "complete" || !state.requirement) {
+          const turn = recordedTurns(state).slice(-1)[0]
+          if (!turn?.requirement) {
             setNotice("nothing to retry yet")
             return
           }
+          if (args[0] === "all") args = []
           // An explicit id accepts a unique prefix, matching `/focus`; with no id
           // the command falls back to every agent that failed.
           let ids: string[]
           if (
-            state.acceptance &&
-            state.acceptance.status !== "approved" &&
-            (!args[0] || args[0] === state.acceptance.reviewer)
+            turn.acceptance &&
+            turn.acceptance.status !== "approved" &&
+            (!args[0] || args[0] === turn.acceptance.reviewer)
           ) {
             ids = [
-              ...new Set(state.stages.flatMap((stage) => stage.agents.map((agent) => agent.id))),
-            ].filter((id) => id !== state.acceptance?.reviewer)
+              ...new Set(turn.stages.flatMap((stage) => stage.agents.map((agent) => agent.id))),
+            ].filter((id) => id !== turn.acceptance?.reviewer)
           } else if (args[0]) {
-            const resolved = resolveAgentId(args[0], Object.keys(state.agents))
+            const resolved = resolveAgentId(args[0], Object.keys(turn.agents))
             if ("error" in resolved) {
               setNotice(resolved.error)
               return
             }
+            if (!retryCandidates(state).includes(resolved.id)) {
+              setNotice(`agent has not failed or does not need repair: ${resolved.id}`)
+              return
+            }
             ids = [resolved.id]
           } else {
-            ids = Object.values(state.agents)
+            ids = Object.values(turn.agents)
               .filter((agent) => agent.status === "failed")
               .map((agent) => agent.id)
           }
@@ -1424,15 +1398,15 @@ export function App({
           // core's "absent means a cold start".
           const sessions = Object.fromEntries(
             ids
-              .filter((id) => state.agents[id]?.sessionId)
-              .map((id) => [id, state.agents[id].sessionId as string])
+              .filter((id) => turn.agents[id]?.sessionId)
+              .map((id) => [id, turn.agents[id].sessionId as string])
           )
-          if (ids.some((id) => state.leaderIds.includes(id))) {
-            void startTurn(state.requirement)
+          if (ids.some((id) => turn.leaderIds.includes(id))) {
+            void startTurn(turn.requirement)
             setNotice("retrying leader routing")
             return
           }
-          void startTurn(state.effectiveRequirement ?? state.requirement, {
+          void startTurn(turn.effectiveRequirement ?? turn.requirement, {
             resume: {
               agents: ids,
               ...(Object.keys(sessions).length > 0 ? { sessions } : {}),
@@ -1468,8 +1442,8 @@ export function App({
           setNotice(`replaying turn ${target.record.turn}`)
           return
         }
-        case "fork": {
-          const target = pickTurn(state, args[0], "nothing to fork yet")
+        case "edit": {
+          const target = pickTurn(state, args[0], "nothing to edit yet")
           if ("error" in target) {
             setNotice(target.error)
             return
@@ -1502,79 +1476,74 @@ export function App({
             setNotice("usage: /search <text>")
             return
           }
+          const matches = streamMatches(state, text, layout.streamWidth)
+          if (matches.length === 0) {
+            setSearchResult(null)
+            setNotice(`no matches for ${text}`)
+            return
+          }
+          const index = matches.length - 1
+          setSearchResult({ query: text, index })
           dispatch({
             type: "stream:search",
             query: text,
+            match: index,
             viewport: layout.logViewport,
             width: layout.streamWidth,
           })
-          setNotice(`searched for ${text}`)
+          setNotice(
+            "searched for " +
+              text +
+              " · match " +
+              (index + 1) +
+              "/" +
+              matches.length +
+              " · ctrl+n next · ctrl+p previous"
+          )
           return
         }
         case "latest":
+          setSearchResult(null)
           dispatch({ type: "stream:latest" })
           setNotice("showing latest output")
-          return
-        case "cancel": {
-          if (checkpointResolveRef.current) {
-            const resolve = checkpointResolveRef.current
-            checkpointResolveRef.current = null
-            checkpointLabelRef.current = ""
-            resolve({ action: "cancel" })
-            setNotice("checkpoint cancelled")
-            return
-          }
-          if (!abortRef.current) {
-            setNotice("nothing to cancel")
-            return
-          }
-          // Cancelling means stop, so the queue goes with it — otherwise the
-          // follow-ups would start the instant the abort landed, which reads as
-          // "the cancel did not work".
-          const dropped = queue.length
-          abortRef.current.abort()
-          clearInteractions()
-          setQueue([])
-          setCancelled(true)
-          setNotice(dropped > 0 ? `cancelling… · dropped ${dropped} queued` : "cancelling…")
-          return
-        }
-        case "help":
-          setNotice(undefined)
-          setHelpOpen(true)
-          return
-        case "quit":
-          void shutdown()
           return
         default:
           setNotice(`unknown command: /${name}`)
       }
     },
-    [
-      config,
-      shutdown,
-      clearInteractions,
-      layout.logViewport,
-      layout.streamWidth,
-      queue.length,
-      running,
-      state,
-      startTurn,
-      steerRunningAgents,
-    ]
+    [config, layout.logViewport, layout.streamWidth, running, state, startTurn, steerRunningAgents]
   )
 
   const submit = useCallback(() => {
     const text = line.text.trim()
     if (!text || closingRef.current) return
+    if (operationInput) {
+      const operation = operationInput
+      setOperationInput(null)
+      if (operation === "steer" && !running) {
+        setLine(EMPTY_LINE)
+        setQueue((current) => [...current, text])
+        queuePausedRef.current = true
+        setQueuePaused(true)
+        setNotice("turn finished — message queued; /continue runs it")
+        return
+      }
+      runCommand(operation, [text])
+      return
+    }
     const command = parseCommand(text)
     if (command) {
-      runCommand(command.name, command.args, text)
+      runCommand(command.name, command.args)
       return
     }
     // During a checkpoint, bare text is treated as feedback.
     if (checkpointResolveRef.current) {
-      runCommand("modify", [text], text)
+      const resolve = checkpointResolveRef.current
+      checkpointResolveRef.current = null
+      checkpointLabelRef.current = ""
+      setLine(EMPTY_LINE)
+      resolve({ action: "modify", instruction: text })
+      setNotice("modifying and continuing…")
       return
     }
     setLine(EMPTY_LINE)
@@ -1586,7 +1555,7 @@ export function App({
       return
     }
     void startTurn(text)
-  }, [line.text, runCommand, running, startTurn])
+  }, [line.text, operationInput, runCommand, running, startTurn])
 
   // Line edits are expressed as functional updates over one object so a fast
   // typist can never interleave a text change with a stale cursor position.
@@ -1637,7 +1606,12 @@ export function App({
     // ctrl+c is the one key that must always do something: it peels the console
     // back one layer at a time instead of quitting from under the user.
     if (key.ctrl && char === "c") {
-      if (helpOpen) {
+      if (picker || operationInput) {
+        setNotice(undefined)
+        setPicker(null)
+        setOperationInput(null)
+        setLine(EMPTY_LINE)
+      } else if (helpOpen) {
         setHelpOpen(false)
       } else if (sessionsOpen) {
         setSessionsOpen(false)
@@ -1710,6 +1684,54 @@ export function App({
       return
     }
 
+    if (picker) {
+      if (key.escape) {
+        setPicker(null)
+        setLine(EMPTY_LINE)
+        setNotice(undefined)
+        return
+      }
+      if (key.upArrow || key.downArrow || key.tab) {
+        const delta = key.upArrow || (key.tab && key.shift) ? -1 : 1
+        setPicker({
+          ...picker,
+          cursor: (picker.cursor + delta + picker.rows.length) % picker.rows.length,
+        })
+        return
+      }
+      if (key.return) {
+        const row = picker.rows[picker.cursor]
+        setPicker(null)
+        if (row) runCommand(picker.command, [row.key])
+        return
+      }
+      if (!(key.ctrl && char === "d")) return
+    }
+    if (operationInput && key.escape) {
+      setOperationInput(null)
+      setLine(EMPTY_LINE)
+      setNotice(undefined)
+      return
+    }
+    if (searchResult && key.ctrl && (char === "n" || char === "p")) {
+      const matches = streamMatches(state, searchResult.query, layout.streamWidth)
+      if (matches.length === 0) {
+        setSearchResult(null)
+        setNotice(`no matches for ${searchResult.query}`)
+        return
+      }
+      const index = (searchResult.index + (char === "n" ? 1 : -1) + matches.length) % matches.length
+      setSearchResult({ ...searchResult, index })
+      dispatch({
+        type: "stream:search",
+        query: searchResult.query,
+        match: index,
+        viewport: layout.logViewport,
+        width: layout.streamWidth,
+      })
+      setNotice(`match ${index + 1}/${matches.length} · ctrl+n next · ctrl+p previous`)
+      return
+    }
     if (key.ctrl && char === "d") {
       if (!line.text) void shutdown()
       return
@@ -1730,9 +1752,8 @@ export function App({
 
     // A form owns `tab`: moving between its fields is what tab means while one
     // is on screen, and cycling the roster behind it is not something the user
-    // can act on while the turn is stopped on their answer. A command line is
-    // exempt so `/respond` and `/dismiss` stay reachable.
-    const formFront = front?.kind === "question" && !isCommandLine(line.text) ? front : undefined
+    // can act on while the turn is stopped on their answer. Operation input is separate from form field editing.
+    const formFront = front?.kind === "question" && !operationInput ? front : undefined
 
     if (key.tab && formFront === undefined && !paletteOpen) {
       if (key.shift) {
@@ -1742,6 +1763,7 @@ export function App({
         setNotice(`permission mode: ${next}`)
         return
       }
+      setSearchResult(null)
       dispatch({ type: "focus:cycle", delta: 1 })
       return
     }
@@ -1789,7 +1811,7 @@ export function App({
     // only queue behind a decision that has not been made — the one state where
     // spending the prompt's keys costs nothing. `esc` gives them back, which is
     // what keeps "the prompt always has focus" true rather than merely asserted.
-    if (front?.kind === "permission" && line.text === "" && !menu.released) {
+    if (!operationInput && front?.kind === "permission" && line.text === "" && !menu.released) {
       const total = permissionChoices(front.request).length
       if (key.upArrow || key.downArrow) {
         setPermissionMenu({
@@ -1835,8 +1857,12 @@ export function App({
       // choice is committed by `advance`, and reading the pre-commit state here
       // would drop exactly the value that was just picked.
       const moveFocus = (index: number, state: FormState = committed) => {
-        const next = focusField(questionFields, state, index)
-        save(next.state, next.draft)
+        const target = (index + total + 3) % (total + 3)
+        if (target >= total) save({ ...state, field: target }, "")
+        else {
+          const next = focusField(questionFields, state, target)
+          save(next.state, next.draft)
+        }
       }
       const submit = (state: FormState) => {
         if (!formComplete(questionFields, state)) {
@@ -1858,17 +1884,30 @@ export function App({
         setNotice(`answered ${front.shortId}`)
       }
       const advance = (state: FormState) => {
-        if (form.field >= total - 1) submit(state)
-        else moveFocus(form.field + 1, state)
+        moveFocus(form.field + 1, state)
       }
 
       if (field === undefined) {
-        // A schema with no fields is still a question; `enter` answers it.
-        if (key.return) submit(committed)
+        const action = Math.max(0, form.field - total)
+        if (key.tab || key.leftArrow || key.rightArrow || key.upArrow || key.downArrow) {
+          const delta = key.leftArrow || key.upArrow || (key.tab && key.shift) ? -1 : 1
+          moveFocus(form.field + delta)
+          return
+        }
+        if (key.return) {
+          if (action === 0) submit(committed)
+          else {
+            front.settle({ action: action === 1 ? "decline" : "cancel" })
+            setFormEntry({ id: "", state: initialForm() })
+            setLine(EMPTY_LINE)
+            setNotice(action === 1 ? "question skipped" : "question cancelled")
+          }
+        }
         return
       }
       if (key.tab) {
-        moveFocus(key.shift ? form.field - 1 : form.field + 1)
+        const next = field.kind === "choice" ? commitField(questionFields, committed) : committed
+        moveFocus(key.shift ? form.field - 1 : form.field + 1, next)
         return
       }
       if (field.choices.length > 0 && (key.upArrow || key.downArrow)) {
@@ -1903,7 +1942,7 @@ export function App({
       }
       if (key.escape) {
         // Escape clears the field being edited, not the form: dropping the whole
-        // question is `/dismiss`, which is a different decision and says so.
+        // question uses its explicit Cancel request action.
         if (field.kind === "text" || field.kind === "number") {
           save({ ...committed, values: { ...committed.values, [field.key]: "" } })
           setLine(EMPTY_LINE)
@@ -1987,10 +2026,9 @@ export function App({
         return
       }
       // The bar's own escape: hand the keyboard back without deciding anything.
-      // The request stays pending, so `/approve` and `/deny` still reach it —
-      // and a new request starts unreleased, because the alias is part of the key.
+      // Press escape again to return to its options.
       if (front !== undefined) {
-        setPermissionMenu({ id: front.shortId, cursor: undefined, released: true })
+        setPermissionMenu({ id: front.shortId, cursor: 0, released: !menu.released })
       }
       setLine(EMPTY_LINE)
       setNotice(undefined)
@@ -2020,52 +2058,89 @@ export function App({
   // The hint bar only advertises keys that do something *right now*. While a
   // reply is on screen there is no roster to switch between, so `tab` is left
   // out rather than promised and silently ignored.
-  const keys = helpOpen
-    ? "esc close"
-    : sessionsOpen
-      ? "↑↓ select · enter open · d delete · esc close"
-      : argOpen
-        ? `↑↓ select · tab complete · enter ${arg?.command.name} · esc close`
-        : menuOpen
-          ? "↑↓ select · tab complete · enter run · esc close"
-          : running
-            ? checkpointResolveRef.current
-              ? `/continue · /modify <instruction> · /cancel`
-              : interactions.length > 0
-                ? layout.interactionRows === 0
-                  ? // Too short to dock the bar, so the commands are the only way in.
-                    "decide with /approve 1 · /deny · /respond"
-                  : interactions[0].kind === "question"
-                    ? "tab field · ↑↓ pick · enter next · /dismiss"
-                    : menu.released
-                      ? "/approve 1 and /deny still reach it"
-                      : "↑↓ or 1-9 choose · enter confirm · esc to type"
-                : "enter queues · ctrl+c cancel"
-            : state.reply
-              ? "enter sends · / commands · ? help"
-              : "tab switch · shift+tab mode · / commands · ? help"
+  const keys = picker
+    ? "↑↓ select · enter confirm · esc cancel"
+    : operationInput
+      ? "enter submit · esc cancel"
+      : helpOpen
+        ? "esc close"
+        : sessionsOpen
+          ? "↑↓ select · enter open · d delete · esc close"
+          : argOpen
+            ? `↑↓ select · tab complete · enter ${arg?.command.name} · esc close`
+            : menuOpen
+              ? "↑↓ select · tab complete · enter run · esc close"
+              : running
+                ? checkpointResolveRef.current
+                  ? `/continue · type feedback · ctrl+c cancel`
+                  : interactions.length > 0
+                    ? layout.interactionRows === 0
+                      ? // On short terminals the decision is shown in the body.
+                        "↑↓ choose · enter confirm · esc type · ctrl+c cancel"
+                      : interactions[0].kind === "question"
+                        ? "tab field / actions · ↑↓ pick · enter confirm"
+                        : menu.released
+                          ? "esc return to permission options"
+                          : "↑↓ or 1-9 choose · enter confirm · esc to type"
+                    : "enter queues · ctrl+c cancel"
+                : state.reply
+                  ? "enter sends · / commands · ? help"
+                  : "tab switch · shift+tab mode · / commands · ? help"
 
   // The prompt names what it is editing. While a form is up that is a field and
   // not a follow-up — it is the same line either way, so it has to say which.
   // While a permission is pending it says the opposite: typing here is *not* the
   // way to answer, and the default "type to queue a follow-up" invites exactly
   // the action that does nothing.
-  const placeholder =
-    frontQuestion !== undefined
-      ? formField === undefined
-        ? "enter to answer"
-        : editingField !== undefined
-          ? `${editingField.title}${editingField.required ? " *" : ""} — enter for the next field`
-          : `${formField.title} — ↑↓ to pick · enter for the next field`
-      : front?.kind === "permission" && !menu.released
-        ? "choose above · esc to type here instead"
-        : checkpointResolveRef.current
-          ? `checkpoint: ${checkpointLabelRef.current} — type feedback or /continue`
-          : running
-            ? RUNNING_PLACEHOLDER
-            : awaitingAnswer
-              ? "answer the leader… · /task starts a new task"
-              : INPUT_PLACEHOLDER
+  const placeholder = picker
+    ? "choose an option above…"
+    : operationInput
+      ? operationInput === "search"
+        ? "search text…"
+        : "message for running agents…"
+      : frontQuestion !== undefined
+        ? formField === undefined
+          ? "enter to answer"
+          : editingField !== undefined
+            ? `${editingField.title}${editingField.required ? " *" : ""} — enter for the next field`
+            : `${formField.title} — ↑↓ to pick · enter for the next field`
+        : front?.kind === "permission" && !menu.released
+          ? "choose above · esc to type here instead"
+          : checkpointResolveRef.current
+            ? `checkpoint: ${checkpointLabelRef.current} — type feedback or /continue`
+            : running
+              ? RUNNING_PLACEHOLDER
+              : awaitingAnswer
+                ? "answer the leader… · /new starts a new session"
+                : INPUT_PLACEHOLDER
+
+  const renderInteraction = (maxRows: number) => {
+    if (!front) return null
+    return front.kind === "permission" ? (
+      <PermissionBar
+        request={front.request}
+        others={interactions
+          .slice(1)
+          .flatMap((entry) => (entry.kind === "permission" ? [entry.request] : []))}
+        cursor={menu.cursor}
+        released={menu.released}
+        width={layout.columns}
+        maxRows={maxRows}
+      />
+    ) : (
+      <QuestionForm
+        request={front.request}
+        others={interactions
+          .slice(1)
+          .flatMap((entry) => (entry.kind === "question" ? [entry.request] : []))}
+        fields={questionFields}
+        form={form}
+        draft={line.text}
+        width={layout.columns}
+        maxRows={maxRows}
+      />
+    )
+  }
 
   return (
     <Box flexDirection="column" height={layout.rows}>
@@ -2128,6 +2203,8 @@ export function App({
             maxRows={layout.bodyHeight}
             now={now}
           />
+        ) : front && layout.interactionRows === 0 && !paletteOpen ? (
+          renderInteraction(layout.bodyHeight)
         ) : layout.welcome ? (
           <WelcomePanel turn={state} width={layout.columns} />
         ) : error ? (
@@ -2185,28 +2262,7 @@ export function App({
             flexShrink={0}
             flexDirection="column"
           >
-            {front.kind === "permission" ? (
-              <PermissionBar
-                request={front.request}
-                others={interactions
-                  .slice(1)
-                  .flatMap((entry) => (entry.kind === "permission" ? [entry.request] : []))}
-                cursor={menu.cursor}
-                released={menu.released}
-                width={layout.columns}
-              />
-            ) : (
-              <QuestionForm
-                request={front.request}
-                others={interactions
-                  .slice(1)
-                  .flatMap((entry) => (entry.kind === "question" ? [entry.request] : []))}
-                fields={questionFields}
-                form={form}
-                draft={line.text}
-                width={layout.columns}
-              />
-            )}
+            {renderInteraction(layout.interactionRows)}
           </Box>
         </>
       )}

@@ -5,7 +5,6 @@ import type { MultiClawConfig } from "@multiclawcli/core"
 import { agents, runtimeRegistry } from "@multiclawcli/core"
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { App } from "./App"
-import { COMMANDS } from "./commands"
 import { exportPath, turnsPath } from "./history"
 import { latestSession } from "./sessions"
 import { stripAnsi } from "./state"
@@ -770,7 +769,12 @@ describe("App · /retry with nothing to retry", () => {
             })
           }}
         />,
-        { keys: ["add a flag", "\r"], thenKeys: ["/retry", "\r"], ready: finished, settleMs: 200 }
+        {
+          keys: ["add a flag", "\r"],
+          thenKeys: ["/retry", "\r", "\r"],
+          ready: finished,
+          settleMs: 200,
+        }
       )
     )
 
@@ -864,7 +868,7 @@ describe("App · /retry re-runs a failed agent", () => {
         />,
         {
           keys: ["add a flag", "\r"],
-          thenKeys: ["/retry", "\r"],
+          thenKeys: ["/retry", "\r", "\r"],
           ready: first,
           settleMs: 400,
         }
@@ -987,7 +991,7 @@ const REPLAY_CONFIG: MultiClawConfig = {
     icon: "◆",
     runtime: REPLAY_RUNTIME,
     // The raw requirement, so the leader's prompt *is* what a turn was asked to
-    // do — which is exactly what `/replay` and `/fork` act on.
+    // do — which is exactly what `/replay` and `/edit` act on.
     systemPrompt: "",
     taskPrompt: "{{requirement}}",
   },
@@ -1002,7 +1006,7 @@ const REPLAY_CONFIG: MultiClawConfig = {
   ],
 }
 
-describe("App · replaying and forking finished turns", () => {
+describe("App · replaying and editing finished turns", () => {
   /** The requirement the leader was handed, once per turn. */
   let prompts: string[] = []
   /** How many turns have started, across every turn of the test. */
@@ -1058,7 +1062,7 @@ describe("App · replaying and forking finished turns", () => {
   }
 
   it("replays the last finished turn by default", async () => {
-    const frame = await drive(["first task", "\r", "second task", "\r"], 2, ["/replay", "\r"])
+    const frame = await drive(["first task", "\r", "second task", "\r"], 2, ["/replay", "\r", "\r"])
 
     // Three turns ran; the third re-ran the second's requirement verbatim.
     expect(prompts).toEqual(["first task", "second task", "second task"])
@@ -1083,7 +1087,10 @@ describe("App · replaying and forking finished turns", () => {
 
   it("says there is nothing to replay on a fresh console", async () => {
     const frame = stripAnsi(
-      await driveFrame(<App config={REPLAY_CONFIG} />, { keys: ["/replay", "\r"], settleMs: 200 })
+      await driveFrame(<App config={REPLAY_CONFIG} />, {
+        keys: ["/replay", "\r", "\r"],
+        settleMs: 200,
+      })
     )
 
     expect(frame).toContain("nothing to replay yet")
@@ -1092,7 +1099,7 @@ describe("App · replaying and forking finished turns", () => {
   // Forking only edits the prompt — it must not run anything, so the whole point
   // is that the turn count does not move.
   it("fills the prompt from a past turn without running it", async () => {
-    const frame = await drive(["first task", "\r", "second task", "\r"], 2, ["/fork 1", "\r"])
+    const frame = await drive(["first task", "\r", "second task", "\r"], 2, ["/edit 1", "\r"])
 
     expect(frame).toContain("› first task")
     expect(starts).toBe(2)
@@ -1183,7 +1190,7 @@ describe("App · exporting and searching finished turns", () => {
           }
         }, 20)
       }),
-      thenKeys: ["/export", "\r"],
+      thenKeys: ["/export", "\r", "\r"],
       settleMs: 300,
     })
 
@@ -1196,7 +1203,7 @@ describe("App · exporting and searching finished turns", () => {
   it("searches the focused stream without adding a naked key", async () => {
     const frame = await drive(["first task", "\r"], 1, ["/search finished", "\r"])
 
-    expect(frame).toContain("searched for finished")
+    expect(frame).toContain("no matches for finished")
   })
 
   it("jumps back to the latest stream output through /latest", async () => {
@@ -1207,38 +1214,24 @@ describe("App · exporting and searching finished turns", () => {
   })
 })
 
-describe("App · the command palette window", () => {
-  // There are more commands than `MAX_MENU_ROWS`, so the palette draws a window
-  // that has to follow the selection. Before this, the window was pinned to the
-  // top `MAX_MENU_ROWS` rows and the highlight was clamped inside it, so the
-  // eighth command could not be reached with the arrow keys at all.
-  const down = "\u001b[B"
-  // `/` opens the palette on the first command, so the number of `↓` presses is
-  // `/fork`'s own index. Derived rather than hardcoded: adding a command above it
-  // would otherwise silently retarget this test at whatever moved into slot 7.
-  // It is also below the first window, which is the case being exercised.
-  const forkIndex = COMMANDS.findIndex((command) => command.name === "fork")
-  const toFork = ["/", ...Array.from({ length: forkIndex }, () => down)]
-
-  it("follows the selection past the first window, and runs the highlighted command", async () => {
-    const highlighted = stripAnsi(
-      await driveFrame(<App config={REPLAY_CONFIG} />, { keys: toFork, settleMs: 0 })
+describe("App · the command palette", () => {
+  it("hides history actions until there is a completed turn", async () => {
+    const frame = stripAnsi(
+      await driveFrame(<App config={REPLAY_CONFIG} />, { keys: ["/"], settleMs: 0 })
     )
-    expect(highlighted).toContain("› /fork")
+    expect(frame).not.toContain("/edit")
+    expect(frame).not.toContain("/replay")
+    expect(frame).not.toContain("/retry")
+    expect(frame).toContain("/mode")
+  })
 
-    // The highlight is only half the contract — `enter` running the *highlighted*
-    // command is the half a highlight-only assertion cannot see. `/replay` sits
-    // just above `/fork`, on the other side of the window edge, so an absolute
-    // index applied to the windowed array would run `/replay` here. The two
-    // "nothing to …" notices are what tell the outcomes apart.
-    const ran = stripAnsi(
-      await driveFrame(<App config={REPLAY_CONFIG} />, {
-        keys: [...toFork, "\r"],
-        settleMs: 200,
-      })
+  it("selecting mode opens its options without a usage error", async () => {
+    const frame = stripAnsi(
+      await driveFrame(<App config={REPLAY_CONFIG} />, { keys: ["/mode", "\r"] })
     )
-    expect(ran).toContain("nothing to fork yet")
-    expect(ran).not.toContain("nothing to replay yet")
+    expect(frame).toContain("choose mode")
+    expect(frame).toContain("Allow tools automatically")
+    expect(frame).not.toContain("usage:")
   })
 })
 
@@ -1323,7 +1316,7 @@ describe("App · a command typed mid-run", () => {
           // is still held open — the only window in which the hazard exists.
           keys: ["first task", "\r"],
           ready: first,
-          thenKeys: ["second task", "\r", "/replay", "\r"],
+          thenKeys: ["second task", "\r", "/replay", "\r", "\r"],
           settleMs: 600,
           timeoutMs: 3000,
         }

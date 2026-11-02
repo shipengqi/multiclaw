@@ -82,6 +82,13 @@ describe("computeLayout", () => {
     expect(computeLayout({ ...base, queueRows: 99 }).queueRows).toBe(MAX_QUEUE_ROWS)
   })
 
+  it("keeps a selector and its prompt inside a ten-row terminal", () => {
+    const layout = computeLayout({ ...base, rows: 10, menuRows: 12, queueRows: 3, notice: true })
+    expect(layout.menuRows).toBe(1)
+    expect(layout.queueRows).toBe(0)
+    expect(2 + 1 + layout.bodyHeight + 1 + layout.menuRows + 1 + 1).toBeLessThanOrEqual(10)
+  })
+
   it("treats an absent queue as no rows at all", () => {
     expect(computeLayout(base).queueRows).toBe(0)
     expect(computeLayout(base).bodyHeight).toBe(computeLayout({ ...base, queueRows: 0 }).bodyHeight)

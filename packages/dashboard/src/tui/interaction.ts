@@ -2,19 +2,8 @@
  * The two things an agent can stop and ask for, modelled as something the user
  * can *point at* instead of something they have to spell out.
  *
- * Both used to be answered by command — `/approve p4 1`, `/respond q1
- * {"database":"postgres"}` — which put three transformations between reading a
- * question and answering it: remember an internal alias, map a number back onto
- * a list rendered somewhere else, and hand-write JSON that happens to match a
- * schema. None of those are the decision. So the rendered question becomes the
- * thing that is operated on: the option you are looking at is the option you
- * commit, and the field you are editing is the field that receives the
- * keystroke.
- *
- * Pure on purpose. The keyboard rules are the part of this easiest to get
- * subtly wrong — a bare key that both selects and types, a required field that
- * silently submits empty — so they live here, where they can be tested without
- * rendering a terminal.
+ * The docked controls keep permission decisions and structured answers tied to
+ * their requesting agent while leaving the execution stream visible.
  */
 
 import type { RuntimePermissionRequest, RuntimeQuestionRequest } from "@multiclawcli/core"
@@ -496,7 +485,7 @@ export const MAX_FORM_FIELDS = 6
 
 /** Rows the question form occupies: header, message, fields, detail, hint. */
 export function questionBarRows(fields: FormField[]): number {
-  return 2 + Math.min(fields.length, MAX_FORM_FIELDS) + 1 + 1
+  return 2 + Math.min(fields.length, MAX_FORM_FIELDS) + 1 + 2
 }
 
 /** The one interaction on screen, whichever kind it is. */

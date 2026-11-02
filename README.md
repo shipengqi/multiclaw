@@ -344,36 +344,36 @@ the background.
 
 ### Commands
 
-Type `/` on an empty line for a filtered list.
+Type `/` on an empty line, select an operation and press Enter. Commands that need an
+agent, mode or turn open a selector; search and steering open an input field. `Esc`
+cancels the operation. The menu only offers actions relevant to the current state.
 
-| Command | Action | When |
-|---------|--------|------|
-| `/agents` | List the configured team | always |
-| `/focus <id>` | Focus an agent by id | always |
-| `/clear` | Clear the focused agent's output for the current turn | always |
-| `/verbose` | Toggle tool detail in the stream | always |
-| `/mode auto\|ask\|deny` | Set the permission mode | always |
-| `/search <text>` | Search the focused stream | always |
-| `/latest` | Jump the stream to latest output | always |
-| `/sessions` | Switch between, or delete, saved sessions (see [Sessions](#sessions)) | always |
-| `/export [turn] [path]` | Export a finished turn as Markdown | always |
-| `/fork [turn]` | Edit an earlier turn's requirement and re-run | always |
-| `/pause` | Pause queued turns | always |
-| `/continue` | Resume queued turns or pass a checkpoint | always |
-| `/approve [id] <number>` | Approve the request on screen, or a named one | always |
-| `/deny [id]` | Deny the request on screen, or a named one | always |
-| `/respond <id> <JSON>` | Answer a structured question in one line of JSON | always |
-| `/skip <id>` | Decline a structured tool question | always |
-| `/dismiss <id>` | Cancel a structured tool question | always |
-| `/help` | Key map | always |
-| `/quit` | Exit | always |
-| `/retry [id]` | Re-run a failed agent (or all of them) | idle |
-| `/replay [turn]` | Run an earlier turn again | idle |
-| `/new <requirement>` | Start a new session with fresh agent sessions | idle |
-| `/answer <text>` | Answer the leader's pending question | idle |
-| `/steer <text>` | Send a message into the agents running right now | running |
-| `/modify <instruction>` | Provide feedback at a checkpoint and continue | running |
-| `/cancel` | Cancel the running turn and its queue | running |
+| Command | Action |
+|---------|--------|
+| `/new` | Open an empty new session; type the requirement afterwards (idle only) |
+| `/sessions` | Select, switch or delete a saved session (idle only) |
+| `/focus` | Select the agent to view |
+| `/mode` | Select `ask`, `auto` or `deny` |
+| `/verbose` | Toggle tool detail |
+| `/search` | Enter search text; `Ctrl+N` / `Ctrl+P` move between matches |
+| `/latest` | Return to the latest output |
+| `/retry` | Select one failed/repair agent or all of them (idle only) |
+| `/replay` | Select a finished turn to run again (idle only) |
+| `/edit` | Select a finished turn and edit its requirement in the prompt |
+| `/export` | Select a finished turn to export as Markdown |
+| `/steer` | Enter a message for agents running now |
+| `/pause` | Pause a non-empty follow-up queue |
+| `/continue` | Resume a paused queue, or continue at a checkpoint |
+
+For direct entry, `/focus <id>`, `/mode <mode>`, `/search <text>`,
+`/retry <id>`, `/replay <turn>`, `/edit <turn>`, `/export <turn> [path]`
+and `/steer <text>` are also supported. `/new` takes no arguments.
+Editing a previous requirement does not branch the session or restore files.
+
+Approvals and agent questions are handled in their panels. Leader clarification and
+checkpoint feedback use ordinary input. `Ctrl+L` clears the current output, `?`
+opens help, `Ctrl+C` cancels a running turn and its queue or exits when idle with
+an empty prompt, and `Ctrl+D` exits with an empty prompt (also while running).
 
 The console renders on the alternate screen buffer, so your shell scrollback is preserved.
 
@@ -413,9 +413,9 @@ The console's permission bar shows the requesting agent, the tool input, and the
 provider's offered choices. Requests from concurrent agents are queued with unique
 aliases; normal input still queues a follow-up and never grants approval.
 
-- `/approve p1 1` selects option 1 for request `p1`; `/deny p1` cancels that request.
-- Request aliases do not repeat within the console session. Stale ids and invalid
-  option numbers cannot decide another request.
+- Use arrows or digits in the approval bar to select a provider's approve/reject option,
+  then Enter to confirm. Esc returns to typing; Esc again returns to the choices.
+- Concurrent requests are shown in order, advancing after each decision.
 - Waiting counts toward the agent's existing timeout. Cancel, quit, and session
   cleanup release outstanding decisions; they do not leave agents waiting forever.
 - A refusal is reported on the stream as a `permission_rejected` event naming the
@@ -435,13 +435,12 @@ optional delivery review gate when completion must satisfy acceptance criteria.
 **Structured live questions** use ACP form elicitation, which the installed Claude
 bridge maps to `AskUserQuestion`. The console queues these alongside approvals:
 
-- `/respond q1 {"question_0":"Azure"}` returns form values to the exact request.
-  Use the field keys and allowed labels shown in the question panel; multi-select
-  values are JSON arrays, and custom-answer fields accept free text.
-- `/skip q1` declines the question; `/dismiss q1` cancels it. These are distinct
-  provider actions, not answers to another agent or a queued follow-up.
-- Invalid JSON or values that violate the supported form schema leave the request
-  pending so you can correct them. Cancellation and timeout release question waits.
+- Use Tab to move between fields, arrows/digits to select choices, Space for multi-select,
+  and the prompt to enter text. Input preserves whitespace and is validated before submission.
+- After the last field, choose **Submit answers**, **Skip question** or **Cancel request**
+  and press Enter. Skip and cancel are distinct provider actions.
+- Incomplete or invalid answers keep the form pending and identify fields needing correction.
+  Cancellation and timeout release pending questions.
 
 Core callers supply `questions.onRequest` (or `AgentTask.onQuestion`); live-session
 callers open with `questionForms: true` and provide `onQuestion` on each prompt.
@@ -452,10 +451,10 @@ supported. Supported forms include strings, numbers, integers, booleans, and enu
 multi-selects; this is not a general JSON Schema implementation. No question
 handler means unexpected form requests are cancelled, not automatically answered.
 
-Leader clarification remains separate: `/answer <text>` answers a completed leader
-`ask` turn. Previously queued text is not used as that answer. `/new <requirement>`
-starts a new session with fresh agent sessions; `/pause` and `/continue` control the
-follow-up queue, not the running agent.
+Leader clarification uses ordinary input after a completed leader ask turn; previously
+queued text is not used as the answer. At a checkpoint, type feedback directly or use
+`/continue` to proceed; Ctrl+C cancels the run. Queue pause/resume does not pause
+an active agent. `/new` closes the current agents and opens an empty session.
 
 ### Workspace
 
@@ -503,7 +502,7 @@ the picker shows.
   requirement), turn count and age, the current one marked. `↑` `↓` select, `enter` switches to the
   highlighted session — its last turn opens automatically so you can see the context, and your next
   instruction continues its agents where they left off — `d` deletes one, and `esc` closes.
-- **`/new <requirement>`** closes the current agents and starts a new session in place.
+- **`/new`** closes the current agents and opens an empty session; type the next requirement afterwards.
 
 Sessions are kept until you remove them: `d` in the picker, `multiclaw sessions rm <id>` (a full id
 or a unique prefix), or `multiclaw prune` (which also lists old run directories). `multiclaw sessions

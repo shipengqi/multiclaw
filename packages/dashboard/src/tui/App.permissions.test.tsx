@@ -179,50 +179,67 @@ async function mount(rows = 32) {
 }
 
 describe("App · structured question decisions", () => {
-  it("keeps permission and question requests isolated and preserves JSON string whitespace", async () => {
+  it("settles concurrent permission and question requests through their own controls", async () => {
     const decisions = new Map<string, unknown>()
     respond = async (task) => {
       const signal = task.signal ?? new AbortController().signal
-      const decision =
+      decisions.set(
+        task.agentId,
         task.agentId === "alpha"
           ? await task.onPermission?.(request(task.agentId), signal)
           : await task.onQuestion?.(question(task.agentId), signal)
-      decisions.set(task.agentId, decision)
+      )
       return { output: "done", exitCode: 0 }
     }
     const ui = await mount()
-    await ui.send("write files", "\r", "postgres", "\r", "/pause", "\r", "/answer postgres", "\r")
-    expect(decisions.size).toBe(0)
-    await ui.send(
-      "/approve q1 1",
-      "\r",
-      "/respond p1 {}",
-      "\r",
-      "/respond q1 invalid",
-      "\r",
-      '/respond q1 {"database":{}}',
-      "\r"
+    await ui.send("write files", "\r", "\r")
+    await vi.waitFor(() => expect(decisions.get("alpha")).toBe("alpha-once"))
+    expect(decisions.has("beta")).toBe(false)
+    await ui.send("1", "\r", "keep  two spaces", "\r", " ", "\u001b[B", " ", "\r", "\r")
+    await vi.waitFor(() =>
+      expect(decisions.get("beta")).toEqual({
+        action: "accept",
+        content: { database: "postgres", notes: "keep  two spaces", features: ["search", "cache"] },
+      })
     )
-    await ui.send(
-      "/respond q1 {}",
-      "\r",
-      '/respond q1 {"database":"unknown"}',
-      "\r",
-      '/respond q1 {"database":"postgres","unknown":"field"}',
-      "\r"
-    )
-    expect(decisions.size).toBe(0)
-    const content = {
-      database: "postgres",
-      notes: "keep  two spaces",
-      features: ["search", "cache"],
-    }
-    await ui.send(`/respond q1 ${JSON.stringify(content)}`, "\r")
-    await vi.waitFor(() => expect(decisions.get("beta")).toEqual({ action: "accept", content }))
-    expect(decisions.has("alpha")).toBe(false)
-    await ui.send('/respond q1 {"database":"sqlite"}', "\r", "/approve p1 1", "\r")
     await vi.waitFor(() => expect(ui.complete()).toBe(1))
-    expect(decisions.get("alpha")).toBe("alpha-once")
+  })
+
+  it("keeps slash-prefixed field answers as text", async () => {
+    config.agents = config.agents.slice(0, 1)
+    const answers: RuntimeQuestionResponse[] = []
+    respond = async (task) => {
+      const form = question(task.agentId)
+      form.requestedSchema = {
+        type: "object",
+        required: ["path"],
+        properties: { path: { type: "string", title: "Path" } },
+      }
+      const answer = await task.onQuestion?.(form, task.signal ?? new AbortController().signal)
+      if (answer) answers.push(answer)
+      return { output: "done", exitCode: 0 }
+    }
+    const ui = await mount()
+    await ui.send("work", "\r", "/new", "\r", "\r")
+    await vi.waitFor(() =>
+      expect(answers).toEqual([{ action: "accept", content: { path: "/new" } }])
+    )
+  })
+
+  it("can skip a question on a ten-row terminal", async () => {
+    config.agents = config.agents.slice(0, 1)
+    const answers: RuntimeQuestionResponse[] = []
+    respond = async (task) => {
+      const answer = await task.onQuestion?.(
+        question(task.agentId),
+        task.signal ?? new AbortController().signal
+      )
+      if (answer) answers.push(answer)
+      return { output: "done", exitCode: 0 }
+    }
+    const ui = await mount(10)
+    await ui.send("work", "\r", "\t", "\t", "\t", "\t", "\r")
+    await vi.waitFor(() => expect(answers).toEqual([{ action: "decline" }]))
   })
 
   it("renders the question as a form: fields, required marker and choices", async () => {
@@ -269,7 +286,7 @@ describe("App · structured question decisions", () => {
     // notes: typed straight into the prompt, whitespace preserved.
     await ui.send("keep  two spaces", "\r")
     // features: toggle both entries, then enter on the last field submits.
-    await ui.send(" ", "\u001b[B", " ", "\r")
+    await ui.send(" ", "\u001b[B", " ", "\r", "\r")
     await vi.waitFor(() =>
       expect(answers.get("alpha")).toEqual({
         action: "accept",
@@ -341,7 +358,7 @@ describe("App · structured question decisions", () => {
     expect(ui.output()).toContain("1–30 chars")
   })
 
-  it("distinguishes skip and dismiss and rejects stale ids", async () => {
+  it("distinguishes skip and cancel through form actions", async () => {
     const decisions = new Map<string, RuntimeQuestionResponse>()
     respond = async (task) => {
       const answer = await task.onQuestion?.(
@@ -352,13 +369,11 @@ describe("App · structured question decisions", () => {
       return { output: "done", exitCode: 0 }
     }
     const ui = await mount()
-    await ui.send("write files", "\r", "/skip q2", "\r")
-    expect(decisions.get("beta")).toEqual({ action: "decline" })
-    expect(decisions.has("alpha")).toBe(false)
-    await ui.send("/dismiss q2", "\r")
-    expect(decisions.has("alpha")).toBe(false)
-    await ui.send("/dismiss q1", "\r")
-    await vi.waitFor(() => expect(decisions.get("alpha")).toEqual({ action: "cancel" }))
+    await ui.send("write files", "\r", "\t", "\t", "\t", "\t", "\r")
+    await vi.waitFor(() => expect(decisions.get("alpha")).toEqual({ action: "decline" }))
+    expect(decisions.has("beta")).toBe(false)
+    await ui.send("\t", "\t", "\t", "\t", "\t", "\r")
+    await vi.waitFor(() => expect(decisions.get("beta")).toEqual({ action: "cancel" }))
   })
 
   it("removes only an aborted question and drains its peer on cancel", async () => {
@@ -376,9 +391,9 @@ describe("App · structured question decisions", () => {
     signals.get("alpha")?.abort()
     await vi.waitFor(() => expect(decisions.get("alpha")).toEqual({ action: "cancel" }))
     expect(decisions.has("beta")).toBe(false)
-    await ui.send('/respond q1 {"database":"postgres"}', "\r")
+    await ui.send("\t")
     expect(decisions.has("beta")).toBe(false)
-    await ui.send("/cancel", "\r")
+    await ui.send("\u0003")
     await vi.waitFor(() => expect(decisions.get("beta")).toEqual({ action: "cancel" }))
   })
 
@@ -398,6 +413,25 @@ describe("App · structured question decisions", () => {
 })
 
 describe("App · explicit permission decisions", () => {
+  it("keeps approval choices reachable on a ten-row terminal", async () => {
+    const decisions = new Map<string, string | undefined>()
+    respond = async (task) => {
+      decisions.set(
+        task.agentId,
+        await task.onPermission?.(
+          request(task.agentId),
+          task.signal ?? new AbortController().signal
+        )
+      )
+      return { output: "done", exitCode: 0 }
+    }
+    const ui = await mount(10)
+    await ui.send("work", "\r", "3", "\r", "2", "\r")
+    await vi.waitFor(() => expect(ui.complete()).toBe(1))
+    expect(decisions.get("alpha")).toBe("alpha-reject")
+    expect(decisions.get("beta")).toBe("beta-always")
+  })
+
   it("renders the request on screen as a menu, with each offered option", async () => {
     const decisions: Array<string | undefined> = []
     respond = async (task) => {
@@ -472,9 +506,10 @@ describe("App · explicit permission decisions", () => {
     // including the leading `1`, which the bar would otherwise have eaten.
     await ui.send("1. also check the docs", "\r", "/pause", "\r")
     expect(decisions.size).toBe(0)
-    // The request is still reachable by command, with the id omitted.
-    await ui.send("/deny", "\r")
-    await vi.waitFor(() => expect(decisions.get("alpha")).toBeUndefined())
+    await ui.send("\u001b")
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await ui.send("3", "\r")
+    await vi.waitFor(() => expect(decisions.get("alpha")).toBe("alpha-reject"))
     expect(decisions.has("beta")).toBe(false)
     ui.app.unmount()
     await ui.app.waitUntilExit()
@@ -503,20 +538,16 @@ describe("App · explicit permission decisions", () => {
     await ui.send("yes", "\r", "/pause", "\r")
     expect(decisions.size).toBe(0)
     expect(suppliedHandler).not.toHaveBeenCalled()
-    await ui.send("/approve request-alpha 0", "\r", "/approve missing 1", "\r")
-    expect(decisions.size).toBe(0)
-    await ui.send("/approve request-beta 2", "\r")
-    await vi.waitFor(() => expect(decisions.get("beta")).toBe("beta-always"))
-    expect(decisions.has("alpha")).toBe(false)
-    await ui.send("/approve request-beta 1", "\r")
-    expect(decisions.has("alpha")).toBe(false)
-    await ui.send("/approve request-alpha 1", "\r")
+    await ui.send("2", "\r")
+    await vi.waitFor(() => expect(decisions.get("alpha")).toBe("alpha-always"))
+    expect(decisions.has("beta")).toBe(false)
+    await ui.send("1", "\r")
     await vi.waitFor(() => expect(ui.complete()).toBe(1))
-    expect(decisions.get("alpha")).toBe("alpha-once")
+    expect(decisions.get("beta")).toBe("beta-once")
     expect(tasks).toHaveLength(2)
   })
 
-  it("denies only the named request and cancels all remaining approvals on cancel", async () => {
+  it("rejects the front request and cancels remaining approvals with Ctrl+C", async () => {
     const decisions = new Map<string, string | undefined>()
     respond = async (task) => {
       decisions.set(
@@ -529,19 +560,13 @@ describe("App · explicit permission decisions", () => {
       return { output: "done", exitCode: 0 }
     }
     const ui = await mount()
-    await ui.send("write files", "\r", "/deny p2", "\r")
+    await ui.send("write files", "\r", "3", "\r")
+    await vi.waitFor(() => expect(decisions.get("alpha")).toBe("alpha-reject"))
+    expect(decisions.has("beta")).toBe(false)
+    await ui.send("\u0003")
     await vi.waitFor(() => expect(decisions.has("beta")).toBe(true))
     expect(decisions.get("beta")).toBeUndefined()
-    expect(decisions.has("alpha")).toBe(false)
-    await ui.send("/cancel", "\r")
-    await vi.waitFor(() => expect(decisions.has("alpha")).toBe(true))
-    expect(decisions.get("alpha")).toBeUndefined()
     await vi.waitFor(() => expect(ui.complete()).toBe(1))
-    await ui.send("/approve p1 1", "\r")
-    ui.app.unmount()
-    await ui.app.waitUntilExit()
-    expect(ui.output()).toContain("unknown or stale permission request: p1")
-    expect(ui.output()).not.toContain("PERMISSION")
   })
 
   it("removes an individually aborted request without settling its concurrent peer", async () => {
@@ -561,9 +586,7 @@ describe("App · explicit permission decisions", () => {
     signals.get("alpha")?.abort()
     await vi.waitFor(() => expect(decisions.has("alpha")).toBe(true))
     expect(decisions.has("beta")).toBe(false)
-    await ui.send("/approve p1 1", "\r")
-    expect(decisions.has("beta")).toBe(false)
-    await ui.send("/approve p2 3", "\r")
+    await ui.send("3", "\r")
     await vi.waitFor(() => expect(decisions.get("beta")).toBe("beta-reject"))
   })
 
@@ -577,7 +600,7 @@ describe("App · explicit permission decisions", () => {
       return { output: "done", exitCode: 0 }
     }
     const ui = await mount()
-    await ui.send("write files", "\r", "/quit", "\r")
+    await ui.send("write files", "\r", "\u0004")
     await ui.app.waitUntilExit()
     expect(decisions).toEqual([undefined, undefined])
     expect(removals).toHaveLength(2)

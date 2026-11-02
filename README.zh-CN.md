@@ -313,36 +313,33 @@ TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s �
 
 ### 命令
 
-在空输入行上输入 `/` 会弹出可筛选的命令列表。
+在空输入行输入 `/`，选择操作后按 Enter。需要 Agent、权限模式或轮次的操作会打开选择器；
+搜索和即时纠正会进入内容输入。`Esc` 取消当前操作，菜单只展示当前状态下有可操作对象的命令。
 
-| 命令 | 作用 | 时机 |
-|------|------|------|
-| `/agents` | 列出配置的团队 | 始终 |
-| `/focus <id>` | 按 id 聚焦某个 Agent | 始终 |
-| `/clear` | 清空当前 Agent 本轮的输出 | 始终 |
-| `/verbose` | 切换流中工具详情的显示 | 始终 |
-| `/mode auto\|ask\|deny` | 设置权限模式 | 始终 |
-| `/search <text>` | 在当前流中搜索 | 始终 |
-| `/latest` | 跳到流的最新输出 | 始终 |
-| `/sessions` | 切换或删除已保存的会话（见 [会话](#会话)） | 始终 |
-| `/export [turn] [path]` | 将某轮导出为 Markdown | 始终 |
-| `/fork [turn]` | 编辑某轮的需求后重新运行 | 始终 |
-| `/pause` | 暂停队列中待执行的需求 | 始终 |
-| `/continue` | 恢复队列或通过检查点 | 始终 |
-| `/approve [id] <number>` | 选择当前或指定审批请求的某个选项 | 始终 |
-| `/deny [id]` | 拒绝当前或指定审批请求 | 始终 |
-| `/respond <id> <JSON>` | 以一行 JSON 回答结构化问题 | 始终 |
-| `/skip <id>` | 跳过某个结构化提问 | 始终 |
-| `/dismiss <id>` | 取消某个结构化提问 | 始终 |
-| `/help` | 快捷键帮助 | 始终 |
-| `/quit` | 退出 | 始终 |
-| `/retry [id]` | 重跑失败的 Agent（或全部） | 空闲时 |
-| `/replay [turn]` | 重新运行某轮 | 空闲时 |
-| `/new <requirement>` | 关闭当前 Agent 会话并开始新会话 | 空闲时 |
-| `/answer <text>` | 回答 leader 未完成的提问 | 空闲时 |
-| `/steer <text>` | 把消息送进此刻正在运行的 Agent | 运行时 |
-| `/modify <instruction>` | 在检查点处提供反馈并继续 | 运行时 |
-| `/cancel` | 取消当前轮次及其队列 | 运行时 |
+| 命令 | 作用 |
+|------|------|
+| `/new` | 新建空白会话，随后输入需求（仅空闲时） |
+| `/sessions` | 选择、切换或删除已保存会话（仅空闲时） |
+| `/focus` | 选择要查看的 Agent |
+| `/mode` | 选择 `ask`、`auto` 或 `deny` 权限模式 |
+| `/verbose` | 切换工具详情显示 |
+| `/search` | 输入搜索文字；`Ctrl+N` / `Ctrl+P` 在匹配结果之间跳转 |
+| `/latest` | 回到最新输出 |
+| `/retry` | 选择重试某个失败／需返工的 Agent，或全部（仅空闲时） |
+| `/replay` | 选择已结束轮次重新执行（仅空闲时） |
+| `/edit` | 选择已结束轮次，将需求填回输入框编辑 |
+| `/export` | 选择已结束轮次导出为 Markdown |
+| `/steer` | 输入消息，即时发送给正在执行的 Agent |
+| `/pause` | 暂停非空的后续需求队列 |
+| `/continue` | 恢复暂停的队列，或在检查点继续 |
+
+也支持直接输入 `/focus <id>`、`/mode <mode>`、`/search <text>`、`/retry <id>`、
+`/replay <turn>`、`/edit <turn>`、`/export <turn> [path]` 和 `/steer <text>`。
+`/new` 不接收参数。编辑旧需求不会分支会话，也不会恢复工作区文件。
+
+审批和 Agent 提问通过对应面板处理；leader 澄清和检查点反馈直接输入。
+`Ctrl+L` 清空当前输出，`?` 打开帮助，`Ctrl+C` 取消执行及其队列，空闲且输入为空时退出；
+`Ctrl+D` 在输入为空时退出，运行中也可使用。
 
 控制台在备用屏幕缓冲区（alternate screen buffer）中渲染，因此终端的 scrollback 不会被破坏。
 
@@ -371,8 +368,8 @@ export default defineConfig({
 
 控制台展示请求的 Agent、工具输入和 provider 提供的选项。并发请求按顺序排队，各自有唯一别名；普通输入仍只会加入后续需求队列，绝不会自动授权。
 
-- `/approve p1 1` 为请求 `p1` 选择第 1 个选项；`/deny p1` 取消该请求。
-- 请求别名在同一次控制台会话中不重复。过期 ID 或无效选项不能误答另一条请求。
+- 在审批栏用方向键或数字选择 provider 提供的批准／拒绝选项，Enter 确认。
+- Esc 切回普通输入；再次按 Esc 返回审批选项。处理完当前请求后展示下一条。
 - 等待人工操作计入 Agent 原有超时。取消、退出和会话清理都会解除未决请求，不让 Agent 永久等待。
 - 每次拒绝都会以 `permission_rejected` 事件出现在日志流里，带上工具名，`source` 区分是模式拒绝、缺少处理函数，还是人工点了拒绝。
 
@@ -380,10 +377,12 @@ export default defineConfig({
 
 **运行中的结构化问题** 使用 ACP form elicitation；已安装的 Claude bridge 会将其回传到 `AskUserQuestion`。控制台将问题与审批放进同一个决策队列：
 
-- `/respond q1 {"question_0":"Azure"}` 将表单答案返回给准确的请求。字段键名和选项标签以问题面板为准；多选答案用 JSON 数组，自定义回答字段接受自由文本。
-- `/skip q1` 跳过问题；`/dismiss q1` 取消请求。这是两种不同的 provider 动作。
+- 表单内用 Tab 切换字段，方向键或数字选择选项，空格切换多选项，文字直接输入。
+- 最后一个字段之后选择“Submit answers”、“Skip question”或“Cancel request”，Enter 确认。
+- 跳过和取消是不同的 provider 动作；无效或不完整的答案会保留表单并提示需要修改的字段。
 
-leader 澄清是独立机制：`/answer <text>` 回答已经结束的 leader `ask` 轮次，之前排队的文字不会被当作回答。`/new <requirement>` 关闭旧 Agent 会话并开始新任务；`/pause`、`/continue` 控制后续需求队列，不暂停正在执行的 Agent。
+leader 澄清直接输入回答，之前排队的文字不会被当作回答。检查点处直接输入反馈，
+或使用 `/continue` 继续；Ctrl+C 取消当前执行。队列的暂停／恢复不会暂停正在执行的 Agent。
 
 ### 工作区
 
@@ -405,7 +404,7 @@ leader 澄清是独立机制：`/answer <text>` 回答已经结束的 leader `as
 
 - **启动。** `multiclaw` 始终开始**新会话**，与 `multiclaw --new` 等效。`multiclaw -r [id]` 续接指定会话——不传 id 时打开选择器，与 `claude -r` 的方式相同。
 - **`/sessions`** 打开选择器：所有会话按最新排序，显示标题（首次需求原文）、轮次数量和时间，当前会话有标记。`↑` `↓` 选择，`enter` 切换到高亮的会话——历史会填进日志面板，下一条指令将在它的 Agent 上继续——`d` 删除某个会话，`esc` 关闭选择器。
-- **`/new <requirement>`** 关闭当前 Agent 并就地开始新会话。
+- **`/new`** 关闭当前 Agent 并就地开始空白新会话，随后输入需求。
 
 会话会一直保留，直到你主动删除：选择器里按 `d`、执行 `multiclaw sessions rm <id>`（完整 id 或唯一前缀），或运行 `multiclaw prune`（同时列出旧运行目录）。`multiclaw sessions ls` 打印会话列表。
 

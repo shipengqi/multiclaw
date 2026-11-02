@@ -205,7 +205,7 @@ describe("App · reusable live sessions", () => {
     await driveFrame(<App config={config} onTurnStart={done.onTurnStart} />, {
       keys: ["build a web app", "\r"],
       ready: done.ready,
-      thenKeys: ["/answer Postgres", "\r"],
+      thenKeys: ["Postgres", "\r"],
       settleMs: 300,
     })
     expect(handles.filter((handle) => handle.agentId === "leader")).toHaveLength(1)
@@ -319,7 +319,7 @@ describe("App · reusable live sessions", () => {
     })
     await tui.send("old task", "\r")
     await first.ready
-    await tui.send("/new fresh task", "\r")
+    await tui.send("/new", "\r", "fresh task", "\r")
     await second.ready
     // `/new` switches to a brand-new session, so the console on screen now holds
     // only the fresh turn — the old one lives on in its own session. Completion
@@ -327,7 +327,7 @@ describe("App · reusable live sessions", () => {
     await vi.waitFor(() =>
       expect(currentTurns().map((turn) => turn.requirement)).toEqual(["fresh task"])
     )
-    await tui.send("/quit", "\r")
+    await tui.send("\u0004")
     await tui.exit
     expect(handles.map((handle) => handle.agentId)).toEqual([
       "leader",
@@ -405,7 +405,7 @@ describe("App · reusable live sessions", () => {
         await originalClose?.()
       })
     }
-    await tui.send("/quit", "\r")
+    await tui.send("\u0004")
     await vi.waitFor(() =>
       expect(handles.every((handle) => handle.close.mock.calls.length === 1)).toBe(true)
     )
@@ -442,7 +442,7 @@ describe("App · reusable live sessions", () => {
     })
     await tui.send("first task", "\r")
     await started.promise
-    await tui.send("/quit", "\r")
+    await tui.send("\u0004")
     await reporterStarted.promise
     expect(tui.exited()).toBe(false)
     expect(handles.every((handle) => handle.close.mock.calls.length === 0)).toBe(true)

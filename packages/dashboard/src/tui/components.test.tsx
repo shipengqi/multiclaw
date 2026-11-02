@@ -708,15 +708,15 @@ describe("CommandMenu", () => {
     const frame = stripAnsi(
       await renderFrame(<CommandMenu rows={paletteRows(COMMANDS)} selected={0} />)
     )
-    expect(frame).toContain("/agents")
-    expect(frame).toContain("List the configured team")
+    expect(frame).toContain("/new")
+    expect(frame).toContain("Start an empty session")
   })
 
   it("shows an argument hint where a command takes one", async () => {
     const frame = stripAnsi(
       await renderFrame(<CommandMenu rows={paletteRows(COMMANDS)} selected={0} />)
     )
-    expect(frame).toContain("/focus <id>")
+    expect(frame).toContain("/focus [id]")
   })
 
   // `/mode` is the only way to reach `deny`, and shift+tab is the only hint that
@@ -725,15 +725,15 @@ describe("CommandMenu", () => {
   it("offers /mode so the permission setting is discoverable", () => {
     const offered = matchCommands("mo", false).map((command) => command.name)
     expect(offered).toContain("mode")
-    expect(paletteRows(COMMANDS).map((row) => row.label)).toContain("/mode auto | ask | deny")
+    expect(paletteRows(COMMANDS).map((row) => row.label)).toContain("/mode [auto | ask | deny]")
   })
 
   it("marks the highlighted row and only that row", async () => {
     const frame = stripAnsi(
-      await renderFrame(<CommandMenu rows={paletteRows(COMMANDS)} selected={1} />)
+      await renderFrame(<CommandMenu rows={paletteRows(COMMANDS)} selected={2} />)
     )
     expect(frame).toContain("› /focus")
-    expect(frame).not.toContain("› /agents")
+    expect(frame).not.toContain("› /new")
   })
 
   // The palette is handed a *window*, so it only knows relative indices. This is

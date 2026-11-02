@@ -281,18 +281,36 @@ the background.
 
 ### Commands
 
-Type `/` on an empty line for a filtered list.
+Type `/` on an empty line, select an operation and press Enter. Commands that need an
+agent, mode or turn open a selector; search and steering open an input field. `Esc`
+cancels the operation. The menu only offers actions relevant to the current state.
 
 | Command | Action |
 |---------|--------|
-| `/agents` | List the configured team |
-| `/focus <id>` | Focus an agent by id |
-| `/clear` | Clear the focused agent's output for the current turn |
-| `/mode auto\|ask\|deny` | Set the permission mode |
-| `/sessions` | Switch between, or delete, saved sessions |
-| `/cancel` | Cancel the running turn and its queue |
-| `/help` | Key map |
-| `/quit` | Exit |
+| `/new` | Open an empty new session; type the requirement afterwards (idle only) |
+| `/sessions` | Select, switch or delete a saved session (idle only) |
+| `/focus` | Select the agent to view |
+| `/mode` | Select `ask`, `auto` or `deny` |
+| `/verbose` | Toggle tool detail |
+| `/search` | Enter search text; `Ctrl+N` / `Ctrl+P` move between matches |
+| `/latest` | Return to the latest output |
+| `/retry` | Select one failed/repair agent or all of them (idle only) |
+| `/replay` | Select a finished turn to run again (idle only) |
+| `/edit` | Select a finished turn and edit its requirement in the prompt |
+| `/export` | Select a finished turn to export as Markdown |
+| `/steer` | Enter a message for agents running now |
+| `/pause` | Pause a non-empty follow-up queue |
+| `/continue` | Resume a paused queue, or continue at a checkpoint |
+
+For direct entry, `/focus <id>`, `/mode <mode>`, `/search <text>`,
+`/retry <id>`, `/replay <turn>`, `/edit <turn>`, `/export <turn> [path]`
+and `/steer <text>` are also supported. `/new` takes no arguments.
+Editing a previous requirement does not branch the session or restore files.
+
+Approvals and agent questions are handled in their panels. Leader clarification and
+checkpoint feedback use ordinary input. `Ctrl+L` clears the current output, `?`
+opens help, `Ctrl+C` cancels a running turn and its queue or exits when idle with
+an empty prompt, and `Ctrl+D` exits with an empty prompt (also while running).
 
 The console renders on the alternate screen buffer, so your shell scrollback is preserved.
 

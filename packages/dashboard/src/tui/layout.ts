@@ -159,8 +159,6 @@ export function computeLayout(input: LayoutInput): Layout {
   // suppresses the rail too: otherwise opening help on the first screen would
   // *add* a rail that was not there a keystroke ago.
   const showRail = !welcome && !input.overlay && rows >= RAIL_MIN_ROWS && input.hasRail
-  const menuRows = Math.min(Math.max(0, input.menuRows), MAX_MENU_ROWS)
-  const queueRows = Math.min(Math.max(0, input.queueRows ?? 0), MAX_QUEUE_ROWS)
   // At least one row: the prompt is always on screen, even while it is empty.
   const promptRows = Math.max(1, input.promptRows ?? 1)
   // At least one row when there is a rail at all: a caller that does not measure
@@ -168,6 +166,20 @@ export function computeLayout(input: LayoutInput): Layout {
   const railRows = showRail
     ? Math.min(MAX_RAIL_ROWS, Math.max(1, measureRailRows(input.railCells, columns)))
     : 0
+
+  // Selectors must leave the prompt and focused row visible on short terminals.
+  const fixedRows =
+    4 + MIN_BODY_ROWS + promptRows + (input.notice ? 1 : 0) + (railRows > 0 ? railRows + 1 : 0)
+  const queueRows = Math.min(
+    Math.max(0, input.queueRows ?? 0),
+    MAX_QUEUE_ROWS,
+    Math.max(0, rows - fixedRows - (input.menuRows > 0 ? 1 : 0))
+  )
+  const menuRows = Math.min(
+    Math.max(0, input.menuRows),
+    MAX_MENU_ROWS,
+    Math.max(1, rows - fixedRows - queueRows)
+  )
 
   // Everything except the interaction bar, so the bar can be given only what is
   // actually left. Without this clamp a tall bar on a short terminal pushes the
