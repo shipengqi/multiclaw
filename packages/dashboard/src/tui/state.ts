@@ -586,14 +586,38 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
  * `logs` holds *log lines*; the pane draws *terminal rows*. A wrapped line is
  * many rows, so the two cannot be the same unit — every window and scroll
  * calculation goes through here, and none of them may count `\n` instead.
+ *
+ * Memoised per log buffer. `appendLog` never mutates the array it is handed —
+ * it builds a new one — so the array's identity is a reliable version stamp:
+ * new output is a new array, which is a cache miss, and nothing can go stale.
+ * Without this, the timeline re-measured the agent's entire session on every
+ * render tick and again inside every scroll or search.
  */
+const wrappedCache = new WeakMap<LogSegment[], Map<number, string[]>>()
+
+/** Widths kept per buffer: the live one, plus a resize or two in flight. */
+const MAX_CACHED_WIDTHS = 3
+
 function wrapLog(logs: LogSegment[], width: number): string[] {
   if (logs.length === 0) return []
+  let byWidth = wrappedCache.get(logs)
+  if (byWidth === undefined) {
+    byWidth = new Map()
+    wrappedCache.set(logs, byWidth)
+  }
+  const cached = byWidth.get(width)
+  if (cached !== undefined) return cached
+
   const rendered = renderSegments(logs, width)
-  return rendered
+  const rows = rendered
     .trimEnd()
     .split("\n")
     .flatMap((line) => wrapLine(line, width))
+  // Bounded so a window being dragged narrower does not accumulate a full
+  // re-wrap of the session per column. The newest width is the one in use.
+  if (byWidth.size >= MAX_CACHED_WIDTHS) byWidth.clear()
+  byWidth.set(width, rows)
+  return rows
 }
 
 /** Shared tail-slice math used by both single-turn and timeline windowing. */

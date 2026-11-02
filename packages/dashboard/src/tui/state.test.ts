@@ -1118,6 +1118,23 @@ describe("visibleTimeline", () => {
     expect(visibleTimeline(back, "a", 2, WIDTH, back.scroll).following).toBe(true)
   })
 
+  // Wrapped rows are memoised per log buffer, keyed by the array's identity.
+  // That makes two things load-bearing: `appendLog` must hand back a new array
+  // (or the cache would keep serving the old rows), and the width must be part
+  // of the key (or a resize would reuse rows measured for the old pane).
+  it("re-measures after new output and after a width change", () => {
+    const first = logged("alpha")
+    expect(visibleTimeline(first, "a", 10, 40, 0).rows).toEqual(["alpha"])
+
+    const grown = reduceEvent(first, output("a", "\nbeta"))
+    expect(visibleTimeline(grown, "a", 10, 40, 0).rows).toEqual(["alpha", "beta"])
+
+    // Same buffer, narrower pane: rows must come from the new width.
+    const narrow = visibleTimeline(grown, "a", 10, 4, 0).rows
+    expect(narrow.length).toBeGreaterThan(1)
+    expect(narrow.every((row) => displayWidth(row) <= 4)).toBe(true)
+  })
+
   it("clamps at the head", () => {
     const state = logged("1\n2\n3\n4\n5")
     expect(
