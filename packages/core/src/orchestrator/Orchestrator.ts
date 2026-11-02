@@ -500,6 +500,12 @@ export class Orchestrator {
     signal?: AbortSignal
   ): Promise<CheckpointResponse> {
     if (signal?.aborted) return { action: "cancel" }
+    // The caller only reaches here with a handler configured. Reading it into a
+    // local keeps that contract checked rather than asserted — and a missing
+    // handler means "nobody wants to be asked", which is a continue, not a
+    // cancelled run.
+    const onCheckpoint = this.config.onCheckpoint
+    if (!onCheckpoint) return { action: "continue" }
     const completedAgents = policy.afterAgents
       .map((id) => {
         const r = results.find((res) => res.agentId === id && res.status === "success")
@@ -511,7 +517,7 @@ export class Orchestrator {
       label: policy.label || "review checkpoint",
       completedAgents,
     }
-    return this.config.onCheckpoint!(info, signal ?? new AbortController().signal)
+    return onCheckpoint(info, signal ?? new AbortController().signal)
   }
 
   private stageInfos(stages: AgentDefinition[][]): StageInfo[] {
