@@ -13,6 +13,14 @@ export interface StageInfo {
 }
 
 export type MultiClawEvent =
+  | { type: "agent:session"; timestamp: string; payload: import("./session").SessionEvent }
+  | {
+      type: "orchestration:route"
+      timestamp: string
+      payload: { routing: import("./config").RoutingInfo; work?: import("./config").WorkContext }
+    }
+  | { type: "orchestration:routing-error"; timestamp: string; payload: { message: string } }
+  | { type: "agent:handed-back"; timestamp: string; payload: AgentResult }
   | {
       type: "orchestration:start"
       timestamp: string

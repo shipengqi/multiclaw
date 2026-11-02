@@ -69,6 +69,7 @@ export type AgentStatus =
   | "pending"
   | "running"
   | "retrying"
+  | "handed_back"
   | "success"
   | "failed"
   /**
@@ -80,6 +81,7 @@ export type AgentStatus =
   | "skipped"
 
 export interface AgentResult {
+  handoffReason?: string
   agentId: string
   agentName: string
   status: AgentStatus
@@ -95,8 +97,8 @@ export interface AgentResult {
   usage?: AgentOutput["usage"]
   /** USD cost the runtime reported; absent when the provider does not price in USD. */
   costUsd?: number
-  /** Session the runtime ran under, when it reported one. */
-  sessionId?: string
+  /** Reliable Session facts, including on failed and cancelled executions. */
+  session?: import("./session").SessionRecord
 }
 
 export interface SubTask {

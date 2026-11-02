@@ -51,6 +51,7 @@ export async function runCommand(
     const { requirement, resume } = resumeOptionsFromReport(report, requirementArg)
     config.workDir = runDir
     config.resume = resume
+    config.latestWork = report.work
     config.context = { ...config.context, requirement }
     // Never reuse `logs/`: the original report.json lives there and the resumed
     // run must not overwrite the record it was derived from.
@@ -129,6 +130,8 @@ function printDryRun(
   workDir: string
 ): void {
   console.log("Dry run — no pipeline agents will execute.")
+  if (preview.routing)
+    console.log("Route: " + preview.routing.mode + " work=" + preview.routing.workId)
   console.log(`Project: ${preview.name}`)
   console.log(`Work dir: ${workDir}`)
   if (preview.requirement) console.log(`Requirement: ${preview.requirement}`)
@@ -136,6 +139,10 @@ function printDryRun(
     console.log(`${preview.reply.mode === "ask" ? "Question" : "Reply"}: ${preview.reply.message}`)
     return
   }
+  for (const session of preview.sessions ?? [])
+    console.log(
+      "Session intent: " + session.agentId + " " + session.action + " — " + session.reason
+    )
   console.log(`Agents: ${preview.totalAgents}`)
   if (preview.selectionReason) console.log(`Why: ${preview.selectionReason}`)
   for (const stage of preview.stages) {

@@ -567,7 +567,8 @@ The `leader` field adds a routing agent that runs **before** the main pipeline. 
 
 | Decision | Meaning |
 |----------|---------|
-| `run` | It is a task the leader can scope — name the minimum set of agents needed |
+| `run` | New work — name the minimum set of agents needed |
+| `continue` | Follow up on the supplied latest work ID — select the agents needed now |
 | `reply` | A greeting or a question it can answer on the spot; no agent runs |
 | `ask` | A real task, but too vague to plan; it asks the one question that unblocks it |
 
@@ -589,15 +590,30 @@ The leader is asked for a single JSON object:
 
 ```json
 {"mode": "run", "run": ["backend-developer", "code-reviewer"]}
+{"mode": "continue", "workId": "latest-work-id", "run": ["backend-developer"]}
 {"mode": "reply", "message": "Hi — ask me for a change to this project."}
 {"mode": "ask", "message": "Which database should I target?"}
 ```
 
-A bare `{"run": [...]}` with no `mode` is still accepted as a run. Anything else the leader writes is treated as its answer — so a leader that ignores the format and replies in prose still ends the turn in words rather than dragging the whole team into a greeting.
+A bare `{"run": [...]}` with no mode remains compatible, as do ordinary prose replies. Unknown agents, duplicate or empty selections, malformed decisions and empty output trigger one correction retry. If routing still fails, the result reports "Routing incomplete" and no worker starts.
 
-Agent IDs are always a **subset** of the configured team. An id the leader invents is reported as a warning and dropped, never added. A `run` that names no configured agent is reported as a failure rather than a green "done" for a turn in which nobody worked.
+Optional responsibility assignments use `{"agentId":"selected-id","scope":"responsibility"}`. The leader supplies the complete goal and confirmed constraints, while workers choose implementation steps. A planner is optional, including when configured but not selected. Without one, workers follow configured dependencies and investigate, plan and verify within their scope; design files are optional context for built-in prompts. Custom task prompts remain user-defined.
 
-If the leader cannot be reached at all — a runtime failure, or no output — multiclaw warns and falls back to running the full configured team, because the requirement itself may still be perfectly runnable.
+The console offers only the latest work in its current session as a continuation target, skipping intervening replies and questions. Continuations keep that work ID and reuse compatible executor Sessions or load recorded Session IDs after restart. Failed/interrupted work requires an explicit continuation request; cancelled work is not an automatic continuation target. Work metadata establishes Session ownership. Ambiguous references ask for clarification; similar topics alone are new work.
+
+New work starts fresh executor conversations and clears the previous task plan after routing; the leader conversation and shared workspace persist. Continuations use scopes and plans bound to their recorded work. If a Session cannot be loaded, the failure is reported; a newly created Session is explicitly identified and receives recovery context. Dry-run uses the same routing validation and shows Session intent (create, reuse, attempt load or unavailable) without starting workers, resetting worker Sessions or deleting plans. Explicit /retry and CLI --resume keep their fixed agent roster.
+
+Executor results, work history and resume configuration use a single structured Session record: work/agent ownership, binding ID, provider ID, immutable-settings hash, negotiated capabilities and last observed state. Failed or cancelled turns retain reliable Session facts independently of their execution outcome. Development builds use this format directly without old-field aliases or report migration.
+
+Lifecycle events distinguish creation, reuse, requested loading, successful loading and cleanup failure. Opened IDs reach the journal before a worker finishes; restart marks process continuity unknown and verifies ownership and settings before loading. Automatic continuation starts a new Session with recovery context when settings differ or loading is unsupported; explicit resume reports the mismatch. Actual load failures stop execution. Cleanup must be acknowledged before replacing a worker Session. CLI-owned Sessions close before the final report; the interactive console keeps reusable Sessions across turns.
+
+A non-reviewer worker can end its successful final output with this standalone control marker:
+
+```text
+<multiclaw-handoff>{"reason":"specific reason and remaining work"}</multiclaw-handoff>
+```
+
+A handoff waits for the current stage to settle and stops downstream stages. With a leader, multiclaw reroutes once, excluding the agents that handed work back. A second handoff, a fixed retry/resume roster, or no leader stops with the reason. Malformed terminal markers fail the protocol; quoted examples and progress output are not handoffs. Real failure or cancellation in the same stage takes precedence. Repair handoffs share the original repair budget, and rerouted changes require fresh checkpoints and acceptance. Reports retain all attempts and costs separately from the effective final results.
 
 ### Disabling the leader
 
@@ -668,7 +684,7 @@ The `task-plan.json` file helps coordinate work across parallel agents by explic
 }
 ```
 
-If the architect is not in your pipeline, dev agents fall back to reading `architecture.md` and `api-spec.md` directly.
+Without a selected planner, agents execute their configured dependencies and scope directly. Existing design files may provide context; missing files do not block work or require architecture documents to be created.
 
 ## Example
 

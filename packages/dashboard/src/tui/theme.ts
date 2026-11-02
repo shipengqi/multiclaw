@@ -33,6 +33,7 @@ export const STATUS: Record<AgentStatus, StatusStyle> = {
   pending: { glyph: "○", color: COLOR.muted, dim: true, label: "queued" },
   running: { glyph: "◐", color: COLOR.accent, label: "running" },
   retrying: { glyph: "↻", color: COLOR.warn, label: "retrying" },
+  handed_back: { glyph: "↩", color: COLOR.warn, label: "handed back" },
   success: { glyph: "✓", color: COLOR.ok, label: "done" },
   failed: { glyph: "✗", color: COLOR.error, label: "failed" },
   // Stopped, not broken: a filled square reads as "halted" and shares the muted

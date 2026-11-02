@@ -17,14 +17,14 @@
 export interface ResumePlan {
   /** Ids that will run, in the order the caller named them. */
   agents: readonly string[]
-  /** Agent id → the session id to continue, for the agents that reported one. */
-  sessions?: Readonly<Record<string, string>>
+  /** Agent ID → observed Session metadata to check before resuming. */
+  sessions?: Readonly<Record<string, import("../types/session").SessionRecord>>
   /** The team the ids were chosen from; supplies each agent's dependencies. */
   team: readonly { id: string; dependsOn?: readonly string[] }[]
 }
 
 /**
- * One clause per agent — `dev starts fresh`, `reviewer continues its session` —
+ * One clause per agent — `dev starts fresh`, `reviewer will attempt to resume its session` —
  * followed by one clause per agent whose dependencies were pruned.
  *
  * Deliberately a description, not a plan: what actually runs stays core's
@@ -35,7 +35,7 @@ export function describeResumePlan({ agents, sessions = {}, team }: ResumePlan):
   const running = new Set(agents)
 
   const clauses = agents.map((id) =>
-    sessions[id] ? `${id} continues its session` : `${id} starts fresh`
+    sessions[id]?.sessionId ? `${id} will attempt to resume its session` : `${id} starts fresh`
   )
   for (const id of agents) {
     const dropped = (teamById.get(id)?.dependsOn ?? []).filter(

@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { isSessionEvent, isSessionRecord, isWorkContext } from "@multiclawcli/core"
 import { writeJsonFile } from "./atomic"
 import { loadTurns } from "./history"
 import { sessionDir } from "./sessions"
@@ -39,6 +40,10 @@ export const MAX_JOURNAL_LOG_CHARS = 1200
 
 /** The turn that was in flight when the journal was last written. */
 export interface JournalTurn {
+  work?: import("@multiclawcli/core").WorkContext
+  routing?: import("@multiclawcli/core").RoutingInfo
+  sessionEvents?: import("@multiclawcli/core").SessionEvent[]
+  agentResults?: import("@multiclawcli/core").AgentResult[]
   turn: number
   requirement: string
   startedAt?: number
@@ -79,6 +84,7 @@ const STATUSES: ReadonlySet<string> = new Set([
   "pending",
   "running",
   "retrying",
+  "handed_back",
   "success",
   "failed",
   "cancelled",
@@ -98,6 +104,7 @@ function isAgentView(value: unknown): value is AgentView {
   return (
     typeof value.id === "string" &&
     typeof value.name === "string" &&
+    (value.session === undefined || isSessionRecord(value.session)) &&
     Array.isArray(value.logs) &&
     typeof value.status === "string" &&
     STATUSES.has(value.status)
@@ -111,6 +118,9 @@ function isJournalTurn(value: unknown): value is JournalTurn {
     typeof value.requirement === "string" &&
     typeof value.savedAt === "number" &&
     Number.isFinite(value.savedAt) &&
+    (value.work === undefined || isWorkContext(value.work)) &&
+    (value.sessionEvents === undefined ||
+      (Array.isArray(value.sessionEvents) && value.sessionEvents.every(isSessionEvent))) &&
     (value.startedAt === undefined || typeof value.startedAt === "number") &&
     (value.effectiveRequirement === undefined || typeof value.effectiveRequirement === "string") &&
     (value.reason === undefined || typeof value.reason === "string") &&
@@ -217,6 +227,10 @@ export function journalTurn(
   }
   return {
     turn: state.turn,
+    work: state.work,
+    routing: state.routing,
+    sessionEvents: state.sessionEvents,
+    agentResults: state.agentResults,
     requirement: state.requirement ?? "",
     startedAt: state.startedAt,
     effectiveRequirement: state.effectiveRequirement,
@@ -253,10 +267,30 @@ const UNSETTLED: ReadonlySet<string> = new Set(["pending", "running", "retrying"
 export function interruptedTurn(entry: JournalTurn): TurnView {
   const agents: Record<string, AgentView> = {}
   for (const [id, agent] of Object.entries(entry.agents)) {
-    agents[id] = UNSETTLED.has(agent.status) ? { ...agent, status: "cancelled" } : { ...agent }
+    agents[id] = {
+      ...agent,
+      ...(UNSETTLED.has(agent.status) ? { status: "cancelled" as const } : {}),
+      session: agent.session
+        ? { ...agent.session, state: agent.session.state === "closed" ? "closed" : "unknown" }
+        : undefined,
+    }
   }
   return {
     turn: entry.turn,
+    work: entry.work
+      ? {
+          ...entry.work,
+          agents: entry.work.agents.map((agent) => ({
+            ...agent,
+            session: agent.session
+              ? { ...agent.session, state: agent.session.state === "closed" ? "closed" : "unknown" }
+              : undefined,
+          })),
+        }
+      : undefined,
+    routing: entry.routing,
+    sessionEvents: entry.sessionEvents,
+    agentResults: entry.agentResults,
     requirement: entry.requirement,
     effectiveRequirement: entry.effectiveRequirement,
     reason: entry.reason,

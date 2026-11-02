@@ -1,13 +1,23 @@
+import { randomUUID } from "node:crypto"
 import type { AgentOutput, AgentRuntime, AgentTask, RuntimeSession } from "../types/runtime"
+import type { SessionEvent, SessionIntent, SessionRecord } from "../types/session"
 import { abortError, isAbortError } from "../utils/abort"
+import { PermanentError } from "../utils/errors"
+import { sessionCompatibilityKey } from "../utils/session"
 
-interface SessionEntry {
+interface SessionObservation {
+  record: SessionRecord
+  executionId: string
+  attempt: number
+  session?: RuntimeSession
+}
+
+interface SessionEntry extends SessionObservation {
   runtime: AgentRuntime
-  fingerprint: string
   startup: AbortController
   opening: Promise<RuntimeSession>
-  session?: RuntimeSession
   closing?: Promise<void>
+  cleanupComplete?: boolean
   busy: boolean
   onWarning?: AgentTask["onWarning"]
 }
@@ -25,97 +35,283 @@ export interface SupplementReport {
 
 /** Owns reusable agent sessions across independent orchestration turns. */
 export class AgentSessionManager {
+  private listeners = new Set<(event: SessionEvent) => void>()
+
+  subscribe(listener: (event: SessionEvent) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  private publish(
+    entry: SessionObservation,
+    action: SessionEvent["action"],
+    requestedSessionId?: string
+  ): void {
+    entry.record.observedAt = new Date().toISOString()
+    if (
+      entry.session &&
+      action !== "closing" &&
+      action !== "closed" &&
+      entry.record.failure?.code !== "cleanup_failed"
+    )
+      entry.record.state = entry.session.state
+    const event: SessionEvent = {
+      action,
+      executionId: entry.executionId,
+      attempt: entry.attempt,
+      record: structuredClone(entry.record),
+      ...(requestedSessionId ? { requestedSessionId } : {}),
+      reason: entry.record.reason,
+    }
+    for (const listener of this.listeners) listener(event)
+  }
+
   private entries = new Map<string, SessionEntry>()
   private resetting?: Promise<void>
   private closing?: Promise<void>
   private closed = false
 
-  async execute(runtime: AgentRuntime, task: AgentTask): Promise<AgentOutput> {
+  private compatible(
+    record: SessionRecord,
+    runtime: AgentRuntime,
+    task: AgentTask,
+    key: string
+  ): boolean {
+    return (
+      record.agentId === task.agentId &&
+      record.workId === task.workId &&
+      record.runtime === runtime.name &&
+      record.compatibilityKey === key
+    )
+  }
+
+  inspect(
+    runtime: AgentRuntime,
+    task: AgentTask,
+    context: { session?: SessionRecord; strict?: boolean } = {}
+  ): SessionIntent {
+    const intent = (action: SessionIntent["action"], reason: string): SessionIntent => ({
+      agentId: task.agentId,
+      action,
+      reason,
+    })
+    const entry = this.entries.get(task.agentId)
+    if (
+      this.closed ||
+      this.resetting ||
+      entry?.busy ||
+      entry?.closing ||
+      (entry?.session && !["idle", "closed"].includes(entry.session.state))
+    )
+      return intent("unavailable", "A Session is busy or cleanup is pending.")
+    let candidate = context.session
+    if (
+      candidate?.failure?.code === "cleanup_failed" ||
+      entry?.record.failure?.code === "cleanup_failed"
+    )
+      return intent("unavailable", "Previous Session cleanup was not acknowledged.")
+    if (!candidate?.sessionId) candidate = undefined
+    const key = sessionCompatibilityKey(runtime, task)
+    const compatible = (record: SessionRecord) => this.compatible(record, runtime, task, key)
+    if (candidate && !compatible(candidate))
+      return intent(
+        context.strict ? "unavailable" : "create",
+        "Recorded work identity or immutable Session settings differ."
+      )
+    if (entry && compatible(entry.record)) {
+      if (
+        runtime.openSession &&
+        entry.runtime === runtime &&
+        entry.session?.state === "idle" &&
+        entry.session.capabilities.continuation &&
+        (!candidate?.sessionId || candidate.sessionId === entry.session.sessionId)
+      )
+        return intent("reuse", "Will reuse the matching live Session if still idle.")
+      candidate ??= entry.record
+    }
+    if (candidate) {
+      if (!runtime.openSession || !candidate.capabilities.load)
+        return intent(
+          context.strict ? "unavailable" : "create",
+          "Recorded Session loading is unsupported."
+        )
+      return intent(
+        "load",
+        "Will attempt to load the recorded conversation; restoration is not yet confirmed."
+      )
+    }
+    return intent(
+      "create",
+      "Will start a new executor conversation; any previous worker must first acknowledge cleanup."
+    )
+  }
+
+  async execute(
+    runtime: AgentRuntime,
+    task: AgentTask,
+    context: {
+      session?: SessionRecord
+      strict?: boolean
+      executionId?: string
+      attempt?: number
+    } = {}
+  ): Promise<AgentOutput> {
     if (this.closed) throw new Error("AgentSessionManager is closed")
     if (this.resetting) throw new Error("AgentSessionManager is resetting")
     if (task.signal?.aborted) throw abortError()
-
+    const compatibilityKey = sessionCompatibilityKey(runtime, task)
+    const executionId = context.executionId ?? randomUUID()
+    const attempt = context.attempt ?? 1
     let entry = this.entries.get(task.agentId)
-    if (
-      entry?.busy ||
-      (entry?.session && entry.session.state !== "idle" && entry.session.state !== "closed")
-    ) {
-      throw new Error(`Agent session ${task.agentId} is busy`)
-    }
+    if (entry?.busy || (entry?.session && !["idle", "closed"].includes(entry.session.state)))
+      throw new Error("Agent session is busy: " + task.agentId)
     if (entry?.closing) await entry.closing
-    const fingerprint = JSON.stringify([
-      task.command,
-      task.args,
-      task.model,
-      task.workDir,
-      task.systemPrompt,
-      task.sessionId,
-      task.resume,
-      Boolean(task.onQuestion),
-    ])
+    let candidate = context.session
+    let reason: string | undefined
+    const compatible = (record: SessionRecord) =>
+      this.compatible(record, runtime, task, compatibilityKey)
+    const observation = (): SessionObservation => ({
+      record: {
+        bindingId: randomUUID(),
+        agentId: task.agentId,
+        workId: task.workId,
+        runtime: runtime.name,
+        compatibilityKey,
+        state: "opening",
+        capabilities: { continuation: false, load: false, supplement: false },
+        action: "created",
+        observedAt: new Date().toISOString(),
+        reason,
+      },
+      executionId,
+      attempt,
+    })
+    const rejectTarget = (code: "incompatible" | "unsupported", message: string): never => {
+      const failure = observation()
+      failure.record.state = "unknown"
+      failure.record.failure = { code, message }
+      this.publish(failure, "load_failed", candidate?.sessionId)
+      throw new PermanentError(message)
+    }
+    if (candidate?.failure?.code === "cleanup_failed")
+      rejectTarget(
+        "unsupported",
+        "Previous Session cleanup was not acknowledged; refusing to start a replacement executor."
+      )
+    if (!candidate?.sessionId) candidate = undefined
+    if (candidate && !compatible(candidate)) {
+      reason =
+        "The recorded Session belongs to different work or has incompatible creation settings."
+      if (context.strict) rejectTarget("incompatible", reason)
+      candidate = undefined
+    }
+    const requested = candidate?.sessionId
     if (
       entry &&
       (entry.runtime !== runtime ||
-        entry.fingerprint !== fingerprint ||
+        !compatible(entry.record) ||
         entry.session?.state === "closed" ||
+        !entry.session?.capabilities.continuation ||
+        (requested && requested !== entry.session.sessionId) ||
+        task.resume === "fork" ||
         !runtime.openSession)
     ) {
-      entry.busy = true
-      try {
-        await this.closeEntry(entry)
-        this.entries.delete(task.agentId)
-      } finally {
-        entry.busy = false
-      }
+      reason ??= !compatible(entry.record)
+        ? "Work identity or immutable Session settings changed."
+        : "The previous live Session cannot continue."
+      if (!candidate && compatible(entry.record) && entry.record.failure?.code !== "cleanup_failed")
+        candidate = structuredClone(entry.record)
+      await this.closeEntry(entry)
+      this.entries.delete(task.agentId)
       entry = undefined
-      if (this.closed || this.resetting) throw abortError()
+      if (this.closed || this.resetting || task.signal?.aborted) throw abortError()
     }
-    if (task.signal?.aborted) throw abortError()
-    const openSession = runtime.openSession
-    if (!openSession) return runtime.execute(task)
-
+    if (!entry && candidate && !candidate.capabilities.load) {
+      reason = "The recorded provider Session does not support loading."
+      if (context.strict) rejectTarget("unsupported", reason)
+      candidate = undefined
+    }
+    if (!runtime.openSession) {
+      if (candidate) rejectTarget("unsupported", "This runtime cannot load a live Session.")
+      const output = await runtime.execute(task)
+      if (output.sessionId) {
+        const observed = observation()
+        observed.record.sessionId = output.sessionId
+        observed.record.state = "unknown"
+        observed.record.reason =
+          "The execute-only runtime reported an ID without a managed Session."
+        this.publish(observed, "state_changed")
+      }
+      return output
+    }
     let detach: (() => void) | undefined
     if (!entry) {
-      const startup = new AbortController()
-      const forwardAbort = () => startup.abort(task.signal?.reason)
-      task.signal?.addEventListener("abort", forwardAbort, { once: true })
-      detach = () => task.signal?.removeEventListener("abort", forwardAbort)
+      const sessionId = candidate?.sessionId
       const created: SessionEntry = {
+        ...observation(),
         runtime,
-        fingerprint,
-        startup,
+        startup: new AbortController(),
         busy: true,
         onWarning: task.onWarning,
-        // Defer opening until the cache entry is installed, including synchronous failures.
-        opening: Promise.resolve()
-          .then(() =>
-            openSession.call(runtime, {
-              agentId: task.agentId,
-              systemPrompt: task.systemPrompt,
-              workDir: task.workDir,
-              command: task.command,
-              args: task.args,
-              model: task.model,
-              sessionId: task.sessionId,
-              resume: task.resume,
-              timeout: task.timeout,
-              questionForms: Boolean(task.onQuestion),
-              signal: startup.signal,
-              onWarning: (message) => created.onWarning?.(message),
-            })
-          )
-          .then((session) => {
-            created.session = session
-            return session
-          }),
+        opening: Promise.resolve().then(() => open()),
       }
+      const open = async (): Promise<RuntimeSession> => {
+        try {
+          const session = await runtime.openSession!({
+            agentId: task.agentId,
+            provider: task.provider,
+            systemPrompt: task.systemPrompt,
+            workDir: task.workDir,
+            command: task.command,
+            args: task.args,
+            model: task.model,
+            sessionId,
+            resume: task.resume,
+            timeout: task.timeout,
+            questionForms: Boolean(task.onQuestion),
+            signal: created.startup.signal,
+            onWarning: (message) => created.onWarning?.(message),
+          })
+          created.session = session
+          created.record.capabilities = { ...session.capabilities }
+          if (sessionId && session.sessionId !== sessionId) {
+            created.record.failure = {
+              code: "load_failed",
+              message:
+                "Provider returned a different Session ID; the requested conversation was not restored.",
+            }
+            await this.closeSession(created, session)
+            throw new PermanentError(created.record.failure.message)
+          }
+          created.record.sessionId = session.sessionId
+          this.publish(created, sessionId ? "loaded" : "created", sessionId)
+          return session
+        } catch (error) {
+          created.record.failure ??= {
+            code: sessionId ? "load_failed" : "opening_failed",
+            message: error instanceof Error ? error.message : String(error),
+          }
+          if (!created.session) created.record.state = "unknown"
+          this.publish(created, sessionId ? "load_failed" : "opening_failed", sessionId)
+          throw error
+        }
+      }
+      created.record.action = sessionId ? "loaded" : "created"
+      const forwardAbort = () => created.startup.abort(task.signal?.reason)
+      task.signal?.addEventListener("abort", forwardAbort, { once: true })
+      detach = () => task.signal?.removeEventListener("abort", forwardAbort)
+      this.entries.set(task.agentId, created)
+      this.publish(created, sessionId ? "load_requested" : "opening", sessionId)
       entry = created
-      this.entries.set(task.agentId, entry)
     } else {
       entry.busy = true
       entry.onWarning = task.onWarning
+      entry.executionId = executionId
+      entry.attempt = attempt
+      entry.record.action = "reused"
+      entry.record.failure = undefined
+      this.publish(entry, "reused")
     }
-
     try {
       const session = await entry.opening
       detach?.()
@@ -124,8 +320,18 @@ export class AgentSessionManager {
         await this.closeEntry(entry)
         throw abortError()
       }
-      if (session.state !== "idle") throw new Error(`Agent session ${task.agentId} is busy`)
-      return await session.prompt(task.prompt, {
+      if (session.state !== "idle") throw new Error("Agent session is busy: " + task.agentId)
+      const prompt = task.workId
+        ? task.prompt +
+          "\n\n## Session continuity\n" +
+          (entry.record.action === "created"
+            ? "A new executor Session was created; no old conversation was restored. Inspect the workspace before repeating operations."
+            : entry.record.action === "loaded"
+              ? "The recorded provider conversation was loaded successfully. Inspect current workspace state before continuing."
+              : "The matching live executor conversation is being reused.") +
+          (entry.record.reason ? "\n" + entry.record.reason : "")
+        : task.prompt
+      const turn = session.prompt(prompt, {
         signal: task.signal,
         timeout: task.timeout,
         onEvent: task.onEvent,
@@ -133,6 +339,17 @@ export class AgentSessionManager {
         onPermission: task.onPermission,
         onQuestion: task.onQuestion,
       })
+      this.publish(entry, "state_changed")
+      return await turn
+    } catch (error) {
+      if (entry.session) {
+        entry.record.failure ??= {
+          code: "turn_failed",
+          message: error instanceof Error ? error.message : String(error),
+        }
+        this.publish(entry, "state_changed")
+      }
+      throw error
     } finally {
       detach?.()
       entry.onWarning = undefined
@@ -142,25 +359,11 @@ export class AgentSessionManager {
           if (this.entries.get(task.agentId) === entry) this.entries.delete(task.agentId)
         } else if (!entry.session) {
           if (this.entries.get(task.agentId) === entry) this.entries.delete(task.agentId)
-        }
+        } else this.publish(entry, "state_changed")
       } finally {
         entry.busy = false
       }
     }
-  }
-
-  /**
-   * Whether this manager still holds a session for `agentId`.
-   *
-   * A caller about to continue a past conversation uses this to avoid naming a
-   * session it already has open: passing the id would change the entry's
-   * fingerprint, and the manager would close a perfectly good session and
-   * `session/load` it straight back.
-   */
-  has(agentId: string): boolean {
-    if (this.closed) return false
-    const entry = this.entries.get(agentId)
-    return entry !== undefined && !entry.closing && entry.session?.state !== "closed"
   }
 
   /**
@@ -202,6 +405,17 @@ export class AgentSessionManager {
     )
   }
 
+  /** Close selected idle conversations without resetting the leader. */
+  async resetAgents(agentIds: string[]): Promise<void> {
+    for (const id of agentIds) {
+      const entry = this.entries.get(id)
+      if (!entry) continue
+      if (entry.busy) throw new Error("Cannot reset a busy agent: " + id)
+      await this.closeEntry(entry)
+      if (this.entries.get(id) === entry) this.entries.delete(id)
+    }
+  }
+
   /** Closes all sessions and permits a fresh conversation after cleanup completes. */
   reset(): Promise<void> {
     if (this.closing) return this.closing
@@ -241,15 +455,37 @@ export class AgentSessionManager {
       entry.closing = (async () => {
         let session: RuntimeSession
         try {
-          session = await entry.opening
+          session = entry.session ?? (await entry.opening)
         } catch (error) {
-          // Cooperative startup cancellation has no live session to close.
-          if (isAbortError(error)) return
-          throw error
+          if (entry.session) session = entry.session
+          else if (isAbortError(error)) return
+          else throw error
         }
-        await session.close()
+        await this.closeSession(entry, session)
       })()
     }
     return entry.closing
+  }
+
+  private async closeSession(entry: SessionEntry, session: RuntimeSession): Promise<void> {
+    if (entry.cleanupComplete) return
+    if (entry.record.failure?.code === "cleanup_failed")
+      throw new Error(entry.record.failure.message)
+    entry.record.state = "closing"
+    this.publish(entry, "closing")
+    try {
+      await session.close()
+      entry.cleanupComplete = true
+      entry.record.state = "closed"
+      this.publish(entry, "closed")
+    } catch (error) {
+      entry.record.state = "unknown"
+      entry.record.failure = {
+        code: "cleanup_failed",
+        message: error instanceof Error ? error.message : String(error),
+      }
+      this.publish(entry, "cleanup_failed")
+      throw error
+    }
   }
 }

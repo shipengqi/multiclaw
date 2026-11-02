@@ -1,4 +1,4 @@
-import type { LeaderMessage } from "@multiclawcli/core"
+import { describeSession, type LeaderMessage } from "@multiclawcli/core"
 import { Box, Text } from "ink"
 import { formatCost, formatDuration, formatTokens, padRight, truncate } from "../format"
 import {
@@ -176,6 +176,7 @@ export function StreamPanel({
               marker are never the thing that gets cut. */}
           <Text wrap="truncate-end">
             <Text bold>{agent?.name ?? "—"}</Text>
+            {agent?.session ? <Text dimColor> · {describeSession(agent.session)}</Text> : null}
             {agent?.model ? <Text dimColor> · {agent.model}</Text> : null}
             {agent && style ? (
               <>

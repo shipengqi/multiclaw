@@ -49,6 +49,7 @@ export interface AgentView {
   /** In-flight retry counter, present only while the agent is between attempts. */
   retry?: { attempt: number; max: number }
   error?: string
+  handoffReason?: string
   /** Context-window usage the runtime reported, when it reported any. */
   usage?: AgentOutput["usage"]
   /** USD cost the runtime reported, when the provider priced itself. */
@@ -58,7 +59,7 @@ export interface AgentView {
    * `/retry` can ask the agent to continue where it left off instead of
    * re-exploring from scratch.
    */
-  sessionId?: string
+  session?: import("@multiclawcli/core").SessionRecord
   logs: LogSegment[]
 }
 
@@ -79,6 +80,11 @@ export interface TuiStageInfo extends StageInfo {
  * a `TurnView` so they can render one without knowing which it is.
  */
 export interface TurnView {
+  work?: import("@multiclawcli/core").WorkContext
+  routing?: import("@multiclawcli/core").RoutingInfo
+  sessionEvents?: import("@multiclawcli/core").SessionEvent[]
+  agentResults?: import("@multiclawcli/core").AgentResult[]
+  effectiveAgentResults?: import("@multiclawcli/core").AgentResult[]
   turn: number
   requirement?: string
   effectiveRequirement?: string
@@ -502,6 +508,68 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
       }
     }
 
+    case "agent:session": {
+      const { record, action } = event.payload
+      const existing = state.agents[record.agentId]
+      const isCurrentWork = record.workId
+        ? state.work?.id === record.workId
+        : state.leaderIds.includes(record.agentId)
+      const startsBinding = action === "opening" || action === "load_requested"
+      const matchesBinding =
+        !existing?.session || existing.session.bindingId === record.bindingId || startsBinding
+      const history = state.history.map((turn) => {
+        if (!record.workId || turn.work?.id !== record.workId) return turn
+        const member = turn.work.agents.find((item) => item.agentId === record.agentId)
+        if (member?.session?.bindingId !== record.bindingId) return turn
+        return {
+          ...turn,
+          agents:
+            turn.agents[record.agentId]?.session?.bindingId === record.bindingId
+              ? {
+                  ...turn.agents,
+                  [record.agentId]: { ...turn.agents[record.agentId], session: record },
+                }
+              : turn.agents,
+          work: {
+            ...turn.work,
+            agents: turn.work.agents.map((item) =>
+              item.agentId === record.agentId ? { ...item, session: record } : item
+            ),
+          },
+        }
+      })
+      const updatesCurrent = isCurrentWork && matchesBinding && existing
+      const work =
+        updatesCurrent && state.work && state.work.id === record.workId
+          ? {
+              ...state.work,
+              agents: state.work.agents.map((item) =>
+                item.agentId === record.agentId
+                  ? {
+                      ...item,
+                      session:
+                        record.sessionId ||
+                        !item.session?.sessionId ||
+                        record.failure?.code === "cleanup_failed"
+                          ? record
+                          : item.session,
+                    }
+                  : item
+              ),
+            }
+          : state.work
+      return {
+        ...state,
+        work,
+        history,
+        sessionEvents: [...(state.sessionEvents ?? []), event.payload],
+        agents: updatesCurrent
+          ? { ...state.agents, [record.agentId]: { ...existing, session: record } }
+          : state.agents,
+      }
+    }
+
+    case "agent:handed-back":
     case "agent:complete":
     case "agent:failed": {
       const result = event.payload
@@ -509,6 +577,7 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
       // run arrives on `agent:failed` with `status: "cancelled"`.
       const patch: Partial<AgentView> = {
         status: result.status,
+        handoffReason: result.handoffReason,
         duration: result.duration,
         attempts: result.attempts,
         retry: undefined,
@@ -517,12 +586,14 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
         costUsd: result.costUsd,
         // Present only on the success path; a failed agent has no session to
         // continue, so `/retry` re-runs it cold.
-        sessionId: result.sessionId,
+        session: result.session ?? state.agents[result.agentId]?.session,
       }
       const existing = state.agents[result.agentId]
       const next: AgentView = existing
         ? { ...existing, ...patch }
         : blankAgent(result.agentId, result.agentName, patch)
+      if (event.type === "agent:handed-back")
+        next.logs = appendLog(next.logs, "[handed back] " + result.handoffReason, "system")
       if (event.type === "agent:failed") {
         if (next.logs.length === 0 && result.output)
           next.logs = appendLog([], result.output, "text")
@@ -531,7 +602,11 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
           next.logs = appendLog(next.logs, error, "system")
         }
       }
-      return { ...state, agents: { ...state.agents, [result.agentId]: next } }
+      return {
+        ...state,
+        agentResults: [...(state.agentResults ?? []), result],
+        agents: { ...state.agents, [result.agentId]: next },
+      }
     }
 
     case "agent:skipped": {
@@ -558,6 +633,17 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
       return { ...state, agents: { ...state.agents, [agentId]: next } }
     }
 
+    case "orchestration:route":
+      return {
+        ...state,
+        routing: event.payload.routing,
+        work: event.payload.work,
+        warning: event.payload.routing.reroutes
+          ? "Worker handed work back — rerouting once"
+          : state.warning,
+      }
+    case "orchestration:routing-error":
+      return { ...state, warning: event.payload.message }
     case "orchestration:warning":
       return { ...state, warning: event.payload.message }
 
@@ -566,6 +652,10 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
         ...state,
         phase: "complete",
         success: event.payload.success,
+        work: event.payload.work,
+        routing: event.payload.routing,
+        agentResults: event.payload.agentResults,
+        effectiveAgentResults: event.payload.effectiveAgentResults,
         acceptance: event.payload.acceptance,
         cancelled: event.payload.cancelled,
         effectiveRequirement: event.payload.requirement ?? state.effectiveRequirement,
@@ -812,6 +902,11 @@ function snapshot(state: TuiState): TurnView {
     autoFollow: state.autoFollow,
     scroll: state.scroll,
     success: state.success,
+    work: state.work,
+    routing: state.routing,
+    sessionEvents: state.sessionEvents,
+    agentResults: state.agentResults,
+    effectiveAgentResults: state.effectiveAgentResults,
     acceptance: state.acceptance,
     totalDuration: state.totalDuration,
     totalCostUsd: state.totalCostUsd,
@@ -870,13 +965,24 @@ export function conversationTurns(state: TuiState): TurnRecord[] {
     turns.push(
       turn.reply
         ? { requirement: turn.requirement, reply: turn.reply }
-        : { requirement: turn.requirement, outcome: conversationOutcome(turn) }
+        : { requirement: turn.requirement, outcome: conversationOutcome(turn), work: turn.work }
     )
   }
   return turns
 }
 
+export function latestWorkFromTurns(
+  turns: readonly TurnView[]
+): import("@multiclawcli/core").WorkContext | undefined {
+  const latest = [...turns]
+    .reverse()
+    .find((turn) => turn.work || (!turn.reply && turn.stages.length > 0))
+  if (!latest?.work || latest.cancelled) return undefined
+  return { ...latest.work, outcome: conversationOutcome(latest) }
+}
+
 function conversationOutcome(turn: TurnView): TurnOutcome {
+  if (!turn.interrupted && !turn.cancelled && turn.work?.outcome) return turn.work.outcome
   const reviewer = turn.acceptance?.reviewer
   const isWorker = (id: string) => id !== reviewer && !turn.leaderIds.includes(id)
   const workers = Object.values(turn.agents).filter((agent) => isWorker(agent.id))
@@ -1129,6 +1235,7 @@ export function stageStatus(stage: TuiStageInfo, agents: Record<string, AgentVie
   if (stage.outcome !== undefined) return stage.outcome
   const statuses = stage.agents.map((a) => agents[a.id]?.status ?? "pending")
   if (statuses.some((s) => s === "failed")) return "failed"
+  if (statuses.some((s) => s === "handed_back")) return "handed_back"
   if (statuses.some((s) => s === "running" || s === "retrying")) return "running"
   if (statuses.length > 0 && statuses.every((s) => s === "success")) return "success"
   if (statuses.length > 0 && statuses.every((s) => s === "skipped")) return "skipped"
@@ -1137,6 +1244,7 @@ export function stageStatus(stage: TuiStageInfo, agents: Record<string, AgentVie
 }
 
 const SETTLED: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
+  "handed_back",
   "success",
   "failed",
   "cancelled",

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { makeSessionRecord } from "../testing/helpers"
 import { describeResumePlan } from "./resumePlan"
 
 const TEAM = [
@@ -14,8 +15,12 @@ describe("describeResumePlan", () => {
 
   it("says an agent with a session continues it", () => {
     expect(
-      describeResumePlan({ agents: ["architect"], sessions: { architect: "s-1" }, team: TEAM })
-    ).toBe("architect continues its session")
+      describeResumePlan({
+        agents: ["architect"],
+        sessions: { architect: makeSessionRecord({ agentId: "architect", sessionId: "s-1" }) },
+        team: TEAM,
+      })
+    ).toBe("architect will attempt to resume its session")
   })
 
   // The whole point: a single-agent retry drops the dependency that made the
@@ -51,17 +56,23 @@ describe("describeResumePlan", () => {
     expect(
       describeResumePlan({
         agents: ["reviewer", "architect"],
-        sessions: { reviewer: "s-9" },
+        sessions: { reviewer: makeSessionRecord({ agentId: "reviewer", sessionId: "s-9" }) },
         team: TEAM,
       })
-    ).toBe("reviewer continues its session; architect starts fresh; reviewer runs without dev")
+    ).toBe(
+      "reviewer will attempt to resume its session; architect starts fresh; reviewer runs without dev"
+    )
   })
 
   // A session for an agent that is not being resumed is simply not its
   // session: the description only speaks about what runs.
   it("ignores sessions belonging to agents outside the retry", () => {
     expect(
-      describeResumePlan({ agents: ["architect"], sessions: { dev: "s-1" }, team: TEAM })
+      describeResumePlan({
+        agents: ["architect"],
+        sessions: { dev: makeSessionRecord({ agentId: "dev", sessionId: "s-1" }) },
+        team: TEAM,
+      })
     ).toBe("architect starts fresh")
   })
 })

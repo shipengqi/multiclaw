@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import type { OrchestratorResult } from "@multiclawcli/core"
+import { isSessionRecord, type OrchestratorResult } from "@multiclawcli/core"
 
 /** A previous run's report, as much of it as resume needs. */
 export interface ResumeTarget {
@@ -73,24 +73,33 @@ export function readReport(runDir: string): OrchestratorResult {
 /**
  * Turn a report (plus an optional requirement override) into run config.
  *
- * The requirement is the one thing a report cannot always supply — an older
- * report predates the field — so an explicit override wins, and its absence on
- * both sides is an error rather than a silently empty run.
+ * An explicit requirement override wins. Missing requirements fail rather than
+ * silently starting an empty run.
  */
 export function resumeOptionsFromReport(
   report: OrchestratorResult,
   requirementOverride?: string
-): { requirement: string; resume: { agents: string[]; sessions?: Record<string, string> } } {
+): {
+  requirement: string
+  resume: {
+    agents: string[]
+    sessions?: Record<string, import("@multiclawcli/core").SessionRecord>
+  }
+} {
   // A review loop records every pass; only the latest result owns a resumable session.
-  const latest = new Map(report.agentResults.map((result) => [result.agentId, result]))
+  const latest = new Map(
+    (report.effectiveAgentResults ?? report.agentResults).map((result) => [result.agentId, result])
+  )
   const agents = [...latest.keys()].filter((id) => id !== report.acceptance?.reviewer)
   if (agents.length === 0) {
     throw new Error("The previous run has no agent results — nothing to resume")
   }
 
-  const sessions: Record<string, string> = {}
+  const sessions: Record<string, import("@multiclawcli/core").SessionRecord> = {}
   for (const result of latest.values()) {
-    if (result.sessionId) sessions[result.agentId] = result.sessionId
+    if (result.session !== undefined && !isSessionRecord(result.session))
+      throw new Error("Invalid Session metadata for " + result.agentId)
+    if (result.session?.sessionId) sessions[result.agentId] = result.session
   }
 
   const requirement = requirementOverride ?? report.requirement
@@ -102,8 +111,7 @@ export function resumeOptionsFromReport(
     requirement,
     resume: {
       agents,
-      // Absent, not `{}`: core reads a missing `sessions` as "start every agent
-      // fresh", which is exactly the single-agent retry of a failed agent.
+      // No established Session means the fixed retry starts a fresh executor.
       ...(Object.keys(sessions).length > 0 ? { sessions } : {}),
     },
   }

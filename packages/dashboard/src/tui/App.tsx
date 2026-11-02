@@ -95,6 +95,7 @@ import {
 import {
   conversationTurns,
   createInitialState,
+  latestWorkFromTurns,
   leaderAgentIds,
   progress,
   recordedTurns,
@@ -223,42 +224,6 @@ function pickTurn(
   return { record: target.record, requirement: target.record.requirement }
 }
 
-/** The sessions a finished turn's agents reported, keyed by agent id. */
-function turnSessions(turn: TurnView): Record<string, string> {
-  const sessions: Record<string, string> = {}
-  for (const agent of Object.values(turn.agents)) {
-    if (agent.sessionId) sessions[agent.id] = agent.sessionId
-  }
-  return sessions
-}
-
-/** A past turn whose conversation the next instruction should continue. */
-interface Continuation {
-  turn: number
-  sessions: Record<string, string>
-}
-
-/**
- * The `resume` that continues a past conversation, or undefined when there is
- * nothing left to continue.
- *
- * Only agents whose session this process no longer holds are named. A live
- * session already carries its history, and naming its id would change the
- * session manager's fingerprint and make it close and `session/load` a session
- * it is holding open — the case that matters is the restart, where every
- * session is gone and the id on disk is the only handle.
- */
-function continuationResume(
-  continuation: Continuation | null,
-  live: AgentSessionManager | null
-): MultiClawConfig["resume"] | undefined {
-  if (!continuation) return undefined
-  const sessions = Object.fromEntries(
-    Object.entries(continuation.sessions).filter(([id]) => !live?.has(id))
-  )
-  return Object.keys(sessions).length > 0 ? { sessions } : undefined
-}
-
 function StatusLine({
   state,
   running,
@@ -299,6 +264,13 @@ function StatusLine({
 
   // A turn the leader answered ends in words, not in a pipeline. Saying "done"
   // there would claim work that never happened.
+  if (state.routing?.error && !running)
+    return (
+      <Text color={COLOR.warn} wrap="truncate-end">
+        {state.routing.error}
+      </Text>
+    )
+
   if (state.reply) {
     const asking = state.reply.mode === "ask"
     return (
@@ -449,21 +421,6 @@ export function App({
   const abortRef = useRef<AbortController | null>(null)
   const sessionsRef = useRef<AgentSessionManager | null>(null)
   if (!sessionsRef.current) sessionsRef.current = providedSessions ?? new AgentSessionManager()
-  // Armed by session switch (or `--resume <id>` at startup): the next
-  // instruction continues that turn's conversations. One-shot — see `startTurn`.
-  const continuationRef = useRef<Continuation | null>(null)
-  // For `--resume <id>`: open the last turn for context and set up continuation,
-  // matching what /sessions → switchSession does for an interactive switch.
-  useEffect(() => {
-    if (initialSession?.kind !== "resume" || !("id" in initialSession)) return
-    const history = restoredRef.current?.history ?? []
-    const resumable = [...history]
-      .reverse()
-      .find((turn) => Object.keys(turnSessions(turn)).length > 0)
-    continuationRef.current = resumable
-      ? { turn: resumable.turn, sessions: turnSessions(resumable) }
-      : null
-  }, [initialSession])
   const activeTurnRef = useRef<Promise<void> | null>(null)
   const reporterErrorRef = useRef<Error | null>(null)
   const closingRef = useRef(false)
@@ -706,17 +663,17 @@ export function App({
   const startTurn = useCallback(
     async (
       requirement: string,
-      opts?: { resume?: MultiClawConfig["resume"]; newSession?: boolean }
+      opts?: {
+        resume?: MultiClawConfig["resume"]
+        newSession?: boolean
+        work?: MultiClawConfig["latestWork"]
+      }
     ) => {
       if (closingRef.current || busyRef.current) return
       busyRef.current = true
       setRunning(true)
-      // Consumed here, whatever happens next: a continuation arms exactly one
-      // instruction. `/new` drops it outright — that command exists to start a
-      // fresh session, which is the opposite of continuing.
-      const continuation = opts?.newSession ? null : continuationRef.current
-      continuationRef.current = null
-      const resume = opts?.resume ?? continuationResume(continuation, sessionsRef.current)
+      // Explicit retry has a fixed roster; ordinary submissions route from work history.
+      const resume = opts?.resume
       if (opts?.newSession) {
         try {
           await sessionsRef.current?.reset()
@@ -787,6 +744,9 @@ export function App({
         // An answer only reads as a requirement next to the question it answers,
         // so the leader is handed the turns behind this one as well.
         history: earlierTurns,
+        latestWork: opts?.newSession
+          ? undefined
+          : (opts?.work ?? latestWorkFromTurns(recordedTurns(stateRef.current))),
         logDir,
         permissions:
           permissionMode === "ask"
@@ -911,12 +871,6 @@ export function App({
       const restored = restoreConsole(config.workDir, id)
       sessionIdRef.current = id
       persistedTurnRef.current = restored.persistedTurn
-      const resumable = [...restored.history]
-        .reverse()
-        .find((turn) => Object.keys(turnSessions(turn)).length > 0)
-      continuationRef.current = resumable
-        ? { turn: resumable.turn, sessions: turnSessions(resumable) }
-        : null
       dispatch({
         type: "session:load",
         agents: seedAgents(config),
@@ -930,12 +884,7 @@ export function App({
       setAwaitingAnswer(restored.awaitingAnswer)
       setError(undefined)
       setCancelled(false)
-      setNotice(
-        restored.notice ??
-          (resumable
-            ? `switched session · continue with your next instruction`
-            : `switched session · ${restored.history.length} turn${restored.history.length === 1 ? "" : "s"}`)
-      )
+      setNotice(restored.notice ?? "switched session · route your next instruction")
     },
     [config]
   )
@@ -1124,6 +1073,7 @@ export function App({
     queueRows: queue.length,
     interactionRows: interactionRows(interactions, Math.max(MIN_COLUMNS, columns)),
     promptRows,
+    details: !!(state.reason || state.routing),
     notice: notice !== undefined || (queuePaused && queue.length > 0),
     hasRail: state.leaderIds.length > 0 || state.stages.length > 0,
     railCells: railCellWidths(state),
@@ -1398,8 +1348,8 @@ export function App({
           // core's "absent means a cold start".
           const sessions = Object.fromEntries(
             ids
-              .filter((id) => turn.agents[id]?.sessionId)
-              .map((id) => [id, turn.agents[id].sessionId as string])
+              .filter((id) => turn.agents[id]?.session?.sessionId)
+              .map((id) => [id, turn.agents[id].session!])
           )
           if (ids.some((id) => turn.leaderIds.includes(id))) {
             void startTurn(turn.requirement)
@@ -1407,6 +1357,7 @@ export function App({
             return
           }
           void startTurn(turn.effectiveRequirement ?? turn.requirement, {
+            work: turn.work,
             resume: {
               agents: ids,
               ...(Object.keys(sessions).length > 0 ? { sessions } : {}),
@@ -2171,9 +2122,15 @@ export function App({
         </Box>
       ) : null}
 
-      {state.reason ? (
+      {state.reason || state.routing ? (
         <Text dimColor wrap="truncate-end">
-          {`  reason: ${state.reason}`}
+          {(state.routing
+            ? "  route: " +
+              state.routing.mode +
+              " · " +
+              state.routing.workId +
+              (state.routing.reroutes ? " · rerouted" : "")
+            : "") + (state.reason ? "  reason: " + state.reason : "")}
         </Text>
       ) : null}
 

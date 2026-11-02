@@ -1,4 +1,9 @@
-import type { AgentResult, EventBus, MultiClawEvent } from "@multiclawcli/core"
+import {
+  type AgentResult,
+  describeSession,
+  type EventBus,
+  type MultiClawEvent,
+} from "@multiclawcli/core"
 
 // Degraded to plain ASCII when NO_COLOR is set, TERM=dumb, or stdout is not a TTY (pipe/CI).
 const isFancy =
@@ -35,17 +40,32 @@ function markFor(status: AgentResult["status"]): { icon: string; color: string }
   if (status === "success") return { icon: S.ok, color: C.green }
   // A cancelled agent was stopped, not broken — the same muted mark as a skip,
   // never the red cross a real failure earns.
+  if (status === "handed_back") return { icon: S.retry, color: C.yellow }
   if (status === "cancelled") return { icon: S.skip, color: C.yellow }
   return { icon: S.fail, color: C.red }
 }
 
 export class ConsoleReporter {
+  private lastRoute?: string
   attach(eventBus: EventBus): () => void {
     return eventBus.subscribe((e) => this.handle(e))
   }
 
   private handle(e: MultiClawEvent): void {
     switch (e.type) {
+      case "agent:session": {
+        if (e.payload.action === "state_changed") break
+        console.log(
+          e.payload.record.agentId +
+            ": " +
+            e.payload.action.replaceAll("_", " ") +
+            (e.payload.requestedSessionId ? " target=" + e.payload.requestedSessionId : "") +
+            " — " +
+            describeSession(e.payload.record) +
+            (e.payload.reason ? " — " + e.payload.reason : "")
+        )
+        break
+      }
       case "orchestration:start": {
         const line = (isFancy ? "═" : "=").repeat(50)
         const edge = isFancy ? ["╔", "║", "╚", "╗", "╝"] : ["+", "|", "+", "+", "+"]
@@ -60,6 +80,27 @@ export class ConsoleReporter {
         if (e.payload.selectionReason) {
           console.log(`${C.dim}${S.bullet} Why: ${e.payload.selectionReason}${C.reset}\n`)
         }
+        break
+      }
+      case "orchestration:route": {
+        const route = JSON.stringify(e.payload.routing)
+        if (route === this.lastRoute) break
+        this.lastRoute = route
+        console.log(
+          "Route: " +
+            e.payload.routing.mode +
+            " work=" +
+            (e.payload.routing.workId ?? "unknown") +
+            (e.payload.routing.reroutes ? " (rerouting once)" : "")
+        )
+        break
+      }
+      case "orchestration:routing-error": {
+        console.log("Routing incomplete: " + e.payload.message)
+        break
+      }
+      case "agent:handed-back": {
+        console.log(e.payload.agentName + " handed back: " + e.payload.handoffReason)
         break
       }
       case "orchestration:stages": {
@@ -127,23 +168,25 @@ export class ConsoleReporter {
         }
         const line = (isFancy ? "═" : "=").repeat(50)
         const edge = isFancy ? ["╔", "║", "╚", "╗", "╝"] : ["+", "|", "+", "+", "+"]
-        const title = reply
-          ? reply.mode === "ask"
-            ? `${S.warn} Needs your input`
-            : `${S.ok} Answered`
-          : acceptance
-            ? acceptance.status === "approved"
-              ? `${S.ok} Approved`
-              : acceptance.status === "changes_required"
-                ? `${S.warn} Changes required`
-                : acceptance.status === "cancelled"
-                  ? `${S.skip} Acceptance cancelled`
-                  : `${S.fail} Acceptance failed`
-            : e.payload.cancelled
-              ? `${S.skip} Cancelled`
-              : success
-                ? `${S.ok} All done`
-                : `${S.warn} Done (with failures)`
+        const title = e.payload.routing?.error
+          ? `${S.warn} Work incomplete`
+          : reply
+            ? reply.mode === "ask"
+              ? `${S.warn} Needs your input`
+              : `${S.ok} Answered`
+            : acceptance
+              ? acceptance.status === "approved"
+                ? `${S.ok} Approved`
+                : acceptance.status === "changes_required"
+                  ? `${S.warn} Changes required`
+                  : acceptance.status === "cancelled"
+                    ? `${S.skip} Acceptance cancelled`
+                    : `${S.fail} Acceptance failed`
+              : e.payload.cancelled
+                ? `${S.skip} Cancelled`
+                : success
+                  ? `${S.ok} All done`
+                  : `${S.warn} Done (with failures)`
         console.log(`\n${C.bold}${C.purple}${edge[0]}${line}${edge[3]}`)
         console.log(`${edge[1]}  ${title.padEnd(48)}${edge[1]}`)
         console.log(`${edge[2]}${line}${edge[4]}${C.reset}`)
@@ -166,6 +209,7 @@ export class ConsoleReporter {
         const cost = e.payload.totalCostUsd
         const costStr = cost === undefined ? "" : `  $${cost.toFixed(2)}`
         console.log(`  ~ ${"Total".padEnd(nameWidth)}   ${totalStr.padStart(7)}${costStr}`)
+        if (e.payload.routing?.reroutes) console.log("  Execution attempts (audit):")
         for (const r of agentResults) {
           const { icon, color } = markFor(r.status)
           const dur = `${(r.duration / 1000).toFixed(1)}s`
@@ -173,6 +217,12 @@ export class ConsoleReporter {
             `  ${color}${icon}${C.reset} ${r.agentName.padEnd(nameWidth)}   ${dur.padStart(7)}`
           )
         }
+        if (e.payload.routing?.reroutes) {
+          console.log("  Effective results:")
+          for (const result of e.payload.effectiveAgentResults ?? [])
+            console.log("  " + result.agentId + ": " + result.status)
+        }
+        if (e.payload.routing?.error) console.log("  " + e.payload.routing.error)
         if (e.payload.deliverables && e.payload.deliverables.length > 0) {
           console.log(`\n  Deliverables:`)
           for (const file of e.payload.deliverables.slice(0, 5)) {

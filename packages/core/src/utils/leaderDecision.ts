@@ -36,7 +36,7 @@ function asDecision(value: unknown): LeaderDecision | undefined {
     return message ? { mode, message } : undefined
   }
 
-  if (mode === "run" || mode === undefined) {
+  if (mode === "run" || mode === "continue" || mode === undefined) {
     const run = record.run
     if (!Array.isArray(run) || !run.every((id) => typeof id === "string")) return undefined
     // Absent or non-string is "no reason given", not a malformed plan: the
@@ -44,8 +44,35 @@ function asDecision(value: unknown): LeaderDecision | undefined {
     const reason = typeof record.reason === "string" ? record.reason.trim() : ""
     const requirement = typeof record.requirement === "string" ? record.requirement.trim() : ""
     if ("requirement" in record && !requirement) return undefined
+    const workId = typeof record.workId === "string" ? record.workId.trim() : ""
+    if (mode === "continue" && !workId) return undefined
+    const tasks = record.tasks
+    if (
+      tasks !== undefined &&
+      (!Array.isArray(tasks) ||
+        !tasks.every(
+          (task) =>
+            typeof task === "object" &&
+            task !== null &&
+            typeof task.agentId === "string" &&
+            task.agentId.trim() &&
+            typeof task.scope === "string" &&
+            task.scope.trim()
+        ))
+    )
+      return undefined
+    if (
+      Array.isArray(tasks) &&
+      (new Set(tasks.map((task) => task.agentId)).size !== tasks.length ||
+        tasks.some((task) => !run.includes(task.agentId)))
+    )
+      return undefined
     return {
-      mode: "run",
+      mode: mode === "continue" ? "continue" : "run",
+      ...(workId ? { workId } : {}),
+      ...(Array.isArray(tasks)
+        ? { tasks: tasks.map((task) => ({ agentId: task.agentId, scope: task.scope.trim() })) }
+        : {}),
       run,
       ...(reason ? { reason } : {}),
       ...(requirement ? { requirement } : {}),

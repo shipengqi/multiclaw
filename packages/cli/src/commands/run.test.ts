@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import type { MultiClawConfig, OrchestratorResult } from "@multiclawcli/core"
+import type { MultiClawConfig, OrchestratorResult, SessionRecord } from "@multiclawcli/core"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 /**
@@ -45,6 +45,13 @@ vi.mock("@multiclawcli/core", async (importOriginal) => {
           requirement: state.config?.context?.requirement,
           totalAgents: state.config?.agents.length ?? 0,
           selectionReason: "small routed change",
+          sessions: [
+            {
+              agentId: "dev",
+              action: "load",
+              reason: "Will attempt to load; restoration is not yet confirmed.",
+            },
+          ],
           stages: [
             {
               stageIndex: 0,
@@ -215,6 +222,8 @@ describe("runCommand · dry run and deliverables", () => {
     expect(printed).toContain("Requirement: ship it")
     expect(printed).toContain("Why: small routed change")
     expect(printed).toContain("Stage 1: dev (fast)")
+    expect(printed).toContain("Session intent: dev load")
+    expect(printed).toContain("restoration is not yet confirmed")
   })
 
   it("records files created by the run in report.json", async () => {
@@ -257,13 +266,13 @@ describe("runCommand · resume wiring", () => {
   it("says which agents continue a session when the report carried one", async () => {
     writeRun("2026-01-02T00-00-00", {
       ...REPORT,
-      agentResults: [{ ...REPORT.agentResults[0], status: "success", sessionId: "s-42" }],
+      agentResults: [{ ...REPORT.agentResults[0], status: "success", session: sessionFixture }],
     })
 
     await runCommand(undefined, { resume: true })
 
-    expect(state.config?.resume).toEqual({ agents: ["dev"], sessions: { dev: "s-42" } })
-    expect(consoleLines()).toContain("dev continues its session")
+    expect(state.config?.resume).toEqual({ agents: ["dev"], sessions: { dev: sessionFixture } })
+    expect(consoleLines()).toContain("dev will attempt to resume its session")
   })
 
   it("starts a fresh run-<stamp> directory when not resuming", async () => {
@@ -274,3 +283,15 @@ describe("runCommand · resume wiring", () => {
     expect(state.config?.context?.requirement).toBe("do a thing")
   })
 })
+
+const sessionFixture: SessionRecord = {
+  agentId: "dev",
+  bindingId: "binding-dev",
+  sessionId: "s-42",
+  runtime: "fake",
+  compatibilityKey: "test-key",
+  state: "idle",
+  action: "created",
+  capabilities: { continuation: true, load: true, supplement: false },
+  observedAt: "2026-11-02T00:00:00Z",
+}

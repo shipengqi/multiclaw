@@ -20,7 +20,7 @@ function session() {
     get state() {
       return state
     },
-    capabilities: { continuation: true, supplement: false },
+    capabilities: { continuation: true, load: true, supplement: false },
     prompt: vi.fn(async (text: string) => ({ output: text, exitCode: 0, sessionId: "session-1" })),
     cancelTurn: vi.fn(async () => {}),
     close: vi.fn(async () => {
@@ -133,7 +133,6 @@ describe("AgentSessionManager", () => {
     { model: "other" },
     { workDir: "/other" },
     { systemPrompt: "other" },
-    { sessionId: "other" },
     { resume: "fork" as const },
   ])("reopens after immutable configuration changes: %j", async (change) => {
     const { manager, runtime, live } = setup()
@@ -428,7 +427,7 @@ describe("AgentSessionManager · mid-turn input", () => {
       get state() {
         return state
       },
-      capabilities: { continuation: true, supplement: options.supported !== false },
+      capabilities: { continuation: true, load: true, supplement: options.supported !== false },
       prompt: vi.fn(async (text: string) => {
         state = "running"
         if (options.hold !== false) await finish.promise

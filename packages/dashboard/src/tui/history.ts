@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { describeSession, isSessionEvent, isSessionRecord, isWorkContext } from "@multiclawcli/core"
 import { appendLines } from "./atomic"
 import { sessionDir } from "./sessions"
 import { MAX_HISTORY, type TurnView } from "./state"
@@ -64,18 +65,30 @@ function isTurnView(value: unknown): value is TurnView {
     typeof turn.phase === "string" &&
     (turn.cancelled === undefined || typeof turn.cancelled === "boolean") &&
     (turn.interrupted === undefined || typeof turn.interrupted === "boolean") &&
+    (turn.work === undefined || isWorkContext(turn.work)) &&
+    (turn.sessionEvents === undefined ||
+      (Array.isArray(turn.sessionEvents) && turn.sessionEvents.every(isSessionEvent))) &&
     (turn.acceptance === undefined || isAcceptance(turn.acceptance)) &&
     (turn.effectiveRequirement === undefined || typeof turn.effectiveRequirement === "string") &&
     isObject(turn.agents) &&
-    Object.values(turn.agents).every(isObject) &&
+    Object.values(turn.agents).every(
+      (agent) => isObject(agent) && (agent.session === undefined || isSessionRecord(agent.session))
+    ) &&
     Array.isArray(turn.stages) &&
     turn.stages.every(
       (stage) =>
         isObject(stage) &&
         (stage.outcome === undefined ||
-          ["pending", "running", "retrying", "success", "failed", "cancelled", "skipped"].includes(
-            stage.outcome
-          )) &&
+          [
+            "pending",
+            "running",
+            "retrying",
+            "handed_back",
+            "success",
+            "failed",
+            "cancelled",
+            "skipped",
+          ].includes(stage.outcome)) &&
         (stage.memberStatuses === undefined ||
           (isObject(stage.memberStatuses) &&
             Object.values(stage.memberStatuses).every(
@@ -85,6 +98,7 @@ function isTurnView(value: unknown): value is TurnView {
                   "pending",
                   "running",
                   "retrying",
+                  "handed_back",
                   "success",
                   "failed",
                   "cancelled",
@@ -162,6 +176,32 @@ export async function exportTurn(turn: TurnView, filePath: string): Promise<void
 export function formatTurnMarkdown(turn: TurnView): string {
   const lines: string[] = [`# Turn ${turn.turn}`, ""]
   if (turn.requirement) lines.push("## Requirement", "", turn.requirement, "")
+  if (turn.effectiveRequirement && turn.effectiveRequirement !== turn.requirement)
+    lines.push("## Complete requirement", "", turn.effectiveRequirement, "")
+  if (turn.routing) {
+    lines.push(
+      "## Routing",
+      "",
+      "Type: " + turn.routing.mode,
+      "Work: " + (turn.routing.workId ?? "none"),
+      "Reroutes: " + turn.routing.reroutes,
+      ""
+    )
+    if (turn.routing.error) lines.push("Incomplete: " + turn.routing.error, "")
+  }
+  if (turn.agentResults?.length) {
+    lines.push("## Execution attempts", "")
+    for (const result of turn.agentResults)
+      lines.push(
+        "- " +
+          result.agentId +
+          ": " +
+          result.status +
+          (result.handoffReason ? " — " + result.handoffReason : "") +
+          (result.error ? " — " + result.error : "")
+      )
+    lines.push("")
+  }
   if (turn.reply) {
     lines.push("## Reply", "", `_${turn.reply.mode}_`, "", turn.reply.message, "")
   } else {
@@ -194,11 +234,27 @@ export function formatTurnMarkdown(turn: TurnView): string {
       }
     }
   }
+  if (turn.sessionEvents?.length) {
+    lines.push("## Session lifecycle", "")
+    for (const event of turn.sessionEvents)
+      lines.push(
+        "- " +
+          event.record.agentId +
+          ": " +
+          event.action +
+          (event.requestedSessionId ? " target=" + event.requestedSessionId : "") +
+          " — " +
+          describeSession(event.record) +
+          (event.reason ? " — " + event.reason : "")
+      )
+    lines.push("")
+  }
   const agents = Object.values(turn.agents)
   if (agents.length > 0) {
     lines.push("## Agents", "")
     for (const agent of agents) {
       lines.push(`- ${agent.id}: ${agent.name} — ${agent.status}`)
+      if (agent.session) lines.push("  " + describeSession(agent.session))
     }
     lines.push("")
     lines.push("## Logs", "")

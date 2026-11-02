@@ -62,13 +62,16 @@ it("resumes workers once after review and does not load an older failed session"
         reviews: [],
       },
       agentResults: [
-        result("worker", { sessionId: "old" }),
-        result("reviewer", { sessionId: "review" }),
+        result("worker", { session: makeSessionRecord({ sessionId: "old" }) }),
+        result("reviewer", { session: makeSessionRecord({ sessionId: "review" }) }),
         result("worker", { status: "failed" }),
       ],
     })
   )
-  expect(resumed.resume).toEqual({ agents: ["worker"], sessions: { reviewer: "review" } })
+  expect(resumed.resume).toEqual({
+    agents: ["worker"],
+    sessions: { reviewer: makeSessionRecord({ sessionId: "review" }) },
+  })
 })
 
 describe("resolveRunDir", () => {
@@ -154,11 +157,14 @@ describe("resumeOptionsFromReport", () => {
     const { resume } = resumeOptionsFromReport(
       report({
         requirement: "ship it",
-        agentResults: [result("architect", { sessionId: "s-1" }), result("dev")],
+        agentResults: [
+          result("architect", { session: makeSessionRecord({ sessionId: "s-1" }) }),
+          result("dev"),
+        ],
       })
     )
 
-    expect(resume.sessions).toEqual({ architect: "s-1" })
+    expect(resume.sessions).toEqual({ architect: makeSessionRecord({ sessionId: "s-1" }) })
   })
 
   it("omits sessions entirely when nobody reported one", () => {
@@ -197,3 +203,20 @@ describe("resumeOptionsFromReport", () => {
     expect(() => resumeOptionsFromReport(report({ requirement: "x" }))).toThrow(/agent results/i)
   })
 })
+
+function makeSessionRecord(
+  overrides: Partial<import("@multiclawcli/core").SessionRecord> = {}
+): import("@multiclawcli/core").SessionRecord {
+  return {
+    bindingId: "test-binding",
+    agentId: "a",
+    runtime: "test-fake",
+    state: "idle",
+    action: "created",
+    sessionId: "session-1",
+    capabilities: { continuation: true, load: true, supplement: false },
+    compatibilityKey: "test-key",
+    observedAt: "2026-11-02T00:00:00Z",
+    ...overrides,
+  }
+}

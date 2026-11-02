@@ -1,4 +1,4 @@
-import type { EventBus, MultiClawEvent } from "@multiclawcli/core"
+import type { EventBus, MultiClawEvent, SessionRecord } from "@multiclawcli/core"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ConsoleReporter } from "./ConsoleReporter"
 
@@ -49,6 +49,83 @@ function reporter() {
 }
 
 describe("ConsoleReporter", () => {
+  it("reports a load request separately from confirmed restoration", () => {
+    const bus = reporter()
+    const record: SessionRecord = {
+      bindingId: "binding",
+      agentId: "dev",
+      workId: "work",
+      runtime: "acp",
+      compatibilityKey: "key",
+      state: "opening",
+      capabilities: { continuation: false, load: false, supplement: false },
+      action: "loaded",
+      observedAt: "now",
+    }
+    bus.emit(
+      event("agent:session", {
+        action: "load_requested",
+        executionId: "execution",
+        attempt: 1,
+        record,
+        requestedSessionId: "saved",
+      })
+    )
+    expect(out()).toContain("load requested target=saved")
+    expect(out()).not.toContain("Session loaded saved")
+    bus.emit(
+      event("agent:session", {
+        action: "loaded",
+        executionId: "execution",
+        attempt: 1,
+        record: { ...record, sessionId: "saved", state: "idle" },
+      })
+    )
+    expect(out()).toContain("Session loaded saved")
+  })
+
+  it("reports handoff routing and distinguishes audit from effective results", () => {
+    const bus = reporter()
+    bus.emit(
+      event("orchestration:route", { routing: { mode: "continue", workId: "work-1", reroutes: 1 } })
+    )
+    bus.emit(event("agent:handed-back", { agentName: "Dev", handoffReason: "Needs UI role" }))
+    bus.emit(
+      event("orchestration:complete", {
+        success: true,
+        totalDuration: 2,
+        totalCostUsd: 5,
+        routing: { mode: "continue", workId: "work-1", reroutes: 1 },
+        agentResults: [
+          { agentName: "Dev", status: "handed_back", duration: 1 },
+          { agentName: "UI", status: "success", duration: 1 },
+        ],
+        effectiveAgentResults: [{ agentId: "ui", status: "success" }],
+      })
+    )
+    expect(out()).toContain("work=work-1 (rerouting once)")
+    expect(out()).toContain("Dev handed back: Needs UI role")
+    expect(out()).toContain("Execution attempts (audit):")
+    expect(out()).toContain("Effective results:")
+    expect(out()).toContain("ui: success")
+    expect(out()).toContain("$5.00")
+  })
+
+  it("reports incomplete routing rather than a successful answer", () => {
+    reporter().emit(
+      event("orchestration:complete", {
+        success: false,
+        totalDuration: 0,
+        agentResults: [],
+        routing: { mode: "continue", reroutes: 1, error: "No suitable role remains" },
+        reply: { mode: "reply", message: "No available worker" },
+      })
+    )
+    expect(out()).toContain("Work incomplete")
+    expect(out()).toContain("No suitable role remains")
+    expect(out()).not.toContain("Answered")
+  })
+
   it("renders the orchestration header", () => {
     reporter().emit(
       event("orchestration:start", { name: "dev-team", totalAgents: 3, stages: [[], []] })

@@ -6,11 +6,13 @@
  * is the familiar case; the other two exist so that a greeting or a question is
  * answered instead of spinning up every agent in the config.
  */
-export type LeaderMode = "run" | "reply" | "ask"
+export type LeaderMode = "run" | "continue" | "reply" | "ask"
 
 export type LeaderDecision =
   | {
-      mode: "run"
+      mode: "run" | "continue"
+      workId?: string
+      tasks?: Array<{ agentId: string; scope: string }>
       run: string[]
       /** Complete task combining the original goal with clarification constraints. */
       requirement?: string

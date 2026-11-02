@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { EventBus } from "../event/EventBus"
@@ -11,14 +12,18 @@ import type {
   OrchestrationPreview,
   OrchestratorResult,
   ReviewVerdict,
+  RoutingInfo,
+  WorkContext,
 } from "../types/config"
 import type { StageInfo } from "../types/event"
 import type { LeaderMessage } from "../types/leader"
+import type { SessionRecord } from "../types/session"
 import { renderConversation } from "../utils/conversation"
 import { parseLeaderDecision } from "../utils/leaderDecision"
 import { renderUpstreamOutputs } from "../utils/upstream"
+import { isWorkContext } from "../utils/work"
 import { AgentRunner } from "./AgentRunner"
-import type { AgentSessionManager } from "./AgentSessionManager"
+import { AgentSessionManager } from "./AgentSessionManager"
 import { ContextManager } from "./ContextManager"
 import { buildStages } from "./StageBuilder"
 
@@ -32,6 +37,7 @@ type Resolution =
   | { kind: "run"; agents: AgentDefinition[]; reason?: string }
   | { kind: "message"; mode: LeaderMessage["mode"]; message: string }
   | { kind: "cancelled" }
+  | { kind: "error"; message: string }
 
 export class Orchestrator {
   readonly eventBus = new EventBus()
@@ -40,11 +46,67 @@ export class Orchestrator {
   private workDir: string
   /** Which configured checkpoints have already been triggered this run. */
   private checkpointTriggered = new Set<number>()
+  private originalRequirement: string
+  private work?: WorkContext
+  private routing?: RoutingInfo
+  private assignments = new Map<string, string>()
+  private excluded = new Set<string>()
+  private rerouting = false
+  private repairSpent = 0
+  private leaderCosts: Array<{ costUsd?: number }> = []
+  private ownsSessions: boolean
+  private cleanupAttempted = false
+  private offSessions: () => void
+  private sessionRecords = new Map<string, SessionRecord>()
+  private recovery = ""
+  private routeError?: string
 
   constructor(
     private config: MultiClawConfig,
-    sessions?: AgentSessionManager
+    private sessions?: AgentSessionManager
   ) {
+    config = {
+      ...config,
+      latestWork: isWorkContext(config.latestWork) ? config.latestWork : undefined,
+      resume: config.resume ? { ...config.resume } : undefined,
+    }
+    this.config = config
+    this.ownsSessions = !sessions
+    this.sessions = sessions ?? new AgentSessionManager()
+    this.offSessions = this.sessions.subscribe((event) => {
+      this.sessionRecords.set(event.record.bindingId, event.record)
+      if (event.record.sessionId && this.work && this.work.id === event.record.workId) {
+        let entry = this.work.agents.find((item) => item.agentId === event.record.agentId)
+        if (!entry) {
+          entry = { agentId: event.record.agentId }
+          this.work.agents.push(entry)
+        }
+        if (
+          !entry.session ||
+          entry.session.bindingId === event.record.bindingId ||
+          event.action === "created" ||
+          event.action === "loaded"
+        )
+          entry.session = event.record
+      }
+      this.eventBus.emit({
+        type: "agent:session",
+        timestamp: event.record.observedAt,
+        payload: event,
+      })
+      if (
+        event.record.sessionId &&
+        this.work &&
+        this.work.id === event.record.workId &&
+        this.routing
+      )
+        this.eventBus.emit({
+          type: "orchestration:route",
+          timestamp: event.record.observedAt,
+          payload: { routing: { ...this.routing }, work: structuredClone(this.work) },
+        })
+    })
+    this.originalRequirement = config.context?.requirement ?? ""
     this.workDir = path.resolve(config.workDir)
     fs.mkdirSync(this.workDir, { recursive: true })
     this.contextManager = new ContextManager(config.context)
@@ -61,22 +123,36 @@ export class Orchestrator {
       this.contextManager,
       this.workDir,
       config,
-      sessions
+      this.sessions
     )
   }
 
   async preview(options: { signal?: AbortSignal } = {}): Promise<OrchestrationPreview> {
+    try {
+      return await this.previewManaged(options)
+    } finally {
+      try {
+        if (this.ownsSessions) await this.sessions?.close()
+      } finally {
+        this.offSessions()
+      }
+    }
+  }
+
+  private async previewManaged(
+    options: { signal?: AbortSignal } = {}
+  ): Promise<OrchestrationPreview> {
     if (options.signal?.aborted)
       return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
     const policyError = this.reviewPolicyError()
     if (policyError) throw new Error(policyError)
     if (options.signal?.aborted)
       return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
-    this.prepareTaskPlan()
     const resolution = await this.resolveTurn(options.signal)
     if (resolution.kind === "cancelled" || options.signal?.aborted) {
       return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
     }
+    if (resolution.kind === "error") throw new Error(resolution.message)
     if (resolution.kind === "message") {
       return {
         name: this.config.name,
@@ -97,12 +173,161 @@ export class Orchestrator {
       name: this.config.name,
       totalAgents: agents.length + (reviewer && agents.length ? 1 : 0),
       stages: stageInfos,
+      sessions: [...agents, ...(reviewer && agents.length ? [reviewer] : [])].map((agent) =>
+        this.runner.previewSession(agent)
+      ),
       ...this.reasonField(resolution.reason),
       ...this.requirementField(),
+      originalRequirement: this.originalRequirement,
+      routing: this.routing,
     }
   }
 
   async run(options: { signal?: AbortSignal } = {}): Promise<OrchestratorResult> {
+    try {
+      return await this.runManaged(options)
+    } finally {
+      try {
+        if (this.ownsSessions && !this.cleanupAttempted) await this.sessions?.close()
+      } finally {
+        this.offSessions()
+      }
+    }
+  }
+
+  private async runManaged(options: { signal?: AbortSignal } = {}): Promise<OrchestratorResult> {
+    const started = new Date()
+    const audit: AgentResult[] = []
+    let result: OrchestratorResult
+    for (;;) {
+      this.checkpointTriggered.clear()
+      result = await this.runPass(options)
+      const effective = [
+        ...new Map(result.agentResults.map((item) => [item.agentId, item])).values(),
+      ]
+      audit.push(...result.agentResults)
+      const handbacks = effective.filter((item) => item.status === "handed_back")
+      const failure = effective.some(
+        (item) => item.status === "failed" || item.status === "cancelled"
+      )
+      if (!handbacks.length || failure || result.cancelled || options.signal?.aborted) break
+      if (
+        this.rerouting ||
+        !this.config.leader ||
+        this.config.useLeader === false ||
+        this.config.resume?.agents
+      ) {
+        this.routeError = this.rerouting
+          ? "Work handed back again; rerouting budget exhausted."
+          : "Work handed back; automatic rerouting is unavailable for this fixed team."
+        result.success = false
+        break
+      }
+      this.rerouting = true
+      for (const item of handbacks) this.excluded.add(item.agentId)
+      if (this.routing) this.routing.reroutes = 1
+      this.recovery =
+        "## Rerouting after worker handoff\nPreserve the complete requirement. Check the workspace before repeating completed operations.\n" +
+        JSON.stringify({
+          originalRequirement: this.work?.originalRequirement,
+          requirement: this.contextManager.get("requirement"),
+          handbacks: handbacks.map((item) => ({
+            agentId: item.agentId,
+            handoffReason: item.handoffReason,
+            session: item.session,
+          })),
+          completed: effective
+            .filter((item) => item.status === "success")
+            .map((item) => ({ agentId: item.agentId, output: item.output.slice(-4000) })),
+          assignments: this.work?.agents,
+        })
+      this.contextManager.set("rerouting", this.recovery)
+      this.contextManager.set("upstreamOutputs", "")
+    }
+    const effective = [...new Map(result.agentResults.map((item) => [item.agentId, item])).values()]
+    result.effectiveAgentResults = effective
+    result.agentResults = audit
+    if (this.rerouting && result.reply)
+      this.routeError = "Work remains incomplete: " + result.reply.message
+    result.originalRequirement = this.originalRequirement
+    result.routing = this.routing
+    if (this.routeError) {
+      result.success = false
+      result.routing = {
+        mode: this.routing?.mode ?? "run",
+        workId: this.work?.id,
+        reroutes: this.rerouting ? 1 : 0,
+        error: this.routeError,
+      }
+      this.eventBus.emit({
+        type: "orchestration:routing-error",
+        timestamp: new Date().toISOString(),
+        payload: { message: this.routeError },
+      })
+    }
+    if (this.work) {
+      this.work.requirement = this.contextManager.get("requirement") ?? this.work.requirement
+      const workers = effective.filter((item) => item.agentId !== this.config.review?.reviewer)
+      this.work.outcome = {
+        execution: result.cancelled
+          ? "cancelled"
+          : !this.routeError &&
+              workers.length > 0 &&
+              workers.every((item) => item.status === "success")
+            ? "success"
+            : "failed",
+        completedAgents: effective
+          .filter(
+            (item) => item.status === "success" && item.agentId !== this.config.review?.reviewer
+          )
+          .map((item) => item.agentId),
+        failedAgents: workers
+          .filter((item) => item.status !== "success")
+          .map((item) => ({ agentId: item.agentId, reason: item.error ?? item.handoffReason })),
+        ...(result.acceptance
+          ? { acceptance: { status: result.acceptance.status, reason: result.acceptance.reason } }
+          : {}),
+      }
+      result.work = this.work
+    }
+    if (this.ownsSessions) {
+      this.cleanupAttempted = true
+      try {
+        await this.sessions?.close()
+      } catch (error) {
+        result.success = false
+        result.routing = {
+          mode: this.routing?.mode ?? "run",
+          workId: this.work?.id,
+          reroutes: this.rerouting ? 1 : 0,
+          error: "Session cleanup failed: " + errorMessage(error),
+        }
+        if (this.work?.outcome) this.work.outcome.execution = "failed"
+        this.eventBus.emit({
+          type: "orchestration:routing-error",
+          timestamp: new Date().toISOString(),
+          payload: { message: result.routing.error! },
+        })
+      }
+      for (const item of [...result.agentResults, ...(result.effectiveAgentResults ?? [])]) {
+        const latest = item.session && this.sessionRecords.get(item.session.bindingId)
+        if (latest) item.session = { ...latest, action: item.session!.action }
+      }
+    }
+    const cost = sumCosts([...audit, ...this.leaderCosts])
+    if (cost !== undefined) result.totalCostUsd = cost
+    result.startTime = started.toISOString()
+    result.endTime = new Date().toISOString()
+    result.totalDuration = Date.now() - started.getTime()
+    this.eventBus.emit({
+      type: "orchestration:complete",
+      timestamp: result.endTime,
+      payload: result,
+    })
+    return result
+  }
+
+  private async runPass(options: { signal?: AbortSignal }): Promise<OrchestratorResult> {
     const startTime = new Date()
     if (options.signal?.aborted) return this.finishCancelled(startTime)
     const policyError = this.reviewPolicyError()
@@ -118,12 +343,15 @@ export class Orchestrator {
       return result
     }
     if (options.signal?.aborted) return this.finishCancelled(startTime)
-    this.prepareTaskPlan()
     const resolution = await this.resolveTurn(options.signal)
     if (resolution.kind === "cancelled" || options.signal?.aborted) {
       return this.finishCancelled(startTime)
     }
 
+    if (resolution.kind === "error") {
+      this.routeError = resolution.message
+      return this.finishEmpty(startTime, undefined, false)
+    }
     if (resolution.kind === "message") {
       return this.finishWithMessage(resolution.mode, resolution.message, startTime)
     }
@@ -132,7 +360,34 @@ export class Orchestrator {
     // No planner stage runs in a resumed turn, so nothing would re-apply the
     // plan that describes the very task being continued. Without this every
     // retried agent is handed the generic "no plan was provided" fallback.
-    if (this.config.resume) this.applyResumeTaskPlan(agents)
+    if (this.routing?.mode === "run" && !this.rerouting && !this.config.resume?.agents) {
+      try {
+        await this.sessions?.resetAgents(
+          this.config.agents
+            .filter((agent) => agent.id !== this.config.leader?.id)
+            .map((agent) => agent.id)
+        )
+        this.prepareTaskPlan()
+      } catch (error) {
+        this.routeError = "Routing incomplete: could not prepare new work: " + errorMessage(error)
+        return this.finishEmpty(startTime, undefined, false)
+      }
+    }
+    // A selected planner must produce a fresh plan, including on continuation or reroute.
+    if (
+      !this.config.resume?.agents &&
+      (this.rerouting || this.routing?.mode === "continue") &&
+      agents.some((agent) => this.isPlanner(agent))
+    ) {
+      try {
+        fs.rmSync(path.join(this.workDir, "task-plan.json"), { force: true })
+      } catch (error) {
+        this.routeError =
+          "Routing incomplete: could not clear the previous plan: " + errorMessage(error)
+        return this.finishEmpty(startTime, undefined, false)
+      }
+    }
+    if (this.config.resume?.agents && !this.config.latestWork) this.applyResumeTaskPlan(agents)
 
     // A leader can only *subtract* from the configured team, so an empty result
     // means it named nothing we recognise. Falling through would run zero stages
@@ -178,6 +433,7 @@ export class Orchestrator {
     let planApplied = false
     const executedIds = new Set<string>()
 
+    let handedBack = false
     for (let i = 0; i < stages.length; i++) {
       if (options.signal?.aborted) {
         cancelled = true
@@ -221,6 +477,24 @@ export class Orchestrator {
         break
       }
 
+      this.captureWork(agents, results)
+      handedBack = stageResults.some((item) => item.status === "handed_back")
+      if (handedBack) {
+        allSuccess = false
+        this.eventBus.emit({
+          type: "stage:complete",
+          timestamp: new Date().toISOString(),
+          payload: { stageIndex: i },
+        })
+        for (const pending of stages.slice(i + 1).flat())
+          this.eventBus.emit({
+            type: "agent:skipped",
+            timestamp: new Date().toISOString(),
+            payload: { agentId: pending.id, agentName: pending.name, icon: pending.icon },
+          })
+        break
+      }
+
       // After the planner's stage completes, apply the task plan and rebuild the
       // stages. The planner is not always stage 0 — a preset may front-load a
       // product-manager — so the trigger is "the first stage that ran a planner",
@@ -235,6 +509,7 @@ export class Orchestrator {
       ) {
         planApplied = true
         await this.applyTaskPlan(agents, executedIds)
+        this.captureWork(agents, results)
         const remaining = agents
           .filter((a) => !executedIds.has(a.id))
           .map((a) => ({
@@ -309,7 +584,7 @@ export class Orchestrator {
     }
 
     let acceptance: AcceptanceResult | undefined
-    if (this.config.review) {
+    if (this.config.review && !handedBack) {
       acceptance = await this.reviewDelivery(
         agents,
         results,
@@ -322,6 +597,7 @@ export class Orchestrator {
       allSuccess = allSuccess && acceptance.status === "approved"
     }
 
+    this.captureWork(agents, results)
     const endTime = new Date()
     // Only agents that reported a cost contribute; when none did, the field is
     // absent rather than 0 — "no data" is not the same as "free".
@@ -340,11 +616,6 @@ export class Orchestrator {
       ...this.requirementField(),
     }
 
-    this.eventBus.emit({
-      type: "orchestration:complete",
-      timestamp: new Date().toISOString(),
-      payload: result,
-    })
     return result
   }
 
@@ -386,7 +657,7 @@ export class Orchestrator {
     const acceptance: AcceptanceResult = {
       status: "failed",
       reviewer: policy.reviewer,
-      repairRounds: 0,
+      repairRounds: this.repairSpent,
       reviews: [],
     }
     if (cancelled || signal?.aborted) return { ...acceptance, status: "cancelled" }
@@ -433,7 +704,7 @@ export class Orchestrator {
         const result = await this.runner.run(
           agent,
           signal,
-          `${instruction}\n\n## Latest worker outputs\n${this.contextManager.get("upstreamOutputs") ?? ""}`
+          `${this.recovery}\n${instruction}\n\n## Latest worker outputs\n${this.contextManager.get("upstreamOutputs") ?? ""}`
         )
         results.push(result)
         // Repeated agents replace their earlier upstream output, not their audit results.
@@ -485,6 +756,7 @@ export class Orchestrator {
         return acceptance
       }
       acceptance.repairRounds++
+      this.repairSpent++
       this.warn(
         `Delivery requires changes — repair pass ${acceptance.repairRounds}/${policy.maxRepairRounds ?? 1}.`
       )
@@ -572,7 +844,7 @@ export class Orchestrator {
    * generic "no plan was provided" fallback.
    */
   private prepareTaskPlan(): void {
-    if (this.config.resume) return
+    if (this.config.resume?.agents) return
     // `force` makes the normal case — a workspace with no plan in it — a no-op
     // rather than a stat followed by a delete.
     fs.rmSync(path.join(this.workDir, "task-plan.json"), { force: true })
@@ -599,50 +871,167 @@ export class Orchestrator {
     // conversation rather than redoing a known pipeline, so the turn still has
     // to be routed — the sessions are for whichever agents the route picks.
     if (this.config.resume?.agents) {
-      return {
-        kind: "run",
-        agents: this.selectAgents(this.config.resume.agents, "The resume list"),
-      }
+      const agents = this.selectAgents(this.config.resume.agents, "The resume list")
+      this.beginWork(agents, "continue", this.config.latestWork)
+      return { kind: "run", agents }
     }
 
     if (!this.config.leader || this.config.useLeader === false) {
-      return { kind: "run", agents: this.configuredAgents() }
+      const agents = this.configuredAgents()
+      this.beginWork(agents, "run")
+      return { kind: "run", agents }
     }
 
+    const available = this.configuredAgents().filter((agent) => !this.excluded.has(agent.id))
     this.contextManager.set(
       "availableAgents",
-      this.configuredAgents()
-        .map((a) => `${a.id}: ${a.name}`)
+      available
+        .map((agent) => agent.id + ": " + agent.name + " — " + (agent.description ?? ""))
         .join("\n")
     )
-
-    const result = await this.runner.run(this.config.leader, signal)
-    if (signal?.aborted || result.status === "cancelled") return { kind: "cancelled" }
-    if (result.status !== "success") {
-      // The leader is infrastructure, not the task. Losing it is worth saying out
-      // loud, but the requirement itself may still be perfectly runnable.
-      this.warn("The leader could not be reached — running the full configured team.")
-      return { kind: "run", agents: this.configuredAgents() }
-    }
-
-    const decision = parseLeaderDecision(result.output)
-    if (decision) {
-      if (decision.mode !== "run") {
-        return { kind: "message", mode: decision.mode, message: decision.message }
+    this.contextManager.set(
+      "latestWork",
+      JSON.stringify(this.rerouting ? this.work : this.config.latestWork) ?? "No previous work."
+    )
+    const leader = this.config.leader
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await this.runner.run(
+        leader,
+        signal,
+        (this.recovery || "") +
+          (attempt
+            ? "\nYour previous routing decision was invalid or unavailable. Return exactly one valid run, continue, reply or ask decision. Do not select unavailable agents."
+            : "")
+      )
+      this.leaderCosts.push(result)
+      if (signal?.aborted || result.status === "cancelled") return { kind: "cancelled" }
+      const decision = result.status === "success" ? parseLeaderDecision(result.output) : undefined
+      if (decision && (decision.mode === "run" || decision.mode === "continue")) {
+        const known = new Set(available.map((agent) => agent.id))
+        if (
+          !decision.run.length ||
+          decision.run.some((id) => !known.has(id)) ||
+          new Set(decision.run).size !== decision.run.length
+        ) {
+          this.warn("Invalid routing agents: " + decision.run.join(", "))
+          continue
+        }
+        const previous = this.rerouting ? this.work : this.config.latestWork
+        if (
+          decision.mode === "continue" &&
+          (!previous ||
+            previous.outcome?.execution === "cancelled" ||
+            decision.workId !== previous.id)
+        )
+          continue
+        if (decision.requirement) this.contextManager.set("requirement", decision.requirement)
+        else if (decision.mode === "continue" && previous)
+          this.contextManager.set(
+            "requirement",
+            previous.requirement + "\n\n[Follow-up] " + this.originalRequirement
+          )
+        const agents = this.selectAgents(decision.run)
+        this.beginWork(agents, decision.mode, previous)
+        this.assignments = new Map((decision.tasks ?? []).map((task) => [task.agentId, task.scope]))
+        for (const task of decision.tasks ?? []) {
+          const agent = agents.find((item) => item.id === task.agentId)
+          if (agent)
+            agent.agentScope = this.assignments.get(agent.id) ?? task.scope ?? agent.agentScope
+        }
+        this.captureWork(agents, [])
+        return { kind: "run", agents, reason: decision.reason }
       }
-      if (decision.requirement) this.contextManager.set("requirement", decision.requirement)
-      return { kind: "run", agents: this.selectAgents(decision.run), reason: decision.reason }
+      if (decision && (decision.mode === "reply" || decision.mode === "ask"))
+        return { kind: "message", mode: decision.mode, message: decision.message }
+      const message = result.output.trim()
+      if (
+        result.status === "success" &&
+        message &&
+        !/^[{[]|"(?:mode|run|tasks|workId)"\s*:|multiclaw-handoff/.test(message)
+      )
+        return { kind: "message", mode: "reply", message }
     }
+    return {
+      kind: "error",
+      message: "Routing incomplete: the leader did not return a valid decision after one retry.",
+    }
+  }
 
-    // No plan at all. The leader answered in prose, and that prose *is* the
-    // answer — running every configured agent on the strength of a "hello" is
-    // precisely what this branch exists to prevent.
-    const message = result.output.trim()
-    if (!message) {
-      this.warn("The leader returned no output — running the full configured team.")
-      return { kind: "run", agents: this.configuredAgents() }
+  private beginWork(
+    agents: AgentDefinition[],
+    mode: "run" | "continue",
+    previous?: WorkContext
+  ): void {
+    const continuing = mode === "continue" || this.rerouting || !!this.config.resume?.agents
+    this.work =
+      continuing && previous
+        ? structuredClone(previous)
+        : {
+            id: randomUUID(),
+            originalRequirement: this.originalRequirement,
+            requirement: this.contextManager.get("requirement") ?? this.originalRequirement,
+            agents: [],
+          }
+    this.routing = {
+      mode: continuing ? "continue" : "run",
+      workId: this.work.id,
+      reroutes: this.rerouting ? 1 : 0,
     }
-    return { kind: "message", mode: "reply", message }
+    this.contextManager.set("workId", this.work.id)
+    if (continuing) {
+      const sessions: Record<string, SessionRecord> = {
+        ...(this.config.resume?.agents ? this.config.resume.sessions : {}),
+      }
+      for (const agent of agents) {
+        const prior = this.work.agents.find((item) => item.agentId === agent.id)
+        if (prior) {
+          agent.agentScope = prior.scope ?? agent.agentScope
+          agent.agentPlan = prior.plan ?? agent.agentPlan
+          agent.taskTitle = prior.taskTitle ?? agent.taskTitle
+          if (prior.dependsOn)
+            agent.dependsOn = prior.dependsOn.filter((id) => agents.some((item) => item.id === id))
+          if (prior.session) sessions[agent.id] = prior.session
+        }
+      }
+      this.config.resume = {
+        ...(this.config.resume?.agents ? { agents: this.config.resume.agents } : {}),
+        sessions,
+      }
+      this.recovery =
+        this.recovery ||
+        "## Continued work\nInspect the workspace and git state before repeating operations. Previous execution and acceptance facts (partial output is not verified):\n" +
+          JSON.stringify(this.work)
+    } else {
+      this.config.resume = undefined
+      this.recovery = ""
+    }
+  }
+
+  private captureWork(agents: AgentDefinition[], results: AgentResult[]): void {
+    if (!this.work || !this.routing) return
+    this.work.requirement = this.contextManager.get("requirement") ?? this.work.requirement
+    for (const agent of agents) {
+      const result = [...results].reverse().find((item) => item.agentId === agent.id)
+      const old = this.work.agents.find((item) => item.agentId === agent.id)
+      const entry = {
+        agentId: agent.id,
+        scope: agent.agentScope,
+        plan: agent.agentPlan,
+        taskTitle: agent.taskTitle,
+        dependsOn: agent.dependsOn ? [...agent.dependsOn] : undefined,
+        session:
+          result?.session?.sessionId || result?.session?.failure?.code === "cleanup_failed"
+            ? result.session
+            : (old?.session ?? result?.session),
+      }
+      this.work.agents = this.work.agents.filter((item) => item.agentId !== agent.id)
+      this.work.agents.push(entry)
+    }
+    this.eventBus.emit({
+      type: "orchestration:route",
+      timestamp: new Date().toISOString(),
+      payload: { routing: { ...this.routing }, work: structuredClone(this.work) },
+    })
   }
 
   /**
@@ -770,7 +1159,7 @@ export class Orchestrator {
         while (next < agents.length && !signal?.aborted && !cancelled) {
           const index = next
           next += 1
-          const result = await this.runner.run(agents[index], signal)
+          const result = await this.runner.run(agents[index], signal, this.recovery || undefined)
           results.set(index, result)
           if (result.status === "cancelled") cancelled = true
         }
@@ -889,8 +1278,8 @@ export class Orchestrator {
         }
         if (executedIds.has(agent.id)) continue
         agent.taskTitle = task.title
-        agent.dependsOn = dependsOn
-        agent.agentScope = task.scope
+        agent.dependsOn = dependsOn ?? agent.dependsOn
+        agent.agentScope = this.assignments.get(agent.id) ?? task.scope ?? agent.agentScope
         if (task.plan?.length) {
           agent.agentPlan = task.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")
         }
@@ -913,7 +1302,7 @@ export class Orchestrator {
       const task = taskMap.get(agent.id)
       if (!task) continue
       agent.taskTitle = task.title
-      agent.agentScope = task.scope
+      agent.agentScope = this.assignments.get(agent.id) ?? task.scope ?? agent.agentScope
       if (task.plan?.length) {
         agent.agentPlan = task.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")
       }
@@ -966,11 +1355,6 @@ export class Orchestrator {
       ...this.requirementField(),
     }
 
-    this.eventBus.emit({
-      type: "orchestration:complete",
-      timestamp: endTime.toISOString(),
-      payload: result,
-    })
     return result
   }
 
@@ -994,11 +1378,6 @@ export class Orchestrator {
       endTime: endTime.toISOString(),
       ...this.requirementField(),
     }
-    this.eventBus.emit({
-      type: "orchestration:complete",
-      timestamp: endTime.toISOString(),
-      payload: result,
-    })
     return result
   }
 
@@ -1034,11 +1413,6 @@ export class Orchestrator {
       ...this.requirementField(),
     }
 
-    this.eventBus.emit({
-      type: "orchestration:complete",
-      timestamp: endTime.toISOString(),
-      payload: result,
-    })
     return result
   }
 }
@@ -1088,7 +1462,7 @@ function errorMessage(err: unknown): string {
  * field off the result entirely: a run nobody priced must not read as costing
  * nothing.
  */
-function sumCosts(results: AgentResult[]): number | undefined {
+function sumCosts(results: Array<{ costUsd?: number }>): number | undefined {
   let total = 0
   let reported = false
   for (const result of results) {

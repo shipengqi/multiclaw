@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { EventBus } from "../event/EventBus"
 import { KILL_ESCALATION_MS, runtimeRegistry } from "../runtime"
-import { fakeRuntime, makeAgent } from "../testing/helpers"
+import { fakeRuntime, makeAgent, makeSessionRecord } from "../testing/helpers"
 import type { MultiClawConfig } from "../types/config"
 import type { MultiClawEvent } from "../types/event"
 import type { AgentOutput, AgentTask, RuntimeSessionOptions } from "../types/runtime"
@@ -77,7 +77,7 @@ describe("AgentRunner.run", () => {
     const name = "test-runner-live-session"
     let options!: RuntimeSessionOptions
     const prompt = vi.fn(async (text: string) => {
-      options.onWarning?.(text)
+      options.onWarning?.(text.includes("second") ? "second" : "first")
       return { output: text, exitCode: 0, sessionId: "live-1" }
     })
     const close = vi.fn(async () => {})
@@ -86,7 +86,7 @@ describe("AgentRunner.run", () => {
       return {
         sessionId: "live-1",
         state: "idle" as const,
-        capabilities: { continuation: true, supplement: false },
+        capabilities: { continuation: true, load: true, supplement: false },
         prompt,
         close,
         cancelTurn: async () => {},
@@ -97,7 +97,8 @@ describe("AgentRunner.run", () => {
     const config = { name: "test", workDir, agents: [] }
     const first = new AgentRunner(bus, context, workDir, config, manager)
     expect(
-      (await first.run(makeAgent({ id: "a", runtime: name, taskPrompt: "first" }))).sessionId
+      (await first.run(makeAgent({ id: "a", runtime: name, taskPrompt: "first" }))).session
+        ?.sessionId
     ).toBe("live-1")
     const nextBus = new EventBus()
     const nextEvents: MultiClawEvent[] = []
@@ -105,7 +106,7 @@ describe("AgentRunner.run", () => {
     const second = new AgentRunner(nextBus, context, workDir, config, manager)
     expect(
       (await second.run(makeAgent({ id: "a", runtime: name, taskPrompt: "second" }))).output
-    ).toBe("second")
+    ).toContain("second")
     expect(openSession).toHaveBeenCalledTimes(1)
     expect(execute).not.toHaveBeenCalled()
     expect(
@@ -175,9 +176,21 @@ describe("AgentRunner.run", () => {
         })
         throw Object.assign(new Error("cancelled after cleanup"), { name: "AbortError" })
       }),
-      openSession: async () => {
-        throw new Error("execute is the compatibility entry")
-      },
+      openSession: async () => ({
+        sessionId: "cleanup-session",
+        state: "idle",
+        capabilities: { continuation: true, load: false, supplement: false },
+        prompt: async (_text, options) => {
+          started()
+          await new Promise<void>((resolve) => {
+            release = resolve
+            expect(options?.signal).toBeDefined()
+          })
+          throw Object.assign(new Error("cancelled after cleanup"), { name: "AbortError" })
+        },
+        close: async () => {},
+        cancelTurn: async () => {},
+      }),
     })
     let finished = false
     const promise = makeRunner()
@@ -217,9 +230,22 @@ describe("AgentRunner.run", () => {
           if (outcome === "cleanup failure") throw new Error("process cleanup failed")
           throw Object.assign(new Error("aborted after cleanup"), { name: "AbortError" })
         }),
-        openSession: async () => {
-          throw new Error("execute is the compatibility entry")
-        },
+        openSession: async () => ({
+          sessionId: "cleanup-session",
+          state: "idle",
+          capabilities: { continuation: true, load: false, supplement: false },
+          prompt: async (_text, options) => {
+            runtimeSignal = options?.signal
+            started()
+            await new Promise<void>((resolve) => {
+              release = resolve
+            })
+            if (outcome === "cleanup failure") throw new Error("process cleanup failed")
+            throw Object.assign(new Error("aborted after cleanup"), { name: "AbortError" })
+          },
+          close: async () => {},
+          cancelTurn: async () => {},
+        }),
       })
       let finished = false
       const promise = makeRunner()
@@ -430,7 +456,7 @@ describe("AgentRunner.run", () => {
           agentScope: "checkout",
         })
       )
-      expect(seen?.prompt).toBe(
+      expect(seen?.prompt).toContain(
         "## Current task\nBuild the whole application\n\nImplement checkout"
       )
     }
@@ -469,7 +495,7 @@ describe("AgentRunner.run", () => {
       })
     )
 
-    expect(seen?.prompt).toBe("Build MultiClaw [scope-x]")
+    expect(seen?.prompt).toContain("Build MultiClaw [scope-x]")
   })
 
   it("forwards agent text untagged and tool activity tagged by kind", async () => {
@@ -705,18 +731,15 @@ describe("AgentRunner.run", () => {
     expect(events.some((e) => e.type === "agent:failed")).toBe(true)
   })
 
-  it("continues the agent's known session when resume names one", async () => {
-    let seen: AgentTask | undefined
-    handler = async (task) => {
-      seen = task
-      return { output: "ok", exitCode: 0 }
-    }
-
-    await makeRunner({ resume: { agents: ["a"], sessions: { a: "sess-9" } } }).run(
-      makeAgent({ id: "a", runtime: RUNTIME })
-    )
-
-    expect(seen?.sessionId).toBe("sess-9")
+  it("refuses a Session resume through an execute-only runtime", async () => {
+    const result = await makeRunner({
+      resume: {
+        agents: ["a"],
+        sessions: { a: makeSessionRecord({ agentId: "a", runtime: RUNTIME }) },
+      },
+    }).run(makeAgent({ id: "a", runtime: RUNTIME }))
+    expect(result.status).toBe("failed")
+    expect(result.session?.failure).toBeDefined()
   })
 
   it("passes no session id when resume names none", async () => {
@@ -738,7 +761,7 @@ describe("AgentRunner.run", () => {
     handler = async () => ({ output: "ok", exitCode: 0, sessionId: "sess-1" })
     const result = await makeRunner().run(makeAgent({ id: "a", runtime: RUNTIME }))
 
-    expect(result.sessionId).toBe("sess-1")
+    expect(result.session?.sessionId).toBe("sess-1")
   })
 
   it("omits sessionId entirely when the runtime reported none", async () => {

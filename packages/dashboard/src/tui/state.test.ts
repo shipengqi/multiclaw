@@ -31,6 +31,7 @@ import {
   turnElapsed,
   visibleTimeline,
 } from "./state"
+import { makeSessionRecord } from "./test-helpers"
 
 const TS = "2026-01-01T00:00:00.000Z"
 const T0 = Date.parse(TS)
@@ -1976,9 +1977,9 @@ describe("session ids", () => {
     const state = reduceEvent(withAgents("a"), {
       type: "agent:complete",
       timestamp: TS,
-      payload: result("a", { sessionId: "sess-7" }),
+      payload: result("a", { session: makeSessionRecord({ sessionId: "sess-7" }) }),
     })
-    expect(state.agents.a.sessionId).toBe("sess-7")
+    expect(state.agents.a.session?.sessionId).toBe("sess-7")
   })
 
   it("keeps the session id when a finished turn is snapshotted into history", () => {
@@ -1988,7 +1989,7 @@ describe("session ids", () => {
     const done = reduceEvent(base, {
       type: "agent:complete",
       timestamp: TS,
-      payload: result("a", { sessionId: "sess-7" }),
+      payload: result("a", { session: makeSessionRecord({ sessionId: "sess-7" }) }),
     })
     const next = tuiReducer(done, {
       type: "turn:start",
@@ -2000,7 +2001,7 @@ describe("session ids", () => {
 
     // `snapshot()` carries `agents` wholesale, so the id rides along without the
     // snapshot needing a field of its own.
-    expect(next.history[next.history.length - 1].agents.a.sessionId).toBe("sess-7")
+    expect(next.history[next.history.length - 1].agents.a.session?.sessionId).toBe("sess-7")
   })
 
   it("leaves the session id off a failed agent", () => {
@@ -2010,7 +2011,7 @@ describe("session ids", () => {
       payload: result("a", { status: "failed", error: "boom" }),
     })
     // A failed agent has no session to continue, so `/retry` re-runs it cold.
-    expect(state.agents.a.sessionId).toBeUndefined()
+    expect(state.agents.a.session?.sessionId).toBeUndefined()
   })
 })
 

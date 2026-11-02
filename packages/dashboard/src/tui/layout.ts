@@ -84,6 +84,8 @@ export interface LayoutInput {
   promptRows?: number
   /** Whether a command result is waiting to be shown. */
   notice: boolean
+  /** A single row showing route and selection reason. */
+  details?: boolean
   /** Whether there is a leader or any stage to draw. */
   hasRail: boolean
   /**
@@ -169,7 +171,12 @@ export function computeLayout(input: LayoutInput): Layout {
 
   // Selectors must leave the prompt and focused row visible on short terminals.
   const fixedRows =
-    4 + MIN_BODY_ROWS + promptRows + (input.notice ? 1 : 0) + (railRows > 0 ? railRows + 1 : 0)
+    4 +
+    MIN_BODY_ROWS +
+    promptRows +
+    (input.details ? 1 : 0) +
+    (input.notice ? 1 : 0) +
+    (railRows > 0 ? railRows + 1 : 0)
   const queueRows = Math.min(
     Math.max(0, input.queueRows ?? 0),
     MAX_QUEUE_ROWS,
@@ -191,6 +198,7 @@ export function computeLayout(input: LayoutInput): Layout {
     (railRows > 0 ? railRows + 1 : 0) + // pipeline rail plus the gap above it
     1 + // gap before the body
     (input.notice ? 1 : 0) +
+    (input.details ? 1 : 0) +
     queueRows +
     menuRows +
     promptRows +

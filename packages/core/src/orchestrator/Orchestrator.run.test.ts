@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { runtimeRegistry } from "../runtime"
-import { fakeRuntime, makeAgent } from "../testing/helpers"
+import { fakeRuntime, makeAgent, makeSessionRecord } from "../testing/helpers"
 import type { AgentDefinition } from "../types/agent"
 import type { MultiClawConfig, TurnRecord } from "../types/config"
 import type { MultiClawEvent } from "../types/event"
@@ -91,7 +91,7 @@ describe("review-gated orchestration", () => {
     expect(result.acceptance?.status).toBe("failed")
   })
 
-  it("reuses live worker and reviewer sessions throughout repair and the next turn", async () => {
+  it("reuses worker and reviewer sessions through repair but starts a new work conversation next turn", async () => {
     const runtimeName = "test-review-live-sessions"
     const opened: string[] = []
     const prompts: string[] = []
@@ -105,7 +105,7 @@ describe("review-gated orchestration", () => {
         return {
           sessionId: `review-session:${options.agentId}`,
           state: "idle" as const,
-          capabilities: { continuation: true, supplement: false },
+          capabilities: { continuation: true, load: true, supplement: false },
           prompt: async (text) => {
             prompts.push(text)
             return {
@@ -138,7 +138,7 @@ describe("review-gated orchestration", () => {
     try {
       expect((await new Orchestrator(config, sessions).run()).success).toBe(true)
       expect((await new Orchestrator(config, sessions).run()).success).toBe(true)
-      expect(opened).toEqual(["worker", "reviewer"])
+      expect(opened).toEqual(["worker", "reviewer", "worker", "reviewer"])
       expect(prompts).toHaveLength(6)
       expect(prompts[2]).toContain("Fix bug")
     } finally {
@@ -947,10 +947,10 @@ describe("Orchestrator.run", () => {
 
     const messages = warningsOf(events).map((w) => w.payload.message)
     expect(messages.some((m) => m.includes("ghost"))).toBe(true)
-    expect(messages.some((m) => m.includes("none of the configured agents"))).toBe(true)
+    expect(result.routing?.error).toContain("Routing incomplete")
   })
 
-  it("warns about an unknown agent but still runs the known ones", async () => {
+  it("rejects the entire route when it includes an unavailable agent", async () => {
     handler = async (task) =>
       task.agentId === "leader"
         ? { output: '{"mode":"run","run":["a","ghost"]}', exitCode: 0 }
@@ -960,8 +960,8 @@ describe("Orchestrator.run", () => {
       leader: agent("leader"),
     })
 
-    expect(result.agentResults.map((r) => r.agentId)).toEqual(["a"])
-    expect(result.success).toBe(true)
+    expect(result.agentResults).toEqual([])
+    expect(result.success).toBe(false)
     expect(warningsOf(events).some((w) => w.payload.message.includes("ghost"))).toBe(true)
   })
 
@@ -1133,7 +1133,7 @@ describe("Orchestrator.run · intent routing", () => {
     expect(stageStarts).toEqual([["c"]])
   })
 
-  it("falls back to the full team, loudly, when the leader fails", async () => {
+  it("retries routing once and stops without launching workers when the leader fails", async () => {
     handler = async (task) => {
       if (task.agentId === "leader") throw new Error("leader exploded")
       return { output: `out:${task.agentId}`, exitCode: 0 }
@@ -1142,21 +1142,19 @@ describe("Orchestrator.run · intent routing", () => {
       leader: agent("leader"),
     })
 
-    expect(startedIds(events)).toEqual(["leader", "a", "b"])
-    expect(result.success).toBe(true)
-    expect(
-      warningsOf(events).some((w) => w.payload.message.includes("leader could not be reached"))
-    ).toBe(true)
+    expect(startedIds(events)).toEqual(["leader", "leader"])
+    expect(result.success).toBe(false)
+    expect(result.routing?.error).toContain("Routing incomplete")
   })
 
-  it("falls back to the full team when the leader returns nothing at all", async () => {
+  it("retries routing once and stops when the leader returns nothing", async () => {
     leaderSays("   \n  ")
     const { result, events } = await runOrch([agent("a"), agent("b")], {
       leader: agent("leader"),
     })
 
-    expect(startedIds(events)).toEqual(["leader", "a", "b"])
-    expect(result.success).toBe(true)
+    expect(startedIds(events)).toEqual(["leader", "leader"])
+    expect(result.success).toBe(false)
   })
 })
 
@@ -1823,7 +1821,7 @@ describe("Orchestrator.run · resume", () => {
     ).not.toContain("architect")
   })
 
-  it("routes normally when a resume carries only sessions", async () => {
+  it("routes new work without reusing unowned session handles", async () => {
     // "Continue this conversation": the caller knows the sessions, not the team.
     // Treating that as a fixed agent list would re-run the whole pipeline instead
     // of letting the route pick who answers the new instruction.
@@ -1840,13 +1838,13 @@ describe("Orchestrator.run · resume", () => {
 
     const { result, events } = await runOrch([agent("dev")], {
       leader: agent("leader"),
-      resume: { sessions: { dev: "sess-7" } },
+      resume: { sessions: { dev: makeSessionRecord({ agentId: "dev", sessionId: "sess-7" }) } },
     })
 
     expect(leaderCalls).toBe(1)
     // The leader runs first, then the agent it routed to — in that order.
     expect(startedIds(events)).toEqual(["leader", "dev"])
-    expect(sessionIds.dev).toBe("sess-7")
+    expect(sessionIds.dev).toBeUndefined()
     expect(result.success).toBe(true)
   })
 
@@ -1994,7 +1992,7 @@ describe("checkpoint-gated orchestration", () => {
 
   it("injects feedback into the requirement on modify", async () => {
     handler = async (task) => ({
-      output: `out:${task.agentId} · prompt:${task.prompt.slice(-60)}`,
+      output: `out:${task.agentId} · prompt:${task.prompt}`,
       exitCode: 0,
     })
     const { result } = await runOrch(

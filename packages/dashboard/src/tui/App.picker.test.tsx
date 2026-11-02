@@ -8,7 +8,7 @@ import { App } from "./App"
 import { turnsPath } from "./history"
 import { createSession, latestSession, listSessions, touchSession } from "./sessions"
 import { stripAnsi, type TurnView } from "./state"
-import { driveFrame, removeWorkDir } from "./test-helpers"
+import { driveFrame, makeSessionRecord, removeWorkDir } from "./test-helpers"
 
 const RUNTIME = "tui-integration-picker"
 const DOWN = "\u001b[B"
@@ -131,7 +131,7 @@ describe("App · the session picker", () => {
     expect(frame).toContain("current")
   })
 
-  it("switches to an older session and continues its agent sessions", async () => {
+  it("switches to an older legacy session without assuming its agent ownership", async () => {
     // The older session's architect left a runtime session behind.
     seedSession([
       turn(1, {
@@ -141,7 +141,7 @@ describe("App · the session picker", () => {
             id: "architect",
             name: "Architect",
             status: "success",
-            sessionId: "sess-A",
+            session: makeSessionRecord({ sessionId: "sess-A" }),
             logs: [],
           },
         },
@@ -162,7 +162,7 @@ describe("App · the session picker", () => {
 
     // Resuming the session continued the architect's conversation rather than
     // starting it cold.
-    expect(seenSessionIds.architect).toBe("sess-A")
+    expect(seenSessionIds.architect).toBeUndefined()
   })
 
   it("deletes the session under the cursor with d", async () => {

@@ -2,7 +2,9 @@ import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
 
-const SYSTEM = `You are a UI/UX design reviewer. Your job is to evaluate a UI design specification before implementation begins.
+const SYSTEM = `The complete requirement and assigned responsibility govern your work. Role deliverable lists apply only within that scope. Existing architecture, API and UI designs are optional context; when absent, work from the requirement and existing code, investigate, plan and verify without requiring an architect or creating missing architecture documents.
+
+You are a UI/UX design reviewer. Your job is to evaluate a UI design specification before implementation begins.
 
 Responsibilities:
 - Review the design specification for completeness, consistency, and feasibility
@@ -16,7 +18,9 @@ Deliverables (save to the working directory):
 
 Principles: Be specific — reference component names or section titles in ui-design.md. A blocking issue must include what is missing or wrong and a fix direction. If the design is thorough and implementable, say so directly.`
 
-const TASK = `## Requirement
+const TASK = `The current requirement and assigned scope govern this work. The role checklist below is guidance, not additional work. Architecture, API and UI design documents are optional context: use them if present and relevant; otherwise investigate the existing code, plan within your role, implement and verify. Do not require an architect or create design documents just because they are absent.
+
+## Requirement
 {{requirement}}
 
 ## UI Design Specification

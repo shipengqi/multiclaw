@@ -1,19 +1,22 @@
+import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { resolvePermissionMode } from "../config/permissionMode"
 import type { EventBus } from "../event/EventBus"
-import { resolveArgs, resolveCommand, resolveModel } from "../providers/resolve"
+import { resolveArgs, resolveCommand, resolveModel, resolveProvider } from "../providers/resolve"
 import { KILL_ESCALATION_MS, runtimeRegistry } from "../runtime"
 import type { AgentDefinition, AgentResult } from "../types/agent"
 import type { MultiClawConfig } from "../types/config"
 import type { AgentOutput, AgentTask } from "../types/runtime"
+import type { SessionIntent, SessionRecord } from "../types/session"
 import { abortError, isAbortError } from "../utils/abort"
 import { isPermanent } from "../utils/errors"
+import { HANDOFF_INSTRUCTION, parseHandoff } from "../utils/handoff"
 import { renderPrompt } from "../utils/prompt"
 import { DEFAULT_RETRY_DELAY_MS, retryBudgetMs, withRetry } from "../utils/retry"
 import { withTimeout } from "../utils/timeout"
 import { summarizeToolInput, summarizeToolOutput } from "../utils/toolSummary"
-import type { AgentSessionManager } from "./AgentSessionManager"
+import { AgentSessionManager } from "./AgentSessionManager"
 import type { ContextManager } from "./ContextManager"
 
 /** The `kind` a chunk of agent output carries on the `agent:output` event. */
@@ -28,12 +31,51 @@ export class AgentRunner {
     private sessionManager?: AgentSessionManager
   ) {}
 
+  private sessionTask(agent: AgentDefinition): AgentTask {
+    return {
+      agentId: agent.id,
+      workId: agent.id === this.config.leader?.id ? undefined : this.contextManager.get("workId"),
+      systemPrompt: agent.systemPrompt,
+      prompt: "",
+      workDir: agent.workDir ? path.resolve(this.globalWorkDir, agent.workDir) : this.globalWorkDir,
+      timeout: agent.timeout ?? 600_000,
+      model: resolveModel(agent, this.config),
+      provider: resolveProvider(agent, this.config),
+      command: resolveCommand(agent, this.config),
+      args: resolveArgs(agent, this.config),
+      onQuestion: this.config.questions?.onRequest,
+    }
+  }
+
+  previewSession(agent: AgentDefinition): SessionIntent {
+    const task = this.sessionTask(agent)
+    return (this.sessionManager ?? new AgentSessionManager()).inspect(
+      runtimeRegistry.get(agent.runtime ?? "acp"),
+      task,
+      { session: this.config.resume?.sessions?.[agent.id], strict: !!this.config.resume?.agents }
+    )
+  }
+
   async run(
     agent: AgentDefinition,
     signal?: AbortSignal,
     instruction?: string
   ): Promise<AgentResult> {
     const startTime = new Date()
+    const executionId = randomUUID()
+    const manager = this.sessionManager ?? new AgentSessionManager()
+    let session: SessionRecord | undefined
+    let finalResult: AgentResult | undefined
+    const offSession = manager.subscribe((event) => {
+      if (event.executionId !== executionId) return
+      session = event.record
+      if (!this.sessionManager)
+        this.eventBus.emit({
+          type: "agent:session",
+          timestamp: event.record.observedAt,
+          payload: event,
+        })
+    })
     const model = resolveModel(agent, this.config)
 
     this.eventBus.emit({
@@ -71,7 +113,7 @@ export class AgentRunner {
       const permissionMode = resolvePermissionMode(this.config, agent)
 
       // The inner timeout bounds one attempt; the outer deadline covers every
-      // attempt and its backoff. Include the SIGKILL grace so legacy runtimes
+      // attempt and its backoff. Include the SIGKILL grace so execute-only runtimes
       // get their full attempt budget. Session runtimes can also spend time in
       // startup and teardown: the outer deadline aborts them, but waits for
       // their cleanup acknowledgement before publishing a final agent event.
@@ -88,9 +130,13 @@ export class AgentRunner {
                 // agent, and the no-leader path has no plan at all — so without a
                 // default the model is handed the literal text `{{agentScope}}`
                 // and has to guess what it was supposed to say.
-                agentScope: agent.agentScope ?? "Not narrowed down — cover the whole task.",
+                agentScope:
+                  agent.agentScope?.trim() ||
+                  "Fulfil the current requirement within your role: " +
+                    (agent.description ?? agent.name),
                 agentPlan:
-                  agent.agentPlan ?? "No step-by-step plan was provided — use your judgement.",
+                  agent.agentPlan?.trim() ||
+                  "No step-by-step plan was provided — use your judgement.",
               }
               let prompt = await renderPrompt(agent.taskPrompt, agentContext, this.globalWorkDir)
               const requirement =
@@ -98,6 +144,16 @@ export class AgentRunner {
               if (agent.id !== this.config.leader?.id && requirement !== undefined) {
                 prompt = `## Current task\n${requirement}\n\n${prompt}`
               }
+              if (agent.id !== this.config.leader?.id && agent.id !== this.config.review?.reviewer)
+                prompt =
+                  "## Assigned responsibility\n" +
+                  agentContext.agentScope +
+                  "\n\n## Planning\n" +
+                  agentContext.agentPlan +
+                  "\n\n" +
+                  prompt
+              if (agent.id !== this.config.leader?.id && agent.id !== this.config.review?.reviewer)
+                prompt += "\n\n" + HANDOFF_INSTRUCTION
               if (instruction) prompt += `\n\n${instruction}`
               // One row per tool call, printed once it can say what the tool was
               // asked to do. ACP announces a call before its arguments have
@@ -113,31 +169,17 @@ export class AgentRunner {
                 this.emitOutput(agent.id, `\n› ${name}${summary ? ` ${summary}` : ""}\n`, "tool")
               }
               const task: AgentTask = {
-                agentId: agent.id,
-                systemPrompt: agent.systemPrompt,
+                ...this.sessionTask(agent),
                 prompt,
                 permissionMode,
                 onPermission: this.config.permissions?.onRequest,
                 onQuestion: this.config.questions?.onRequest,
-                workDir,
-                timeout,
                 signal:
                   runtime.openSession && signal
                     ? AbortSignal.any([innerSignal, signal])
                     : innerSignal,
                 model,
-                // Only the caller knows which session to continue; absent means a
-                // fresh one. It must stay `undefined` rather than `""` — the ACP
-                // runtime tests `if (task.sessionId)`, so an empty string would
-                // read as "load this session" for a session that does not exist.
-                sessionId: this.config.resume?.sessions?.[agent.id],
-                // Resolve through provider/defaults exactly as the CLI's
-                // availability gate does — an agent that pins `provider` (or
-                // leans on `defaults`) must launch that provider's bridge, not
-                // the runtime's built-in default. Passing the raw `agent.command`
-                // here sent a `provider: "claude"` config straight to `opencode`.
-                command: resolveCommand(agent, this.config),
-                args: resolveArgs(agent, this.config),
+                provider: resolveProvider(agent, this.config),
                 // A runtime's diagnostics travel on the event bus rather than
                 // stderr: under the TUI's alternate screen a stderr write is
                 // never seen. The agent name prefixes the line so it is
@@ -183,9 +225,12 @@ export class AgentRunner {
                   }
                 },
               }
-              return await (this.sessionManager
-                ? this.sessionManager.execute(runtime, task)
-                : runtime.execute(task))
+              return await manager.execute(runtime, task, {
+                session: this.config.resume?.sessions?.[agent.id],
+                strict: !!this.config.resume?.agents,
+                executionId,
+                attempt,
+              })
             },
             retries,
             (attempt, err) => {
@@ -219,22 +264,29 @@ export class AgentRunner {
       output = completed.output
       usage = completed.usage
       costUsd = completed.costUsd
-      // The session id, when the runtime reported one, is what a later resume
-      // continues. Captured on the success path only: a failed turn has no
-      // `AgentOutput`, and a dead turn's session is not one worth loading.
-      const sessionId = completed.sessionId
       const incomplete = completed.stopReason !== undefined && completed.stopReason !== "success"
       const cancelled = completed.stopReason === "cancelled"
-      const failed = completed.exitCode !== 0 || incomplete
-      const error = failed
-        ? `Runtime turn did not complete (${completed.stopReason ?? `exit code ${completed.exitCode}`})`
-        : undefined
+      const handoff =
+        completed.exitCode === 0 &&
+        !incomplete &&
+        agent.id !== this.config.leader?.id &&
+        agent.id !== this.config.review?.reviewer
+          ? parseHandoff(output)
+          : undefined
+      const failed = completed.exitCode !== 0 || incomplete || !!(handoff && "error" in handoff)
+      const error =
+        handoff && "error" in handoff
+          ? handoff.error
+          : failed
+            ? `Runtime turn did not complete (${completed.stopReason ?? `exit code ${completed.exitCode}`})`
+            : undefined
 
       const endTime = new Date()
       const result: AgentResult = {
         agentId: agent.id,
         agentName: agent.name,
-        status: cancelled ? "cancelled" : failed ? "failed" : "success",
+        status: cancelled ? "cancelled" : failed ? "failed" : handoff ? "handed_back" : "success",
+        ...(handoff && "reason" in handoff ? { handoffReason: handoff.reason } : {}),
         ...(error ? { error } : {}),
         output,
         duration: endTime.getTime() - startTime.getTime(),
@@ -244,13 +296,9 @@ export class AgentRunner {
         model,
         ...(usage ? { usage } : {}),
         ...(costUsd !== undefined ? { costUsd } : {}),
-        ...(sessionId ? { sessionId } : {}),
+        ...(session ? { session } : {}),
       }
-      this.eventBus.emit({
-        type: failed ? "agent:failed" : "agent:complete",
-        timestamp: new Date().toISOString(),
-        payload: result,
-      })
+      finalResult = result
       return result
     } catch (err) {
       const endTime = new Date()
@@ -267,13 +315,36 @@ export class AgentRunner {
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),
         model,
+        ...(session ? { session } : {}),
       }
-      this.eventBus.emit({
-        type: "agent:failed",
-        timestamp: new Date().toISOString(),
-        payload: result,
-      })
+      finalResult = result
       return result
+    } finally {
+      try {
+        if (!this.sessionManager) await manager.close()
+      } catch (error) {
+        if (finalResult) {
+          finalResult.status = "failed"
+          finalResult.error =
+            (finalResult.error ? finalResult.error + "; " : "") +
+            "Session cleanup failed: " +
+            String(error)
+        }
+      } finally {
+        if (finalResult && session) finalResult.session = session
+        offSession()
+        if (finalResult)
+          this.eventBus.emit({
+            type:
+              finalResult.status === "success"
+                ? "agent:complete"
+                : finalResult.status === "handed_back"
+                  ? "agent:handed-back"
+                  : "agent:failed",
+            timestamp: finalResult.endTime,
+            payload: finalResult,
+          })
+      }
     }
   }
 

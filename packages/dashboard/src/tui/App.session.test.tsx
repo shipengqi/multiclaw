@@ -102,7 +102,7 @@ describe("App · caller-owned live sessions", () => {
           get state() {
             return state
           },
-          capabilities: { continuation: true, supplement: steerCapable },
+          capabilities: { continuation: true, load: true, supplement: steerCapable },
           // A bridge that never advertised `_session/steering` has no method to
           // call, so the fake leaves it off rather than answering "idle" — the
           // console has to tell "not supported" apart from "nothing running".
@@ -246,7 +246,7 @@ describe("App · caller-owned live sessions", () => {
     expect(frame).not.toContain("finished with failures")
   })
 
-  it("opens each agent once across two turns and gives each prompt a fresh signal", async () => {
+  it("retains the leader and opens a new worker for new work with fresh signals", async () => {
     const tracker = turns(2)
     const frame = stripAnsi(
       await driveFrame(<App config={config()} sessions={sessions} onTurnStart={tracker.start} />, {
@@ -255,7 +255,7 @@ describe("App · caller-owned live sessions", () => {
       })
     )
     expect(tracker.completed()).toBe(2)
-    expect(opened).toEqual(["leader", "architect"])
+    expect(opened).toEqual(["leader", "architect", "architect"])
     expect(prompts.map(({ agentId }) => agentId)).toEqual([
       "leader",
       "architect",

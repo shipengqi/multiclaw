@@ -742,6 +742,23 @@ describe("AcpRuntime.openSession", () => {
     expect(completed).toBe(true)
   })
 
+  it.each([true, false, undefined])(
+    "exposes negotiated Session load capability %s",
+    async (loadSession) => {
+      const child = new FakeChild()
+      attachAgent(child, {
+        initialize: () => ({
+          protocolVersion: acp.PROTOCOL_VERSION,
+          agentCapabilities: { loadSession },
+        }),
+      })
+      const session = await openWith(child)
+      expect(session.capabilities.load).toBe(loadSession === true)
+      expect(session.capabilities.continuation).toBe(true)
+      await session.close()
+    }
+  )
+
   it("ignores session/load replay when collecting the next turn", async () => {
     const child = new FakeChild()
     attachAgent(child, {
@@ -1004,7 +1021,7 @@ describe("AcpRuntime · mid-turn input", () => {
     const agent = steeringAgent()
     const session = await openWith(agent.child)
     try {
-      expect(session.capabilities).toEqual({ continuation: true, supplement: true })
+      expect(session.capabilities).toEqual({ continuation: true, load: false, supplement: true })
       const turn = session.prompt("long task")
       await agent.started.promise
 
@@ -1080,7 +1097,7 @@ describe("AcpRuntime · mid-turn input", () => {
     const agent = steeringAgent({ advertised: false })
     const session = await openWith(agent.child)
     try {
-      expect(session.capabilities).toEqual({ continuation: true, supplement: false })
+      expect(session.capabilities).toEqual({ continuation: true, load: false, supplement: false })
       await expect(session.supplement?.("hello")).rejects.toThrow(/mid-turn input/i)
       expect(agent.steers).toEqual([])
     } finally {

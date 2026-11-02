@@ -419,6 +419,7 @@ export class AcpRuntime extends RuntimeBase {
       let sessionId = ""
       /** Negotiated during `initialize`; decides whether `supplement` exists. */
       let steeringSupported = false
+      let loadSupported = false
       let active: ActiveTurn | undefined
       let childClosed = false
       let terminalError: Error | undefined
@@ -972,7 +973,7 @@ export class AcpRuntime extends RuntimeBase {
         get capabilities() {
           // Read, not captured: the negotiation happens in `initialize`, after
           // this object exists.
-          return { continuation: true, supplement: steeringSupported }
+          return { continuation: true, load: loadSupported, supplement: steeringSupported }
         },
         prompt,
         supplement,
@@ -990,6 +991,7 @@ export class AcpRuntime extends RuntimeBase {
         })
         if (terminalError) throw terminalError
         steeringSupported = advertisesSteering(init)
+        loadSupported = init.agentCapabilities?.loadSession === true
         if (options.sessionId) {
           if (init.agentCapabilities?.loadSession !== true) {
             throw new PermanentError(

@@ -93,7 +93,7 @@ beforeEach(() => {
           get state() {
             return state
           },
-          capabilities: { continuation: true, supplement: false },
+          capabilities: { continuation: true, load: true, supplement: false },
           async prompt(text, promptOptions) {
             if (state !== "idle") throw new Error("overlapping prompt")
             state = "running"
@@ -222,7 +222,40 @@ describe("App · reusable live sessions", () => {
     expect(execute).not.toHaveBeenCalled()
   })
 
-  it("reuses leader and worker handles across two normal turns", async () => {
+  it("continues the latest work after a dialogue turn using the same worker handle", async () => {
+    let workId = ""
+    respond = async (handle, text) => {
+      if (handle.agentId !== "leader") return { output: "done", exitCode: 0 }
+      if (handle.prompts.length === 1) return { output: PLAN, exitCode: 0 }
+      const match = text.match(/## Latest Work\n([^\n]+)/)
+      const work = JSON.parse(match?.[1] ?? "null")
+      if (handle.prompts.length === 2) {
+        workId = work.id
+        return { output: '{"mode":"reply","message":"The API is complete."}', exitCode: 0 }
+      }
+      expect(work.id).toBe(workId)
+      return {
+        output: JSON.stringify({ mode: "continue", workId, run: ["architect"] }),
+        exitCode: 0,
+      }
+    }
+    const done = completions()
+    await driveFrame(<App config={config} onTurnStart={done.onTurnStart} />, {
+      keys: ["build API", "\r"],
+      ready: done.ready,
+      thenKeys: ["explain the API", "\r", "add pagination to that API", "\r"],
+      settleMs: 500,
+    })
+    await vi.waitFor(() => expect(currentTurns()).toHaveLength(3))
+    expect(currentTurns()[2]?.work?.id).toBe(workId)
+    expect(currentTurns()[2]?.routing?.mode).toBe("continue")
+    expect(handles.map((handle) => handle.agentId)).toEqual(["leader", "architect"])
+    expect(handles[1].prompts).toHaveLength(2)
+    expect(handles[1].prompts[1]).toContain("build API")
+    expect(handles[1].prompts[1]).toContain("add pagination to that API")
+  })
+
+  it("retains the leader but replaces worker handles for new work", async () => {
     const done = completions()
     await driveFrame(<App config={config} onTurnStart={done.onTurnStart} />, {
       keys: ["first task", "\r"],
@@ -230,8 +263,8 @@ describe("App · reusable live sessions", () => {
       thenKeys: ["second task", "\r"],
       settleMs: 300,
     })
-    expect(handles.map((handle) => handle.agentId)).toEqual(["leader", "architect"])
-    expect(handles.map((handle) => handle.prompts.length)).toEqual([2, 2])
+    expect(handles.map((handle) => handle.agentId)).toEqual(["leader", "architect", "architect"])
+    expect(handles.map((handle) => handle.prompts.length)).toEqual([2, 1, 1])
     expect(execute).not.toHaveBeenCalled()
   })
 
@@ -260,7 +293,7 @@ describe("App · reusable live sessions", () => {
     }
   )
 
-  it("carries successful fallback workers instead of the failed leader into the next prompt", async () => {
+  it("corrects the failed leader before executing and carries worker facts into the next prompt", async () => {
     if (!config.leader) throw new Error("test config requires a leader")
     config.leader.retries = 0
     respond = async (handle) => ({
@@ -274,7 +307,7 @@ describe("App · reusable live sessions", () => {
       thenKeys: ["second task", "\r"],
       settleMs: 300,
     })
-    const prompt = handles.find((handle) => handle.agentId === "leader")?.prompts[1]
+    const prompt = handles.find((handle) => handle.agentId === "leader")?.prompts[2]
     expect(prompt).toContain("   execution: success\n")
     expect(prompt).toContain("   completed: architect\n")
     expect(prompt).toContain("   failed: none\n")

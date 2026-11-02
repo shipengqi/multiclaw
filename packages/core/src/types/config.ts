@@ -2,21 +2,38 @@ import type { AgentDefinition, PermissionMode } from "./agent"
 import type { LeaderMessage } from "./leader"
 import type { RuntimePermissionHandler, RuntimeQuestionHandler } from "./runtime"
 
-/**
- * One finished turn of a session, as dialogue the leader can read back.
- *
- * A requirement alone is not always interpretable: when the leader asked "which
- * database?" and the user answered "Postgres", turn two's requirement is the
- * bare word "Postgres". Paired with the turn that produced the question it is
- * obvious; on its own it is not.
- */
+/** Caller-owned facts for the latest work in this console session. */
+export interface WorkContext {
+  id: string
+  originalRequirement: string
+  requirement: string
+  agents: Array<{
+    agentId: string
+    scope?: string
+    plan?: string
+    session?: import("./session").SessionRecord
+    dependsOn?: string[]
+    taskTitle?: string
+  }>
+  outcome?: TurnOutcome
+}
+
+export interface RoutingInfo {
+  mode: "run" | "continue"
+  workId?: string
+  reroutes: number
+  error?: string
+}
+
+/** One session turn, paired with its reply and observed execution facts. */
 export interface TurnRecord {
   /** What the user asked for. */
   requirement: string
   /** How the turn ended in words, when it ended that way. */
   reply?: LeaderMessage
-  /** Observed execution and acceptance facts; absent in older caller-provided history. */
+  /** Observed execution and acceptance facts when agents ran. */
   outcome?: TurnOutcome
+  work?: WorkContext
 }
 
 /** Compact facts for the next leader turn, not a model-generated summary or retry instruction. */
@@ -94,6 +111,8 @@ export interface MultiClawConfig {
    * unset and sees no conversation at all.
    */
   history?: TurnRecord[]
+  /** Latest work only; dialogue turns do not replace it. */
+  latestWork?: WorkContext
   /**
    * Continue known agent sessions, and optionally re-run a fixed set of agents
    * instead of letting the leader route.
@@ -108,15 +127,14 @@ export interface MultiClawConfig {
    *   whichever agents the route happens to pick. This is what makes a new
    *   instruction land in a conversation the agents already remember.
    *
-   * Like `history`, it is per-run state the caller carries: core has no session
-   * of its own, and a config that never resumes leaves it unset and behaves
-   * exactly as before.
+   * Session records are candidates, checked by core against work identity and
+   * immutable creation settings. Loading is confirmed only by runtime success.
    */
   resume?: {
     /** Agent ids to run, in the order they were originally selected. */
     agents?: string[]
-    /** agentId → session id, for agents whose session is worth continuing. */
-    sessions?: Record<string, string>
+    /** agentId → observed Session facts used to check continuation or loading. */
+    sessions?: Record<string, import("./session").SessionRecord>
   }
   logDir?: string
   continueOnError?: boolean
@@ -150,6 +168,9 @@ export interface MultiClawConfig {
 }
 
 export interface OrchestrationPreview {
+  sessions?: import("./session").SessionIntent[]
+  originalRequirement?: string
+  routing?: RoutingInfo
   name: string
   requirement?: string
   totalAgents: number
@@ -169,6 +190,11 @@ export interface DeliverableSummary {
 }
 
 export interface OrchestratorResult {
+  originalRequirement?: string
+  routing?: RoutingInfo
+  work?: WorkContext
+  /** Current route results; agentResults remains the full execution audit. */
+  effectiveAgentResults?: import("./agent").AgentResult[]
   name: string
   /** With review enabled, true only when execution and delivery acceptance both succeed. */
   success: boolean

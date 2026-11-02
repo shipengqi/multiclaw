@@ -10,5 +10,13 @@ export { AcpRuntime, runtimeRegistry } from "./runtime"
 export { validateRuntimeQuestionContent } from "./runtime/AcpRuntime"
 export { RuntimeBase } from "./runtime/RuntimeBase"
 export * from "./types"
+export type { SessionEvent, SessionIntent, SessionRecord } from "./types/session"
 export { ABORT_ERROR_NAME, abortError, isAbortError } from "./utils/abort"
 export { describeResumePlan, type ResumePlan } from "./utils/resumePlan"
+export {
+  describeSession,
+  isSessionEvent,
+  isSessionRecord,
+  sessionCompatibilityKey,
+} from "./utils/session"
+export { isWorkContext } from "./utils/work"

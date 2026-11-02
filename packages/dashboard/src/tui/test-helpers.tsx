@@ -259,3 +259,20 @@ export async function driveFrame(
   await app.waitUntilExit()
   return stdout.output
 }
+
+export function makeSessionRecord(
+  overrides: Partial<import("@multiclawcli/core").SessionRecord> = {}
+): import("@multiclawcli/core").SessionRecord {
+  return {
+    bindingId: "test-binding",
+    agentId: "a",
+    runtime: "test-fake",
+    state: "idle",
+    action: "created",
+    sessionId: "session-1",
+    capabilities: { continuation: true, load: true, supplement: false },
+    compatibilityKey: "test-key",
+    observedAt: "2026-11-02T00:00:00Z",
+    ...overrides,
+  }
+}

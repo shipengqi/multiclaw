@@ -124,7 +124,10 @@ export type RuntimeQuestionHandler = (
 ) => Promise<RuntimeQuestionResponse>
 
 export interface AgentTask {
+  /** Host work identity, independent of provider session identity. */
+  workId?: string
   agentId: string
+  provider?: string
   systemPrompt: string
   prompt: string
   workDir: string
@@ -221,7 +224,7 @@ export interface RuntimeSession {
    * `_meta.steering.supported`), so a bridge that does not implement it is
    * reported as unable instead of being sent a method it will ignore.
    */
-  readonly capabilities: { continuation: boolean; supplement: boolean }
+  readonly capabilities: { continuation: boolean; load: boolean; supplement: boolean }
   /** Rejects overlapping turns; it does not implicitly queue or inject input. */
   prompt(text: string, options?: RuntimePromptOptions): Promise<AgentOutput>
   /**

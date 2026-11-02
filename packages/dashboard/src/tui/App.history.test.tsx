@@ -8,7 +8,7 @@ import { App } from "./App"
 import { turnsPath } from "./history"
 import { createSession, latestSession } from "./sessions"
 import { stripAnsi, type TurnView } from "./state"
-import { driveFrame, removeWorkDir } from "./test-helpers"
+import { driveFrame, makeSessionRecord, removeWorkDir } from "./test-helpers"
 
 const RUNTIME = "tui-integration-history"
 
@@ -188,7 +188,7 @@ describe("App · remembering turns across sessions", () => {
     expect(turns.some((t) => t.requirement === "persist me" && t.phase === "complete")).toBe(true)
   })
 
-  it("continues the most recent turn's sessions automatically when resumed", async () => {
+  it("does not infer ownership from legacy session ids when resumed", async () => {
     const id = seedSession([
       {
         ...savedTurn(1, "design the thing"),
@@ -197,7 +197,7 @@ describe("App · remembering turns across sessions", () => {
             id: "architect",
             name: "Architect",
             status: "success",
-            sessionId: "sess-1",
+            session: makeSessionRecord({ sessionId: "sess-1" }),
             logs: [],
           },
         },
@@ -221,6 +221,6 @@ describe("App · remembering turns across sessions", () => {
       { keys: ["next step", "\r"], ready: finished, settleMs: 200 }
     )
 
-    expect(seenSessionIds.architect).toBe("sess-1")
+    expect(seenSessionIds.architect).toBeUndefined()
   })
 })
