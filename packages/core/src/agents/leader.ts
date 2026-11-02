@@ -1,4 +1,3 @@
-import { markPresetTools } from "../config/toolsPolicy"
 import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
@@ -37,20 +36,16 @@ Output a single JSON object — exactly one of:
 Agent IDs must come from the Available Agents list above.`
 
 export function leader(overrides?: Overrides): AgentDefinition {
-  return markPresetTools(
-    {
-      id: "leader",
-      name: "Leader",
-      icon: "★",
-      description: "routes the request",
-      runtime: "acp",
-      models: { acp: "sonnet" },
-      modelTier: "balanced",
-      systemPrompt: SYSTEM,
-      taskPrompt: TASK,
-      tools: ["Read", "Bash"],
-      ...overrides,
-    },
-    overrides
-  )
+  return {
+    id: "leader",
+    name: "Leader",
+    icon: "★",
+    description: "routes the request",
+    runtime: "acp",
+    models: { acp: "sonnet" },
+    modelTier: "balanced",
+    systemPrompt: SYSTEM,
+    taskPrompt: TASK,
+    ...overrides,
+  }
 }

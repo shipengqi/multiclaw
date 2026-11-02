@@ -1,4 +1,3 @@
-import { markPresetTools } from "../config/toolsPolicy"
 import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
@@ -32,20 +31,16 @@ Based on the context above, create requirements.md in the current directory cont
 Create the file directly. Mark uncertain items as OP- rather than guessing.`
 
 export function productManager(overrides?: Overrides): AgentDefinition {
-  return markPresetTools(
-    {
-      id: "product-manager",
-      name: "Product Manager",
-      icon: "≡",
-      description: "writes the requirements",
-      runtime: "acp",
-      models: { acp: "sonnet" },
-      modelTier: "balanced",
-      systemPrompt: SYSTEM,
-      taskPrompt: TASK,
-      tools: ["Write"],
-      ...overrides,
-    },
-    overrides
-  )
+  return {
+    id: "product-manager",
+    name: "Product Manager",
+    icon: "≡",
+    description: "writes the requirements",
+    runtime: "acp",
+    models: { acp: "sonnet" },
+    modelTier: "balanced",
+    systemPrompt: SYSTEM,
+    taskPrompt: TASK,
+    ...overrides,
+  }
 }

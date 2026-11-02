@@ -9,6 +9,7 @@ function config(preset = "backend"): string {
     workDir: ".",
     projectName: "demo",
     provider: "opencode",
+    permissionMode: "ask",
   })
 }
 
@@ -40,6 +41,7 @@ describe("generateConfig", () => {
       workDir: ".",
       projectName: 'a"b',
       provider: "opencode",
+      permissionMode: "ask",
     })
     expect(out).toContain('name: "a\\"b"')
   })

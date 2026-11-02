@@ -1,6 +1,5 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { validateToolsPolicy } from "../config/toolsPolicy"
 import { EventBus } from "../event/EventBus"
 import { resolveModel } from "../providers/resolve"
 import type { AgentDefinition, AgentResult, TaskPlan } from "../types/agent"
@@ -71,13 +70,6 @@ export class Orchestrator {
       return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
     const policyError = this.reviewPolicyError()
     if (policyError) throw new Error(policyError)
-    try {
-      await validateToolsPolicy(this.config, options)
-    } catch (error) {
-      if (options.signal?.aborted)
-        return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
-      throw error
-    }
     if (options.signal?.aborted)
       return { name: this.config.name, totalAgents: 0, stages: [], ...this.requirementField() }
     this.prepareTaskPlan()
@@ -124,13 +116,6 @@ export class Orchestrator {
         reason: policyError,
       })
       return result
-    }
-    try {
-      await validateToolsPolicy(this.config, options)
-    } catch (error) {
-      if (options.signal?.aborted) return this.finishCancelled(startTime)
-      this.warn(errorMessage(error))
-      return this.finishEmpty(startTime, undefined, false)
     }
     if (options.signal?.aborted) return this.finishCancelled(startTime)
     this.prepareTaskPlan()

@@ -126,7 +126,6 @@ function makeTask(overrides: Record<string, unknown> = {}) {
   return {
     agentId: "a1",
     prompt: "do it",
-    tools: ["Read", "Bash"],
     workDir: "/tmp/work",
     ...overrides,
   } as never
@@ -1982,48 +1981,6 @@ describe("AcpRuntime · agent context delivery", () => {
     expect(loadParams?._meta).toMatchObject({ systemPrompt: "sys" })
   })
 
-  it("maps task.tools into the claude-agent-acp namespace only", async () => {
-    const metaChild = new FakeChild()
-    let metaParams: SessionParams | undefined
-    attachAgent(metaChild, {
-      newSession: (params) => {
-        metaParams = params as SessionParams
-        return { sessionId: "sess-1" }
-      },
-    })
-    await runWith(metaChild, { command: "claude-agent-acp", tools: ["Read"] })
-    expect(metaParams?._meta).toMatchObject({ claudeCode: { options: { tools: ["Read"] } } })
-
-    const promptChild = new FakeChild()
-    let promptParams: SessionParams | undefined
-    attachAgent(promptChild, {
-      newSession: (params) => {
-        promptParams = params as SessionParams
-        return { sessionId: "sess-1" }
-      },
-    })
-    await runWith(promptChild, { command: "codex-acp", tools: ["Read"] })
-    expect(promptParams?._meta).toBeUndefined()
-  })
-
-  it("sends an explicit empty tool list, not the bridge preset (fail-closed)", async () => {
-    const child = new FakeChild()
-    let newParams: SessionParams | undefined
-    attachAgent(child, {
-      newSession: (params) => {
-        newParams = params as SessionParams
-        return { sessionId: "sess-1" }
-      },
-    })
-
-    // AgentRunner defaults an unset `tools` to ["Read","Write","Bash"], so an
-    // empty array can only be an explicit `tools: []`. It must mean "no tools",
-    // not "fall back to every built-in tool".
-    await runWith(child, { command: "claude-agent-acp", tools: [] })
-
-    expect(newParams?._meta).toMatchObject({ claudeCode: { options: { tools: [] } } })
-  })
-
   it("appends a login hint to an authentication-required error", async () => {
     const child = new FakeChild()
     attachAgent(child, {
@@ -2148,9 +2105,8 @@ describe("AcpRuntime · session/request_permission", () => {
       await pending
       expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
       await session.prompt("second", { permissionMode: "ask" })
-      // No handler this time, so the escalation fails closed on the reject
-      // option the provider offered.
-      expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-once" } })
+      // No handler this time, so the escalation fails closed with cancelled.
+      expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
       expect(handler).toHaveBeenCalledTimes(1)
     } finally {
       await session.close()
@@ -2175,18 +2131,17 @@ describe("AcpRuntime · session/request_permission", () => {
     let decision: unknown
     attachAgent(child, {
       prompt: async (ctx) => {
-        // Outside the allowlist and nobody to ask: the tool must not run.
         decision = await askPermission(ctx, { name: "Write", options: PERMISSION_OPTIONS })
         return { stopReason: "end_turn" }
       },
     })
     await runWith(child, { permissionMode: "ask" })
-    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-once" } })
+    expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
   })
 
-  it("does not ask about a tool the allowlist already covers", async () => {
+  it("escalates every tool to the handler in ask mode", async () => {
     const child = new FakeChild()
-    const onPermission = vi.fn(async () => "reject-once")
+    const onPermission = vi.fn(async () => "allow-once")
     let decision: unknown
     attachAgent(child, {
       prompt: async (ctx) => {
@@ -2194,28 +2149,12 @@ describe("AcpRuntime · session/request_permission", () => {
         return { stopReason: "end_turn" }
       },
     })
-    await runWith(child, { tools: ["Read"], permissionMode: "ask", onPermission })
-    // The list is the policy; `ask` only escalates what it does not cover.
-    expect(onPermission).not.toHaveBeenCalled()
-    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
-  })
-
-  it("escalates a tool the allowlist does not cover to the person", async () => {
-    const child = new FakeChild()
-    const onPermission = vi.fn(async () => "allow-once")
-    let decision: unknown
-    attachAgent(child, {
-      prompt: async (ctx) => {
-        decision = await askPermission(ctx, { name: "Write", options: PERMISSION_OPTIONS })
-        return { stopReason: "end_turn" }
-      },
-    })
-    await runWith(child, { tools: ["Read"], permissionMode: "ask", onPermission })
+    await runWith(child, { permissionMode: "ask", onPermission })
     expect(onPermission).toHaveBeenCalledTimes(1)
     expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
   })
 
-  it("still denies a tool outside the allowlist without asking in auto mode", async () => {
+  it("escalates a tool to the handler in ask mode", async () => {
     const child = new FakeChild()
     const onPermission = vi.fn(async () => "allow-once")
     let decision: unknown
@@ -2225,10 +2164,25 @@ describe("AcpRuntime · session/request_permission", () => {
         return { stopReason: "end_turn" }
       },
     })
-    await runWith(child, { tools: ["Read"], onPermission })
-    // Escalation is opt-in: `auto` keeps the fail-closed default.
+    await runWith(child, { permissionMode: "ask", onPermission })
+    expect(onPermission).toHaveBeenCalledTimes(1)
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
+  })
+
+  it("auto mode approves all tools unconditionally without asking", async () => {
+    const child = new FakeChild()
+    const onPermission = vi.fn(async () => "allow-once")
+    let decision: unknown
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        decision = await askPermission(ctx, { name: "Write", options: PERMISSION_OPTIONS })
+        return { stopReason: "end_turn" }
+      },
+    })
+    // auto mode (default) approves everything; the handler is never called
+    await runWith(child, { onPermission })
     expect(onPermission).not.toHaveBeenCalled()
-    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-once" } })
+    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
   })
 
   it("records a refusal chosen by the person, marked as theirs", async () => {
@@ -2252,34 +2206,6 @@ describe("AcpRuntime · session/request_permission", () => {
     })
     expect(events.find((e) => e.type === "raw")).toMatchObject({
       payload: { type: "permission_rejected", toolCallId: "tc-declined", source: "user" },
-    })
-  })
-
-  it.each([
-    ["mcp__graft__*", "mcp__graft__graft_repo_map", true],
-    ["mcp__graft__*", "mcp__graft__graft_find_code", true],
-    ["mcp__graft__*", "mcp__codegraph__codegraph_explore", false],
-    ["MCP__GRAFT__*", "mcp__graft__graft_repo_map", true],
-    ["mcp__*", "mcp__anything__at_all", true],
-    ["a.b", "axb", false],
-    ["a.b", "a.b", true],
-  ])("matches allowlist entry %s against %s as %s", async (pattern, name, expected) => {
-    const child = new FakeChild()
-    let decision: unknown
-    attachAgent(child, {
-      prompt: async (ctx) => {
-        decision = await askPermission(ctx, { name, options: PERMISSION_OPTIONS })
-        return { stopReason: "end_turn" }
-      },
-    })
-    await runWith(child, { tools: [pattern] })
-    // An allowlisted tool is allowed without a handler in the default mode; a
-    // miss falls back to the reject option.
-    expect(decision).toEqual({
-      outcome: {
-        outcome: "selected",
-        optionId: expected ? "allow-once" : "reject-once",
-      },
     })
   })
 
@@ -2366,7 +2292,7 @@ describe("AcpRuntime · session/request_permission", () => {
     await session.close()
   })
 
-  it("approves a tool named in task.tools using only a one-time option", async () => {
+  it("auto mode (default) approves all tools using only a one-time option", async () => {
     const child = new FakeChild()
     let decision: unknown
     attachAgent(child, {
@@ -2380,11 +2306,11 @@ describe("AcpRuntime · session/request_permission", () => {
       },
     })
 
-    await runWith(child, { tools: ["Read", "Write"] })
+    await runWith(child)
     expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
   })
 
-  it("rejects a tool that is not in task.tools and emits a visible raw event", async () => {
+  it("ask mode with handler that rejects emits a visible raw event", async () => {
     const child = new FakeChild()
     const { events, onEvent } = collect()
     let decision: unknown
@@ -2401,9 +2327,12 @@ describe("AcpRuntime · session/request_permission", () => {
       },
     })
 
-    await runWith(child, { tools: ["Read"], onEvent })
+    await runWith(child, {
+      permissionMode: "ask",
+      onPermission: async () => "reject-once",
+      onEvent,
+    })
     expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-once" } })
-    // A rejection is otherwise invisible: the tool simply never runs.
     expect(events.find((e) => e.type === "raw")).toMatchObject({
       vendor: "acp",
       payload: {
@@ -2416,7 +2345,7 @@ describe("AcpRuntime · session/request_permission", () => {
     })
   })
 
-  it("names the denied tool in the warning, not just the policy", async () => {
+  it("ask mode without handler warns with the tool name and cancels", async () => {
     const child = new FakeChild()
     const warnings: string[] = []
     attachAgent(child, {
@@ -2432,16 +2361,14 @@ describe("AcpRuntime · session/request_permission", () => {
     })
 
     await runWith(child, {
-      tools: ["Read"],
+      permissionMode: "ask",
       onWarning: (message: string) => warnings.push(message),
     })
 
-    // "denied by policy" alone leaves the user unable to tell which call died:
-    // the only other trace is the bridge's anonymous "User refused" line.
     expect(warnings.join("\n")).toContain("mcp__graft__graft_repo_map")
   })
 
-  it("matches the tool name case-insensitively", async () => {
+  it("auto mode approves any tool regardless of name", async () => {
     const child = new FakeChild()
     let decision: unknown
     attachAgent(child, {
@@ -2451,65 +2378,36 @@ describe("AcpRuntime · session/request_permission", () => {
       },
     })
 
-    await runWith(child, { tools: ["Write"] })
+    await runWith(child)
     expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
   })
 
-  it.each([
-    ["read", "Read"],
-    ["edit", "Write"],
-    ["execute", "Bash"],
-    ["search", "Glob"],
-    ["fetch", "WebFetch"],
-  ])("falls back to the kind %s when the request carries no name", async (kind, tool) => {
+  it("auto mode approves tool requests carrying only a kind (no name)", async () => {
     const child = new FakeChild()
     let decision: unknown
     attachAgent(child, {
       prompt: async (ctx) => {
-        decision = await askPermission(ctx, { kind, options: PERMISSION_OPTIONS })
+        decision = await askPermission(ctx, { kind: "execute", options: PERMISSION_OPTIONS })
         return { stopReason: "end_turn" }
       },
     })
 
-    await runWith(child, { tools: [tool] })
+    await runWith(child)
     expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
   })
 
-  it("rejects when neither the name nor the kind maps to an allowed tool", async () => {
+  it("ask mode without handler cancels a request with no matching name or kind", async () => {
     const child = new FakeChild()
-    const { events, onEvent } = collect()
     let decision: unknown
     attachAgent(child, {
       prompt: async (ctx) => {
-        // No `name`, and `kind: "other"` has no Claude tool to fall back to.
         decision = await askPermission(ctx, { kind: "other", options: PERMISSION_OPTIONS })
         return { stopReason: "end_turn" }
       },
     })
 
-    await runWith(child, { tools: ["Read", "Bash"], onEvent })
-    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-once" } })
-    expect(events.some((e) => e.type === "raw")).toBe(true)
-  })
-
-  it("prefers reject_once over durable rejection when both are offered", async () => {
-    const child = new FakeChild()
-    let decision: unknown
-    attachAgent(child, {
-      prompt: async (ctx) => {
-        decision = await askPermission(ctx, {
-          name: "Write",
-          options: [
-            { optionId: "reject-once", name: "No", kind: "reject_once" },
-            { optionId: "reject-always", name: "Never", kind: "reject_always" },
-          ],
-        })
-        return { stopReason: "end_turn" }
-      },
-    })
-
-    await runWith(child, { tools: ["Read"] })
-    expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "reject-once" } })
+    await runWith(child, { permissionMode: "ask" })
+    expect(decision).toEqual({ outcome: { outcome: "cancelled" } })
   })
 
   it("cancels when the options offer no matching direction, and tolerates an empty list", async () => {

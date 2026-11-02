@@ -49,7 +49,6 @@ export class AgentSessionManager {
       task.model,
       task.workDir,
       task.systemPrompt,
-      task.tools,
       task.sessionId,
       task.resume,
       Boolean(task.onQuestion),
@@ -93,7 +92,6 @@ export class AgentSessionManager {
             openSession.call(runtime, {
               agentId: task.agentId,
               systemPrompt: task.systemPrompt,
-              tools: task.tools,
               workDir: task.workDir,
               command: task.command,
               args: task.args,

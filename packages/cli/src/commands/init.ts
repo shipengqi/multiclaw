@@ -91,9 +91,11 @@ export function generateConfig(opts: {
   workDir: string
   projectName: string
   provider: string
+  permissionMode: "auto" | "ask"
 }): string {
   const name = JSON.stringify(opts.projectName)
   const workDir = JSON.stringify(opts.workDir)
+  const permissions = opts.permissionMode === "auto" ? `\n    permissions: { mode: "auto" },` : ""
 
   return `import { defineConfig, agents } from "multiclaw"
 
@@ -105,7 +107,7 @@ export default defineConfig({
     projectName: ${name},
   },
   defaults: {
-    provider: ${JSON.stringify(opts.provider)},
+    provider: ${JSON.stringify(opts.provider)},${permissions}
   },
   agents: [
 ${AGENT_BLOCKS[opts.preset]}
@@ -168,8 +170,19 @@ export async function initCommand(options: { force?: boolean } = {}): Promise<vo
     default: ".",
   })
 
+  const permissionMode = (await select({
+    message: "How should multiclaw handle tool permissions?",
+    choices: [
+      { value: "auto", name: "Auto — agents run without permission prompts (recommended)" },
+      { value: "ask", name: "Manual — confirm each action before it runs" },
+    ],
+  })) as "auto" | "ask"
+
   try {
-    fs.writeFileSync(configPath, generateConfig({ preset, workDir, projectName, provider }))
+    fs.writeFileSync(
+      configPath,
+      generateConfig({ preset, workDir, projectName, provider, permissionMode })
+    )
     if (workDir !== ".") {
       fs.mkdirSync(path.resolve(process.cwd(), workDir), { recursive: true })
     }
@@ -190,6 +203,7 @@ export async function initCommand(options: { force?: boolean } = {}): Promise<vo
     )
   }
   console.log(`  workDir:  ${workDir}`)
+  console.log(`  mode:     ${permissionMode}`)
   console.log("")
   if (detectedProvider?.status === "missing") {
     console.log(`\x1b[33m⚠ ${spec.label} is not installed.\x1b[0m`)

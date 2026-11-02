@@ -1,4 +1,3 @@
-import { markPresetTools } from "../config/toolsPolicy"
 import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
@@ -48,20 +47,16 @@ Set up the deployment infrastructure for this project:
 Start by reading implementation-notes.md (if present) to understand what commands are used for build and test.`
 
 export function devops(overrides?: Overrides): AgentDefinition {
-  return markPresetTools(
-    {
-      id: "devops",
-      name: "DevOps",
-      icon: "▶",
-      description: "sets up deployment",
-      runtime: "acp",
-      models: { acp: "sonnet" },
-      modelTier: "balanced",
-      systemPrompt: SYSTEM,
-      taskPrompt: TASK,
-      tools: ["Read", "Write"],
-      ...overrides,
-    },
-    overrides
-  )
+  return {
+    id: "devops",
+    name: "DevOps",
+    icon: "▶",
+    description: "sets up deployment",
+    runtime: "acp",
+    models: { acp: "sonnet" },
+    modelTier: "balanced",
+    systemPrompt: SYSTEM,
+    taskPrompt: TASK,
+    ...overrides,
+  }
 }

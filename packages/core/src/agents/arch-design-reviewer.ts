@@ -1,4 +1,3 @@
-import { markPresetTools } from "../config/toolsPolicy"
 import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
@@ -34,20 +33,16 @@ Review the architecture design and API specification above. Output arch-review.m
 Be specific. Reference section names or endpoint paths when citing issues.`
 
 export function archDesignReviewer(overrides?: Overrides): AgentDefinition {
-  return markPresetTools(
-    {
-      id: "arch-design-reviewer",
-      name: "Arch Design Reviewer",
-      icon: "△",
-      description: "reviews the design",
-      runtime: "acp",
-      models: { acp: "haiku" },
-      modelTier: "fast",
-      systemPrompt: SYSTEM,
-      taskPrompt: TASK,
-      tools: ["Read", "Write"],
-      ...overrides,
-    },
-    overrides
-  )
+  return {
+    id: "arch-design-reviewer",
+    name: "Arch Design Reviewer",
+    icon: "△",
+    description: "reviews the design",
+    runtime: "acp",
+    models: { acp: "haiku" },
+    modelTier: "fast",
+    systemPrompt: SYSTEM,
+    taskPrompt: TASK,
+    ...overrides,
+  }
 }

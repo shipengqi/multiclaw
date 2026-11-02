@@ -1,15 +1,12 @@
 import {
   type DetectedProvider,
   detectProviders,
-  hasExplicitTools,
   type ModelSelectionMode,
   type MultiClawConfig,
   type ProviderSource,
   type ProviderStatus,
   presentProviders,
-  resolveCommand,
   resolveProvider,
-  specForCommand,
   specForProvider,
 } from "@multiclawcli/core"
 import { loadConfig } from "../loader/loadConfig"
@@ -36,7 +33,6 @@ export interface DoctorReport {
     defaultsProvider?: string
     defaultsProviderOk: boolean
     agentsWithMissingProvider: string[]
-    agentsWithUnsupportedTools: string[]
   }
   runnable: boolean
 }
@@ -78,25 +74,11 @@ export function buildDoctorReport(
       .map((a) => ({ id: a.id, intended: resolveProvider(a, config) }))
       .filter((a) => !present.includes(a.intended))
       .map((a) => a.id)
-    const agentsWithUnsupportedTools = agents
-      .map((a) => {
-        const command = resolveCommand(a, config)
-        const spec = specForCommand(command) ?? specForProvider(resolveProvider(a, config))
-        return {
-          id: a.id,
-          spec,
-          explicitTools: hasExplicitTools(a) || (a.tools === undefined && !!config.defaults?.tools),
-        }
-      })
-      .filter((a) => a.spec && !a.spec.tools && a.explicitTools)
-      .map((a) => a.id)
-
     configReport = {
       name: config.name,
       defaultsProvider,
       defaultsProviderOk,
       agentsWithMissingProvider,
-      agentsWithUnsupportedTools,
     }
   }
 
@@ -176,14 +158,6 @@ export function formatDoctorReport(report: DoctorReport, useColor = true): strin
       )
     } else {
       lines.push(c(GREEN, "  all agents resolve to an installed provider ✓"))
-    }
-    if (report.config.agentsWithUnsupportedTools.length > 0) {
-      lines.push(
-        c(
-          YELLOW,
-          `  ${report.config.agentsWithUnsupportedTools.length} agent(s) use a provider that cannot enforce tool allowlists: ${report.config.agentsWithUnsupportedTools.join(", ")}`
-        )
-      )
     }
   }
 

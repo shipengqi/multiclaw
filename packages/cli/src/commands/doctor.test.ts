@@ -1,4 +1,4 @@
-import { type AgentDefinition, agents, type MultiClawConfig } from "@multiclawcli/core"
+import { agents, type MultiClawConfig } from "@multiclawcli/core"
 import { describe, expect, it } from "vitest"
 import { buildDoctorReport, type DoctorReport, formatDoctorReport } from "./doctor"
 
@@ -85,45 +85,6 @@ describe("buildDoctorReport", () => {
     expect(report.config?.defaultsProviderOk).toBe(true)
   })
 
-  it("warns when an agent configures tools for a provider that cannot enforce them", () => {
-    const config: MultiClawConfig = {
-      name: "demo",
-      workDir: "/tmp",
-      agents: [
-        agent("safe", { provider: "claude", tools: ["Read"] }),
-        agent("open", { provider: "codex", tools: ["Read"] }),
-      ],
-    }
-    const report = buildDoctorReport(detected(["claude", "codex"], ["opencode", "cursor"]), config)
-    expect(report.config?.agentsWithUnsupportedTools).toEqual(["open"])
-  })
-
-  it("does not warn for providers without tool support when the agent did not request tools", () => {
-    const config: MultiClawConfig = {
-      name: "demo",
-      workDir: "/tmp",
-      agents: [agent("open", { provider: "codex" })],
-    }
-    const report = buildDoctorReport(detected(["codex"], ["opencode", "claude", "cursor"]), config)
-    expect(report.config?.agentsWithUnsupportedTools).toEqual([])
-  })
-
-  it("distinguishes preset defaults, explicit empty tools, and disabled leaders", () => {
-    const config: MultiClawConfig = {
-      name: "demo",
-      workDir: "/tmp",
-      agents: [
-        agents.tester({ id: "default", provider: "codex" }),
-        agents.tester({ id: "empty", provider: "codex", tools: [] }),
-      ],
-      leader: agents.leader({ provider: "cursor", tools: ["Read"] }),
-      useLeader: false,
-    }
-    const report = buildDoctorReport(detected(["codex"], ["cursor"]), config)
-    expect(report.config?.agentsWithUnsupportedTools).toEqual(["empty"])
-    expect(report.config?.agentsWithMissingProvider).toEqual([])
-  })
-
   it("carries where a present provider resolved from", () => {
     const report = buildDoctorReport(
       detected(["claude", "opencode"], ["codex", "cursor"], { claude: "bundled" })
@@ -179,11 +140,10 @@ describe("formatDoctorReport", () => {
     const config: MultiClawConfig = {
       name: "demo",
       workDir: "/tmp",
-      agents: [agent("open", { provider: "codex", tools: ["Read"] })],
+      agents: [agent("open", { provider: "codex" })],
     }
     const report = buildDoctorReport(detected(["codex"], ["opencode", "claude", "cursor"]), config)
     const out = formatDoctorReport(report, false)
-    expect(out).toContain("cannot enforce tool allowlists")
     expect(out).toContain("open")
   })
 

@@ -49,7 +49,6 @@ type RuntimeEventPayload = RuntimeEvent extends infer E
 
 type AcpModule = typeof import("@agentclientprotocol/sdk")
 type AcpSessionNotification = import("@agentclientprotocol/sdk").SessionNotification
-type AcpPermissionRequest = import("@agentclientprotocol/sdk").RequestPermissionRequest
 type AcpPermissionResponse = import("@agentclientprotocol/sdk").RequestPermissionResponse
 
 /**
@@ -116,88 +115,6 @@ function mapStopReason(reason: string): "success" | "max_turns" | "cancelled" | 
       return "max_turns"
     default:
       return "error"
-  }
-}
-
-const KIND_TO_TOOLS: Record<string, string[]> = {
-  read: ["Read"],
-  edit: ["Edit", "Write"],
-  execute: ["Bash"],
-  search: ["Grep", "Glob"],
-  fetch: ["WebFetch"],
-}
-
-interface RejectedPermission {
-  toolCallId: string
-  name?: string
-  kind?: string
-  title?: string
-}
-
-/**
- * Match one allowlist entry against a tool name.
- *
- * Entries are case-insensitive globs: `*` stands for any run of characters, so
- * `mcp__graft__*` covers a whole MCP server instead of every tool it exposes.
- * Nothing else is special — no character classes, no ranges, no `?` — because
- * an allowlist nobody can read at a glance is an allowlist nobody audits.
- */
-function matchesTool(pattern: string, name: string): boolean {
-  if (!pattern.includes("*")) return pattern === name
-  const source = pattern
-    .split("*")
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join(".*")
-  return new RegExp(`^${source}$`).test(name)
-}
-
-function toolPermitted(params: AcpPermissionRequest, tools: string[]): boolean {
-  const allowed = tools.map((tool) => tool.toLowerCase())
-  const name = params.toolCall.name ?? undefined
-  if (name !== undefined) {
-    const candidate = name.toLowerCase()
-    return allowed.some((pattern) => matchesTool(pattern, candidate))
-  }
-  return (KIND_TO_TOOLS[params.toolCall.kind ?? ""] ?? []).some((tool) => {
-    const candidate = tool.toLowerCase()
-    return allowed.some((pattern) => matchesTool(pattern, candidate))
-  })
-}
-
-/**
- * The client's answer to a permission request, decided without a human.
- *
- * `approved` is the part the caller needs: an allowlisted tool runs without
- * asking, and only the ones outside the list can be escalated to a person.
- */
-function decidePermission(
-  params: AcpPermissionRequest,
-  tools: string[],
-  sessionId: string | undefined
-): { response: AcpPermissionResponse; approved: boolean; rejected?: RejectedPermission } {
-  if (sessionId !== undefined && params.sessionId !== sessionId) {
-    return { response: { outcome: { outcome: "cancelled" } }, approved: false }
-  }
-  const name = params.toolCall.name ?? undefined
-  const kind = params.toolCall.kind ?? undefined
-  const approved = toolPermitted(params, tools)
-  // Automatic policy never changes provider/session-wide permission settings.
-  const option = params.options.find((o) =>
-    approved ? o.kind === "allow_once" : o.kind === "reject_once"
-  )
-  const response: AcpPermissionResponse = option
-    ? { outcome: { outcome: "selected", optionId: option.optionId } }
-    : { outcome: { outcome: "cancelled" } }
-  if (approved) return { response, approved }
-  return {
-    response,
-    approved,
-    rejected: {
-      toolCallId: params.toolCall.toolCallId,
-      name,
-      kind,
-      title: params.toolCall.title ?? undefined,
-    },
   }
 }
 
@@ -702,37 +619,21 @@ export class AcpRuntime extends RuntimeBase {
         )
           return cancelled
         const mode = turn.options.permissionMode ?? "auto"
-        const { response, approved, rejected } = decidePermission(params, options.tools, sessionId)
-        // The allowlist is the policy, not the prompt. A listed tool runs
-        // without asking in every mode but `deny`; `ask` exists to escalate the
-        // tools the list does *not* cover, which is the only case where a
-        // question can change the outcome.
-        if (approved) {
-          if (mode !== "deny") return response
+        // auto: approve all tool calls unconditionally
+        if (mode === "auto") {
+          const opt = params.options.find((o) => o.kind === "allow_once")
+          return opt ? { outcome: { outcome: "selected", optionId: opt.optionId } } : cancelled
+        }
+        // deny: reject all tool calls
+        if (mode === "deny") {
           warn("Tool permission denied by the configured approval mode.")
           return cancelled
         }
-        const askable = mode === "ask" && turn.options.onPermission !== undefined
-        if (!askable) {
-          const label =
-            rejected?.name ?? rejected?.kind ?? rejected?.toolCallId ?? "an unnamed tool"
-          // Two different refusals, and only one of them is actionable: "not on
-          // the list" is a configuration decision, "no handler" is a wiring bug.
-          warn(
-            mode === "ask"
-              ? `Tool permission cancelled: no approval handler is available (${label}).`
-              : `Tool permission denied by the configured tools policy: ${label}.`
-          )
-          if (rejected) {
-            emit({
-              type: "raw",
-              vendor: "acp",
-              payload: { type: "permission_rejected", ...rejected },
-            })
-          }
-          // `deny` refuses outright; every other mode answers with the policy's
-          // reject option when the provider offered one.
-          return mode === "deny" ? cancelled : response
+        // ask: escalate to human; no handler means closed
+        if (turn.options.onPermission === undefined) {
+          const label = params.toolCall.name ?? params.toolCall.kind ?? "an unnamed tool"
+          warn(`Tool permission cancelled: no approval handler is available (${label}).`)
+          return cancelled
         }
         const signal = AbortSignal.any([turn.decisions.signal, context.signal])
         const offered = new Set(params.options.map((option) => option.optionId))
@@ -767,14 +668,18 @@ export class AcpRuntime extends RuntimeBase {
           if (optionId === undefined || chosen === undefined || !offered.has(optionId)) {
             return cancelled
           }
-          // A refusal chosen by a person leaves the same trace a policy denial
-          // does, so the stream can still say which call was refused — `source`
-          // separates "the list does not cover it" from "a person said no".
-          if (chosen.kind.startsWith("reject") && rejected) {
+          if (chosen.kind.startsWith("reject")) {
             emit({
               type: "raw",
               vendor: "acp",
-              payload: { type: "permission_rejected", ...rejected, source: "user" },
+              payload: {
+                type: "permission_rejected",
+                toolCallId: params.toolCall.toolCallId,
+                name: params.toolCall.name ?? undefined,
+                kind: params.toolCall.kind ?? undefined,
+                title: params.toolCall.title ?? undefined,
+                source: "user",
+              },
             })
           }
           return { outcome: { outcome: "selected", optionId } } as AcpPermissionResponse

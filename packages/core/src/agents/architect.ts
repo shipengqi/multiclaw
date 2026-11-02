@@ -1,4 +1,3 @@
-import { markPresetTools } from "../config/toolsPolicy"
 import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
@@ -70,21 +69,17 @@ Set dependsOn to reflect actual execution order constraints (e.g. devops depends
 Create the files directly. No extra output.`
 
 export function architect(overrides?: Overrides): AgentDefinition {
-  return markPresetTools(
-    {
-      id: "architect",
-      name: "Architect",
-      icon: "◆",
-      description: "designs the architecture",
-      role: "planner",
-      runtime: "acp",
-      models: { acp: "opus" },
-      modelTier: "strong",
-      systemPrompt: SYSTEM,
-      taskPrompt: TASK,
-      tools: ["Read", "Write"],
-      ...overrides,
-    },
-    overrides
-  )
+  return {
+    id: "architect",
+    name: "Architect",
+    icon: "◆",
+    description: "designs the architecture",
+    role: "planner",
+    runtime: "acp",
+    models: { acp: "opus" },
+    modelTier: "strong",
+    systemPrompt: SYSTEM,
+    taskPrompt: TASK,
+    ...overrides,
+  }
 }

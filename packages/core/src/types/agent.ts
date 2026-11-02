@@ -1,15 +1,5 @@
 import type { AgentOutput } from "./runtime"
 
-export type ToolName =
-  | "Read"
-  | "Write"
-  | "Edit"
-  | "MultiEdit"
-  | "Bash"
-  | "Glob"
-  | "Grep"
-  | "WebFetch"
-
 export interface AgentDefinition {
   id: string
   name: string
@@ -60,7 +50,7 @@ export interface AgentDefinition {
   taskTitle?: string
   agentScope?: string
   agentPlan?: string
-  tools?: ToolName[]
+  permissions?: { mode: "auto" | "ask" | "deny" }
   dependsOn?: string[]
   timeout?: number
   retries?: number

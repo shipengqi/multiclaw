@@ -8,7 +8,6 @@ const task = (overrides: Partial<AgentTask> = {}): AgentTask => ({
   agentId: "a",
   systemPrompt: "system",
   prompt: "first",
-  tools: ["Read"],
   workDir: "/tmp",
   timeout: 1000,
   ...overrides,
@@ -134,7 +133,6 @@ describe("AgentSessionManager", () => {
     { model: "other" },
     { workDir: "/other" },
     { systemPrompt: "other" },
-    { tools: ["Write"] },
     { sessionId: "other" },
     { resume: "fork" as const },
   ])("reopens after immutable configuration changes: %j", async (change) => {

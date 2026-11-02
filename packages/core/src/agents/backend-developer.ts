@@ -1,4 +1,3 @@
-import { markPresetTools } from "../config/toolsPolicy"
 import type { AgentDefinition } from "../types/agent"
 
 type Overrides = Partial<AgentDefinition>
@@ -43,20 +42,16 @@ Implement complete backend code following the architecture design and API specif
 Start immediately. Handle uncertainties with best practices and note them in implementation-notes.md.`
 
 export function backendDeveloper(overrides?: Overrides): AgentDefinition {
-  return markPresetTools(
-    {
-      id: "backend-developer",
-      name: "Backend Developer",
-      icon: "⊕",
-      description: "builds the API",
-      runtime: "acp",
-      models: { acp: "sonnet" },
-      modelTier: "balanced",
-      systemPrompt: SYSTEM,
-      taskPrompt: TASK,
-      tools: ["Read", "Write", "Bash"],
-      ...overrides,
-    },
-    overrides
-  )
+  return {
+    id: "backend-developer",
+    name: "Backend Developer",
+    icon: "⊕",
+    description: "builds the API",
+    runtime: "acp",
+    models: { acp: "sonnet" },
+    modelTier: "balanced",
+    systemPrompt: SYSTEM,
+    taskPrompt: TASK,
+    ...overrides,
+  }
 }

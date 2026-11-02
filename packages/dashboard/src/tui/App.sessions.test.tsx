@@ -7,7 +7,6 @@ import {
   type AgentTask,
   agents,
   type MultiClawConfig,
-  type MultiClawEvent,
   type RuntimePromptOptions,
   type RuntimeSession,
   runtimeRegistry,
@@ -311,51 +310,6 @@ describe("App · reusable live sessions", () => {
       expect(prompt).not.toContain("   failed: code-reviewer")
     }
   )
-
-  it("rejects unsupported explicit tools before sessions and retains failed input with the queue paused", async () => {
-    config.agents[0].tools = []
-    const runtime = runtimeRegistry.get(RUNTIME)
-    const describe = runtime.describe
-    if (!describe) throw new Error("test runtime must report capabilities")
-    const gate = deferred()
-    vi.spyOn(runtime, "describe").mockImplementation(async (...args) => {
-      await gate.promise
-      return describe.apply(runtime, args)
-    })
-    const events: MultiClawEvent[] = []
-    const openSession = vi.spyOn(runtime, "openSession")
-    const done = completions()
-    const tui = await mount((bus, logDir) => {
-      bus.subscribe((event) => events.push(event))
-      done.onTurnStart(bus, logDir)
-    })
-    await tui.send("restricted task", "\r", "retained follow-up", "\r")
-    gate.resolve()
-    await done.ready
-    await vi.waitFor(() => {
-      const history = currentTurns()
-      expect(history).toHaveLength(1)
-      expect(history[0].requirement).toBe("restricted task")
-      expect(history[0].phase).toBe("complete")
-      expect(history[0].success).toBe(false)
-    })
-    tui.app.unmount()
-    await tui.exit
-    expect(tui.output()).toContain("queue paused")
-    expect(tui.output()).toContain("retained follow-up")
-    expect(done.count()).toBe(1)
-    expect(execute).not.toHaveBeenCalled()
-    expect(openSession).not.toHaveBeenCalled()
-    expect(handles).toHaveLength(0)
-    const warning = events.find((event) => event.type === "orchestration:warning")
-    expect(warning?.payload.message).toContain("architect")
-    expect(warning?.payload.message).toContain("tools")
-    expect(warning?.payload.message).toContain("explicit")
-    expect(warning?.payload.message).toMatch(/remove|omit|support/i)
-    expect(events.find((event) => event.type === "orchestration:complete")?.payload.success).toBe(
-      false
-    )
-  })
 
   it("/new closes old handles and starts a fresh session", async () => {
     const first = completions()

@@ -112,7 +112,6 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     meta: (task) => {
       const meta: Record<string, unknown> = {}
       if (task.systemPrompt) meta.systemPrompt = task.systemPrompt
-      meta.claudeCode = { options: { tools: task.tools } }
       return meta
     },
     models: [

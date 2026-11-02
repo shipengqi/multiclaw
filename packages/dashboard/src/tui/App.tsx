@@ -407,6 +407,13 @@ export function App({
   queueRef.current = queue
   const [cancelled, setCancelled] = useState(false)
   const [error, setError] = useState<string>()
+  const [permissionMode, setPermissionMode] = useState<"auto" | "ask" | "deny">(
+    config.permissions?.mode === "auto" || config.defaults?.permissions?.mode === "auto"
+      ? "auto"
+      : config.permissions?.mode === "deny"
+        ? "deny"
+        : "ask"
+  )
   const [notice, setNotice] = useState<string | undefined>(
     launchNoticeRef.current ?? restored.notice
   )
@@ -754,9 +761,9 @@ export function App({
         history: earlierTurns,
         logDir,
         permissions:
-          !config.permissions || config.permissions.mode === "ask"
+          permissionMode === "ask"
             ? { mode: "ask", onRequest: requestPermission }
-            : config.permissions,
+            : { mode: permissionMode },
         questions: config.questions?.onRequest ? config.questions : { onRequest: requestQuestion },
         onCheckpoint: config.onCheckpoint ?? handleCheckpoint,
         // A retry names the agents to redo; a continued conversation carries only
@@ -825,6 +832,7 @@ export function App({
       requestQuestion,
       handleCheckpoint,
       clearInteractions,
+      permissionMode,
     ]
   )
 
@@ -1250,6 +1258,16 @@ export function App({
           }
           entry.settle(option.optionId)
           setNotice(`selected ${clean(option.name)} for ${entry.shortId}`)
+          return
+        }
+        case "mode": {
+          const m = args[0]
+          if (m === "auto" || m === "ask" || m === "deny") {
+            setPermissionMode(m)
+            setNotice(`permission mode: ${m}`)
+          } else {
+            setNotice("usage: /mode auto | ask | deny")
+          }
           return
         }
         case "new": {
@@ -1722,7 +1740,14 @@ export function App({
     const formFront = front?.kind === "question" && !isCommandLine(line.text) ? front : undefined
 
     if (key.tab && formFront === undefined && !paletteOpen) {
-      dispatch({ type: "focus:cycle", delta: key.shift ? -1 : 1 })
+      if (key.shift) {
+        // Shift+Tab toggles permission mode (like Claude Code)
+        const next = permissionMode === "auto" ? "ask" : "auto"
+        setPermissionMode(next)
+        setNotice(`permission mode: ${next}`)
+        return
+      }
+      dispatch({ type: "focus:cycle", delta: 1 })
       return
     }
 
@@ -2031,7 +2056,7 @@ export function App({
               ? "esc live · tab agent · ? help"
               : state.reply
                 ? "enter sends · / commands · ? help"
-                : "tab switch · / commands · ? help"
+                : "tab switch · shift+tab mode · / commands · ? help"
 
   // The prompt names what it is editing. While a form is up that is a field and
   // not a follow-up — it is the same line either way, so it has to say which.
@@ -2071,7 +2096,7 @@ export function App({
                   : state.phase === "complete"
                     ? "complete"
                     : "ready"
-              }`
+              } · ${permissionMode}`
         }
       />
       <Rule width={layout.columns} />

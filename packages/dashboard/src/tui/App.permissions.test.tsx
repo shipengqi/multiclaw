@@ -588,7 +588,7 @@ describe("App · explicit permission decisions", () => {
   })
 
   it.each(["auto", "deny"] as const)(
-    "preserves explicit %s mode and its caller callback",
+    "preserves explicit %s mode from config.permissions",
     async (mode) => {
       const callback = vi.fn(async () => undefined)
       config.permissions = { mode, onRequest: callback }
@@ -600,9 +600,7 @@ describe("App · explicit permission decisions", () => {
       const ui = await mount()
       await ui.send("write files", "\r")
       await vi.waitFor(() => expect(ui.complete()).toBe(1))
-      expect(
-        tasks.every((task) => task.permissionMode === mode && task.onPermission === callback)
-      ).toBe(true)
+      expect(tasks.every((task) => task.permissionMode === mode)).toBe(true)
     }
   )
 })

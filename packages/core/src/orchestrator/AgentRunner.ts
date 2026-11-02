@@ -67,7 +67,10 @@ export class AgentRunner {
       const runtime = runtimeRegistry.get(agent.runtime ?? "acp")
       const retries = agent.retries ?? 0
       const timeout = agent.timeout ?? 600_000
-      const tools = agent.tools ?? this.config.defaults?.tools ?? ["Read", "Write", "Bash"]
+      const permissionMode =
+        agent.permissions?.mode ??
+        this.config.permissions?.mode ??
+        this.config.defaults?.permissions?.mode
 
       // The inner timeout bounds one attempt; the outer deadline covers every
       // attempt and its backoff. Include the SIGKILL grace so legacy runtimes
@@ -115,8 +118,7 @@ export class AgentRunner {
                 agentId: agent.id,
                 systemPrompt: agent.systemPrompt,
                 prompt,
-                tools,
-                permissionMode: this.config.permissions?.mode,
+                permissionMode,
                 onPermission: this.config.permissions?.onRequest,
                 onQuestion: this.config.questions?.onRequest,
                 workDir,

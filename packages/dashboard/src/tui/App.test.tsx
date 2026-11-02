@@ -61,7 +61,7 @@ describe("App", () => {
   })
 
   it("advertises only the keys that work on an empty prompt", async () => {
-    expect(await welcome()).toContain("tab switch · / commands · ? help")
+    expect(await welcome()).toContain("tab switch · shift+tab mode · / commands · ? help")
   })
 
   it("shows the prompt placeholder", async () => {
