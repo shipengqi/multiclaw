@@ -18,6 +18,18 @@ function testWorkDir(name: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `multiclaw-${name}-`))
 }
 
+/**
+ * Remove a test workspace, tolerating the app's last write landing late.
+ *
+ * `App` flushes its session files from an *async* unmount cleanup, and ink's
+ * `waitUntilExit` does not await that promise — so teardown can race the final
+ * write and fail with ENOTEMPTY. Node retries exactly that error when asked to,
+ * which is both cheaper and more honest than a fixed sleep before every removal.
+ */
+export function removeWorkDir(workDir: string): void {
+  fs.rmSync(workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 })
+}
+
 /** A three-agent team, shaped like `examples/dev-team`. */
 export const DEMO: MultiClawConfig = {
   name: "dev-team",

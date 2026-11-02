@@ -9,7 +9,7 @@ import { turnsPath } from "./history"
 import { loadJournal, SESSION_VERSION, sessionPath } from "./session"
 import { createSession, latestSession } from "./sessions"
 import { stripAnsi, type TurnView } from "./state"
-import { driveFrame } from "./test-helpers"
+import { driveFrame, removeWorkDir } from "./test-helpers"
 
 const RUNTIME = "tui-integration-restore"
 
@@ -145,7 +145,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  fs.rmSync(workDir, { recursive: true, force: true })
+  removeWorkDir(workDir)
 })
 
 describe("App · picking the session back up after a restart", () => {

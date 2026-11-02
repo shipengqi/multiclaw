@@ -17,7 +17,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { App } from "./App"
 import { stripAnsi } from "./state"
-import { driveFrame } from "./test-helpers"
+import { driveFrame, removeWorkDir } from "./test-helpers"
 
 const { exit } = vi.hoisted(() => ({ exit: vi.fn() }))
 vi.mock("ink", async (original) => ({
@@ -142,7 +142,7 @@ describe("App · caller-owned live sessions", () => {
   afterEach(async () => {
     await sessions.close()
     vi.restoreAllMocks()
-    fs.rmSync(workDir, { recursive: true, force: true })
+    removeWorkDir(workDir)
   })
 
   function config(): MultiClawConfig {

@@ -17,7 +17,7 @@ import { App, type AppProps } from "./App"
 import { loadTurns } from "./history"
 import { latestSession, listSessions } from "./sessions"
 import { stripAnsi } from "./state"
-import { driveFrame } from "./test-helpers"
+import { driveFrame, removeWorkDir } from "./test-helpers"
 
 const RUNTIME = "tui-live-session-regression"
 const PLAN = '{"mode":"run","run":["architect"]}'
@@ -125,7 +125,7 @@ afterEach(async () => {
   await vi.waitFor(() =>
     expect(handles.every((handle) => handle.session.state === "closed")).toBe(true)
   )
-  fs.rmSync(workDir, { recursive: true, force: true })
+  removeWorkDir(workDir)
 })
 
 function completions(target = 1) {

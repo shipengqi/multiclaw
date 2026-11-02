@@ -15,7 +15,7 @@ import { render } from "ink"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { App } from "./App"
 import { stripAnsi } from "./state"
-import { renderFrame } from "./test-helpers"
+import { removeWorkDir, renderFrame } from "./test-helpers"
 
 const RUNTIME = "tui-permission-queue"
 let config: MultiClawConfig
@@ -117,7 +117,7 @@ afterEach(async () => {
     await app.waitUntilExit()
   }
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()))
-  fs.rmSync(workDir, { recursive: true, force: true })
+  removeWorkDir(workDir)
 })
 
 async function mount(rows = 32) {

@@ -8,7 +8,7 @@ import { App } from "./App"
 import { turnsPath } from "./history"
 import { createSession, latestSession, listSessions, touchSession } from "./sessions"
 import { stripAnsi, type TurnView } from "./state"
-import { driveFrame } from "./test-helpers"
+import { driveFrame, removeWorkDir } from "./test-helpers"
 
 const RUNTIME = "tui-integration-picker"
 const DOWN = "\u001b[B"
@@ -113,7 +113,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  fs.rmSync(workDir, { recursive: true, force: true })
+  removeWorkDir(workDir)
 })
 
 describe("App · the session picker", () => {

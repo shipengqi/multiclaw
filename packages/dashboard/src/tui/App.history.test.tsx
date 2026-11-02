@@ -8,7 +8,7 @@ import { App } from "./App"
 import { turnsPath } from "./history"
 import { createSession, latestSession } from "./sessions"
 import { stripAnsi, type TurnView } from "./state"
-import { driveFrame } from "./test-helpers"
+import { driveFrame, removeWorkDir } from "./test-helpers"
 
 const RUNTIME = "tui-integration-history"
 
@@ -105,7 +105,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  fs.rmSync(workDir, { recursive: true, force: true })
+  removeWorkDir(workDir)
 })
 
 describe("App · remembering turns across sessions", () => {

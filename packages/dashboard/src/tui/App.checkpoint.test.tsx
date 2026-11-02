@@ -6,7 +6,7 @@ import { runtimeRegistry } from "@multiclawcli/core"
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { App } from "./App"
 import { stripAnsi } from "./state"
-import { driveFrame } from "./test-helpers"
+import { driveFrame, removeWorkDir } from "./test-helpers"
 
 function alwaysAvailable(name: string) {
   return async () => ({
@@ -33,7 +33,7 @@ beforeEach(() => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), "multiclaw-checkpoint-"))
 })
 afterEach(() => {
-  fs.rmSync(workDir, { recursive: true, force: true })
+  removeWorkDir(workDir)
 })
 
 describe("App · checkpoint interaction", () => {
