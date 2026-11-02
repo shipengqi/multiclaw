@@ -1,7 +1,16 @@
 import type { LeaderMessage } from "@multiclawcli/core"
 import { Box, Text } from "ink"
 import { formatCost, formatDuration, formatTokens, padRight, truncate } from "../format"
-import { type AgentView, agentElapsed, progress, type TurnView, visibleLog } from "../state"
+import {
+  type AgentView,
+  agentElapsed,
+  progress,
+  recordedTurns,
+  type TuiState,
+  type TurnView,
+  visibleLog,
+  visibleTimeline,
+} from "../state"
 import { COLOR, GLYPH, STATUS } from "../theme"
 
 /**
@@ -134,23 +143,27 @@ export function Divider() {
  * should recede, not the agent's work.
  */
 export function StreamPanel({
-  turn,
+  state,
   height,
   width,
   now,
   spinner,
 }: {
-  turn: TurnView
+  state: TuiState
   height: number
   width: number
   now: number
   spinner: string
 }) {
-  const agent = turn.focusId ? turn.agents[turn.focusId] : undefined
+  const agent = state.focusId ? state.agents[state.focusId] : undefined
   const viewport = Math.max(1, height - 1)
-  const window = visibleLog(turn, viewport, width)
+  const window = visibleTimeline(state, state.focusId ?? "", viewport, width, state.scroll)
   const style = agent ? STATUS[agent.status] : undefined
   const elapsed = agent ? agentElapsed(agent, now) : undefined
+  // Count turns this agent produced output in, for the "session · N turns" marker.
+  const turnCount = state.focusId
+    ? recordedTurns(state).filter((t) => (t.agents[state.focusId!]?.logs.length ?? 0) > 0).length
+    : 0
 
   return (
     <Box flexDirection="column" flexGrow={1} height={height} paddingLeft={1}>
@@ -188,6 +201,10 @@ export function StreamPanel({
             {agent?.costUsd !== undefined ? (
               <Text dimColor> · {formatCost(agent.costUsd)}</Text>
             ) : null}
+            {/* Session turn count — how many turns this agent has run. Only
+                shown when it has run more than once, so a first-turn agent is
+                not cluttered by a "(1 turn)" label that adds nothing. */}
+            {turnCount > 1 ? <Text dimColor> · {turnCount} turns</Text> : null}
           </Text>
         </Box>
         <Box flexShrink={0}>
@@ -201,7 +218,7 @@ export function StreamPanel({
       </Box>
 
       {window.rows.length === 0 ? (
-        <Text dimColor>{turn.phase === "running" ? "waiting for output…" : "no output yet"}</Text>
+        <Text dimColor>{state.phase === "running" ? "waiting for output…" : "no output yet"}</Text>
       ) : (
         // The tail, already wrapped to `width` by `visibleLog` — the pane draws
         // rows, and one log line is several of them. `visibleLog` also picks

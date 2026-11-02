@@ -211,7 +211,7 @@ describe("App · launch options", () => {
       })
     )
 
-    // The last turn of the resumed session is auto-opened.
+    // The resumed session's requirement appears in the stream panel's turn-divider row.
     expect(frame).toContain("the older task")
     expect(frame).not.toContain("the newest task")
   })

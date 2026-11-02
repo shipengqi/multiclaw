@@ -439,8 +439,6 @@ export function App({
   useEffect(() => {
     if (initialSession?.kind !== "resume" || !("id" in initialSession)) return
     const history = restoredRef.current?.history ?? []
-    const last = history[history.length - 1]
-    if (last) dispatch({ type: "view:open", turn: last.turn })
     const resumable = [...history]
       .reverse()
       .find((turn) => Object.keys(turnSessions(turn)).length > 0)
@@ -883,10 +881,6 @@ export function App({
         leaderIds: leaderAgentIds(config),
         history: restored.history,
       })
-      const lastTurn = restored.history[restored.history.length - 1]
-      if (lastTurn) {
-        dispatch({ type: "view:open", turn: lastTurn.turn })
-      }
       setQueue(restored.queue)
       queuePausedRef.current = restored.queue.length > 0
       setQueuePaused(restored.queue.length > 0)
@@ -995,10 +989,10 @@ export function App({
     [query, running]
   )
 
-  // What the panes are showing: the live turn, or a finished one opened for
-  // reading. Everything downstream takes this rather than `state`, so a past
-  // turn renders through exactly the same components.
-  const shown = state.view ?? state
+  // `shown` is always the live turn now that per-agent history is visible in the
+  // stream panel's timeline. The old "open a finished turn for browsing" mode has
+  // been superseded by scrolling up in the stream.
+  const shown = state
 
   // The palette shows one of two lists, never both: the command names while the
   // command is still being typed, or — once a space commits to arguments — the
@@ -1080,7 +1074,6 @@ export function App({
     interactionRows: interactionRows(interactions, Math.max(MIN_COLUMNS, columns)),
     promptRows,
     notice: notice !== undefined || (queuePaused && queue.length > 0),
-    viewing: state.view !== undefined,
     hasRail: shown.leaderIds.length > 0 || shown.stages.length > 0,
     railCells: railCellWidths(shown),
   })
@@ -1143,10 +1136,8 @@ export function App({
         setNotice(unavailableReason(name, running))
         return
       }
-      // Commands act on the turn the panes are showing, not the live one. While a
-      // past turn is open, `/clear` clears *its* buffer, so validating and
-      // reporting against the live turn would name an agent that did not change.
-      const shown = state.view ?? state
+      // Commands always act on the live turn.
+      const shown = state
       if (closingRef.current) return
       switch (name) {
         case "respond":
@@ -1991,12 +1982,6 @@ export function App({
         setError(undefined)
         return
       }
-      // Leaving a past turn comes first: while one is open, that is the thing
-      // `esc` is for, and the hint bar says so.
-      if (state.view) {
-        dispatch({ type: "view:close" })
-        return
-      }
       // The bar's own escape: hand the keyboard back without deciding anything.
       // The request stays pending, so `/approve` and `/deny` still reach it —
       // and a new request starts unreleased, because the alias is part of the key.
@@ -2052,11 +2037,9 @@ export function App({
                       ? "/approve 1 and /deny still reach it"
                       : "↑↓ or 1-9 choose · enter confirm · esc to type"
                 : "enter queues · ctrl+c cancel"
-            : state.view
-              ? "esc live · tab agent · ? help"
-              : state.reply
-                ? "enter sends · / commands · ? help"
-                : "tab switch · shift+tab mode · / commands · ? help"
+            : state.reply
+              ? "enter sends · / commands · ? help"
+              : "tab switch · shift+tab mode · / commands · ? help"
 
   // The prompt names what it is editing. While a form is up that is a field and
   // not a follow-up — it is the same line either way, so it has to say which.
@@ -2084,20 +2067,13 @@ export function App({
     <Box flexDirection="column" height={layout.rows}>
       <Header
         name={state.name || config.name}
-        // The turn number tracks what the panes are showing, not the live turn:
-        // while a past turn is open the body renders it, and a header naming a
-        // different turn is a lie about which one is on screen.
-        right={
-          state.view
-            ? `turn ${shown.turn} · viewing`
-            : `turn ${shown.turn} · ${
-                running
-                  ? formatDuration(turnElapsed(state, now) ?? 0)
-                  : state.phase === "complete"
-                    ? "complete"
-                    : "ready"
-              } · ${permissionMode}`
-        }
+        right={`turn ${shown.turn} · ${
+          running
+            ? formatDuration(turnElapsed(state, now) ?? 0)
+            : state.phase === "complete"
+              ? "complete"
+              : "ready"
+        } · ${permissionMode}`}
       />
       <Rule width={layout.columns} />
 
@@ -2166,7 +2142,7 @@ export function App({
               </>
             ) : null}
             <StreamPanel
-              turn={shown}
+              state={state}
               height={layout.bodyHeight}
               width={layout.streamWidth}
               now={now}
@@ -2175,12 +2151,6 @@ export function App({
           </Box>
         )}
       </Box>
-
-      {state.view ? (
-        <Text color={COLOR.warn} wrap="truncate-end">
-          {`  viewing turn ${shown.turn} · ${shown.requirement ?? "(no requirement)"} · esc to return`}
-        </Text>
-      ) : null}
 
       {notice || (queuePaused && queue.length > 0) ? (
         <Text dimColor wrap="truncate-end">

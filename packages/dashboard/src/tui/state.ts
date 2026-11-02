@@ -153,14 +153,6 @@ export interface TuiState extends TurnView {
   /** Finished turns, oldest first. The live turn is `state` itself. */
   history: TurnView[]
   /**
-   * A finished turn opened for reading.
-   *
-   * Kept as a detached copy so scrolling and tabbing through it cannot disturb
-   * the turn that is actually running. While it is set the panes render it, and
-   * `focusId` / `scroll` edits land on it rather than on the live turn.
-   */
-  view?: TurnView
-  /**
    * Whether tool detail is shown in the stream.
    *
    * Console state, not turn state: it belongs here rather than on `TurnView` so
@@ -214,10 +206,6 @@ export type TuiAction =
    * now, so there is no past turn for it to belong to.
    */
   | { type: "stream:note"; agentId: string; text: string }
-  /** Open a finished turn for reading, by its turn number. */
-  | { type: "view:open"; turn: number }
-  /** Go back to the live turn. */
-  | { type: "view:close" }
   /** Flip whether tool detail is shown in the stream. */
   | { type: "verbose:toggle" }
   /**
@@ -607,10 +595,49 @@ function wrapLog(logs: LogSegment[], width: number): string[] {
     .flatMap((line) => wrapLine(line, width))
 }
 
-/** Row count of the focused agent's buffer, which is what scroll clamps against. */
-function focusedRowCount(turn: TurnView, width: number): number {
-  const agent = turn.focusId ? turn.agents[turn.focusId] : undefined
-  return agent?.logs ? wrapLog(agent.logs, width).length : 0
+/** Shared tail-slice math used by both single-turn and timeline windowing. */
+function windowRows(all: string[], viewport: number, scroll: number): LogWindow {
+  const height = Math.max(1, viewport)
+  const maxScroll = Math.max(0, all.length - height)
+  const scrolledBack = Math.min(Math.max(0, scroll), maxScroll)
+  const end = all.length - scrolledBack
+  return {
+    rows: all.slice(Math.max(0, end - height), end),
+    scrolledBack,
+    following: scrolledBack === 0,
+  }
+}
+
+/** One dim horizontal rule with turn number and a clipped requirement snippet. */
+function turnDivider(turn: TurnView, width: number): string {
+  const MAX_REQ = 45
+  const req = turn.requirement ? turn.requirement.replace(/\n/g, " ").slice(0, MAX_REQ) : undefined
+  const label = req ? ` turn ${turn.turn} · ${req} ` : ` turn ${turn.turn} `
+  const fill = Math.max(1, Math.floor((width - label.length) / 2))
+  const rule = `${"─".repeat(fill)}${label}${"─".repeat(fill)}`
+  return `\x1b[2m${rule.slice(0, width)}\x1b[0m`
+}
+
+/** All rows a given agent produced across every finished turn, in order oldest→newest. */
+function timelineRows(state: TuiState, agentId: string, width: number): string[] {
+  const all: string[] = []
+  // History turns: always add the divider (which carries the requirement text) even
+  // when the agent was silent in that turn — so the session context stays readable.
+  for (const turn of state.history) {
+    const agent = turn.agents[agentId]
+    all.push(turnDivider(turn, width))
+    if (agent && agent.logs.length > 0) {
+      all.push(...wrapLog(agent.logs, width))
+    }
+  }
+  // Current live turn — include even while running, so output appears in real time.
+  // Add a divider only when there is history above it, to mark the turn boundary.
+  const liveAgent = state.agents[agentId]
+  if (liveAgent && liveAgent.logs.length > 0) {
+    if (state.history.length > 0) all.push(turnDivider(state, width))
+    all.push(...wrapLog(liveAgent.logs, width))
+  }
+  return all
 }
 /**
  * Freeze the live turn into a record that can be read back later.
@@ -652,21 +679,12 @@ function snapshot(state: TuiState): TurnView {
 }
 
 /**
- * Apply an edit to whichever turn the panes are showing.
- *
- * Browsing a past turn has to be harmless: if tab and scroll wrote to the live
- * turn they would move the focus out from under a run in progress, and if they
- * wrote to the history record they would rewrite history. Neither is acceptable,
- * so the edit lands on the detached `view` copy and the record stays as it was.
+ * Apply an edit to the live turn.
  *
  * Returning the same object means "nothing changed", which is what keeps the
  * reducer's no-op identity contract intact for the tests and for React.
  */
 function mapShown(state: TuiState, fn: (turn: TurnView) => TurnView): TuiState {
-  if (state.view) {
-    const next = fn(state.view)
-    return next === state.view ? state : { ...state, view: next }
-  }
   const next = fn(state)
   return next === state ? state : { ...state, ...next }
 }
@@ -827,11 +845,9 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         history,
         // A new requirement also replaces the previous leader metadata; leaving
         // it up would make the old answer or routing reason look like the
-        // response to the new request. Reading a past turn ends for the same
-        // reason — the panes belong to the run.
+        // response to the new request.
         reason: undefined,
         reply: undefined,
-        view: undefined,
         // A console setting, carried across turns rather than reset with them.
         verbose: state.verbose,
       }
@@ -861,35 +877,35 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         return { ...turn, focusId: action.agentId, autoFollow: false, scroll: 0 }
       })
 
-    case "stream:scroll":
-      return mapShown(state, (turn) => {
-        const rows = focusedRowCount(turn, action.width)
-        const maxScroll = Math.max(0, rows - Math.max(1, action.viewport))
-        const next = Math.min(Math.max(0, turn.scroll + action.delta), maxScroll)
-        return next === turn.scroll ? turn : { ...turn, scroll: next }
-      })
+    case "stream:scroll": {
+      const focusId = state.focusId
+      if (!focusId) return state
+      const rows = timelineRows(state, focusId, action.width).length
+      const maxScroll = Math.max(0, rows - Math.max(1, action.viewport))
+      const next = Math.min(Math.max(0, state.scroll + action.delta), maxScroll)
+      return next === state.scroll ? state : { ...state, scroll: next }
+    }
 
-    case "stream:search":
-      return mapShown(state, (turn) => {
-        const agent = turn.focusId ? turn.agents[turn.focusId] : undefined
-        if (!agent?.logs || action.query === "") return turn
-        const rows = wrapLog(agent.logs, action.width)
-        const needle = action.query.toLowerCase()
-        let index = -1
-        for (let i = rows.length - 1; i >= 0; i--) {
-          if (rows[i].toLowerCase().includes(needle)) {
-            index = i
-            break
-          }
+    case "stream:search": {
+      const focusId = state.focusId
+      if (!focusId || action.query === "") return state
+      const all = timelineRows(state, focusId, action.width)
+      const needle = action.query.toLowerCase()
+      let index = -1
+      for (let i = all.length - 1; i >= 0; i--) {
+        if (all[i].toLowerCase().includes(needle)) {
+          index = i
+          break
         }
-        if (index === -1) return turn
-        const height = Math.max(1, action.viewport)
-        const maxScroll = Math.max(0, rows.length - height)
-        const scroll = Math.min(Math.max(0, rows.length - 1 - index), maxScroll)
-        return scroll === turn.scroll && !turn.autoFollow
-          ? turn
-          : { ...turn, scroll, autoFollow: false }
-      })
+      }
+      if (index === -1) return state
+      const height = Math.max(1, action.viewport)
+      const maxScroll = Math.max(0, all.length - height)
+      const scroll = Math.min(Math.max(0, all.length - 1 - index), maxScroll)
+      return scroll === state.scroll && !state.autoFollow
+        ? state
+        : { ...state, scroll, autoFollow: false }
+    }
 
     case "stream:latest":
       return mapShown(state, (turn) =>
@@ -918,14 +934,6 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         },
       }
     }
-
-    case "view:open": {
-      const record = state.history.find((turn) => turn.turn === action.turn)
-      return record ? { ...state, view: record } : state
-    }
-
-    case "view:close":
-      return state.view ? { ...state, view: undefined } : state
 
     case "verbose:toggle":
       return { ...state, verbose: !state.verbose }
@@ -978,7 +986,6 @@ function seededState(
     autoFollow: true,
     scroll: 0,
     history,
-    view: undefined,
     verbose: state.verbose,
   }
 }
@@ -1059,13 +1066,26 @@ export interface LogWindow {
 export function visibleLog(turn: TurnView, viewport: number, width: number): LogWindow {
   const agent = turn.focusId ? turn.agents[turn.focusId] : undefined
   const all = agent?.logs ? wrapLog(agent.logs, width) : []
-  const height = Math.max(1, viewport)
-  const maxScroll = Math.max(0, all.length - height)
-  const scrolledBack = Math.min(Math.max(0, turn.scroll), maxScroll)
-  const end = all.length - scrolledBack
-  return {
-    rows: all.slice(Math.max(0, end - height), end),
-    scrolledBack,
-    following: scrolledBack === 0,
-  }
+  return windowRows(all, viewport, turn.scroll)
+}
+
+/**
+ * The focused agent's output across every finished turn of this session.
+ *
+ * Turn-divider rows (one per turn the agent ran) are interspersed to give the
+ * reader an anchor: they show the turn number and a clipped requirement snippet
+ * so a reader scrolled back knows which request they are looking at.
+ *
+ * Scroll semantics are identical to {@link visibleLog}: 0 means pinned to the
+ * newest output, positive values mean scrolled back, and `following` is true
+ * when the window is at the tail.
+ */
+export function visibleTimeline(
+  state: TuiState,
+  agentId: string,
+  viewport: number,
+  width: number,
+  scroll: number
+): LogWindow {
+  return windowRows(timelineRows(state, agentId, width), viewport, scroll)
 }

@@ -176,9 +176,8 @@ describe("App · picking the session back up after a restart", () => {
       })
     )
 
-    // The interrupted turn is the last one, so it is auto-opened on resume.
+    // The interrupted turn is the last one; its requirement appears in the stream's divider row.
     expect(frame).toContain("refactor the parser")
-    expect(frame).toContain("viewing turn 2")
     // The notice bar reports the interruption.
     expect(frame).toContain("interrupted")
   })

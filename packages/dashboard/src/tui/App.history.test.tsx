@@ -119,8 +119,8 @@ describe("App · remembering turns across sessions", () => {
       })
     )
 
+    // The requirement appears in the stream panel's turn-divider row.
     expect(frame).toContain("restored task")
-    expect(frame).toContain("viewing turn 1")
   })
 
   it.each([
@@ -128,23 +128,25 @@ describe("App · remembering turns across sessions", () => {
     ["changes_required", "changes required"],
     ["failed", "acceptance failed"],
     ["cancelled", "acceptance cancelled"],
-  ] as const)("shows acceptance %s in the viewing banner when resumed", async (status, _label) => {
-    const id = seedSession([
-      {
-        ...savedTurn(1, "reviewed task"),
-        success: status === "approved",
-        acceptance: { status, reviewer: "qa", repairRounds: 1, reviews: [] },
-      },
-    ])
-    const frame = stripAnsi(
-      await driveFrame(<App config={config()} initialSession={{ kind: "resume", id }} />, {
-        settleMs: 200,
-      })
-    )
-    // The acceptance label appears in the pipeline rail or team panel of the opened turn.
-    expect(frame).toContain("reviewed task")
-    expect(frame).toContain("viewing turn 1")
-  })
+  ] as const)(
+    "shows the requirement in the stream when resumed with acceptance %s",
+    async (status, _label) => {
+      const id = seedSession([
+        {
+          ...savedTurn(1, "reviewed task"),
+          success: status === "approved",
+          acceptance: { status, reviewer: "qa", repairRounds: 1, reviews: [] },
+        },
+      ])
+      const frame = stripAnsi(
+        await driveFrame(<App config={config()} initialSession={{ kind: "resume", id }} />, {
+          settleMs: 200,
+        })
+      )
+      // The requirement appears in the stream panel's turn-divider row.
+      expect(frame).toContain("reviewed task")
+    }
+  )
 
   it("keeps a cancelled execution distinct from failed in the opened turn", async () => {
     const id = seedSession([{ ...savedTurn(1, "stopped task"), cancelled: true, success: false }])
@@ -153,7 +155,6 @@ describe("App · remembering turns across sessions", () => {
         settleMs: 200,
       })
     )
-    expect(frame).toContain("viewing turn 1")
     expect(frame).toContain("stopped task")
   })
 

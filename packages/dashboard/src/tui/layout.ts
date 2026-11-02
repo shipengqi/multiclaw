@@ -84,8 +84,6 @@ export interface LayoutInput {
   promptRows?: number
   /** Whether a command result is waiting to be shown. */
   notice: boolean
-  /** A past turn is open for reading, which costs a banner row. */
-  viewing?: boolean
   /** Whether there is a leader or any stage to draw. */
   hasRail: boolean
   /**
@@ -181,7 +179,6 @@ export function computeLayout(input: LayoutInput): Layout {
     (railRows > 0 ? railRows + 1 : 0) + // pipeline rail plus the gap above it
     1 + // gap before the body
     (input.notice ? 1 : 0) +
-    (input.viewing ? 1 : 0) + // "viewing turn N" banner
     queueRows +
     menuRows +
     promptRows +

@@ -315,9 +315,9 @@ describe("StreamPanel", () => {
   // less its own one-column left padding — the same number `computeLayout` hands
   // it in the real console.
   const WIDTH = 99
-  const stream = (turn: TurnView, height: number) =>
+  const stream = (state: TuiState, height: number) =>
     renderFrame(
-      <StreamPanel turn={turn} height={height} width={WIDTH} now={NOW} spinner="\u280b" />
+      <StreamPanel state={state} height={height} width={WIDTH} now={NOW} spinner="\u280b" />
     ).then(stripAnsi)
 
   it("heads the pane with the agent, its model, its state and the live marker", async () => {

@@ -29,6 +29,7 @@ import {
   tuiReducer,
   turnElapsed,
   visibleLog,
+  visibleTimeline,
 } from "./state"
 
 const TS = "2026-01-01T00:00:00.000Z"
@@ -330,7 +331,6 @@ describe("reduceEvent", () => {
       })
       expect(next.acceptance).toBeUndefined()
       expect(next.history[0].acceptance).toEqual(acceptance)
-      expect(tuiReducer(next, { type: "view:open", turn: 1 }).view?.acceptance).toEqual(acceptance)
     }
   )
 
@@ -697,78 +697,57 @@ describe("turn history", () => {
 
   it("opens a finished turn for reading", () => {
     const twoTurns = start(start(withAgents("a"), "first"), "second")
-    const opened = tuiReducer(twoTurns, { type: "view:open", turn: 1 })
-
-    expect(opened.view?.turn).toBe(1)
-    expect(opened.view?.requirement).toBe("first")
+    // The first turn's requirement is now accessible through history.
+    expect(twoTurns.history[0].requirement).toBe("first")
   })
 
-  it("ignores a request for a turn it never recorded", () => {
-    const state = start(withAgents("a"), "first")
-    expect(tuiReducer(state, { type: "view:open", turn: 99 })).toBe(state)
-  })
-
-  it("closes the open turn, and does nothing when none is open", () => {
-    const state = start(withAgents("a"), "first")
-    expect(tuiReducer(state, { type: "view:close" })).toBe(state)
-
-    const opened = tuiReducer(start(state, "second"), { type: "view:open", turn: 1 })
-    expect(tuiReducer(opened, { type: "view:close" }).view).toBeUndefined()
-  })
-
-  // Browsing has to be harmless: an edit that landed on the live turn would move
-  // the focus out from under a run in progress.
-  it("scrolls the turn being read, not the one that is running", () => {
+  it("streams scroll clamps against the full timeline, not just the current turn", () => {
+    // Build a state where agent "a" has output in a history turn.
     const agents = reduceEvent(withAgents("a"), output("a", "1\n2\n3\n4\n5")).agents
-    const opened = tuiReducer(withHistory(record(1, agents, "a")), { type: "view:open", turn: 1 })
-
-    const scrolled = tuiReducer(opened, {
+    // withHistory puts turn 1 (with "a"'s 5 log lines) in history; the live turn has
+    // no output for "a" yet.  focusId must point at "a" for stream:scroll to clamp.
+    const state: TuiState = {
+      ...withHistory(record(1, agents, "a")),
+      focusId: "a",
+    }
+    // Timeline = [divider-row, "1", "2", "3", "4", "5"] = 6 rows.
+    // With viewport=2, maxScroll = 6 - 2 = 4.
+    const scrolled = tuiReducer(state, {
       type: "stream:scroll",
-      delta: 2,
+      delta: 10, // overshoot on purpose; must clamp
       viewport: 2,
       width: WIDTH,
     })
-
-    expect(scrolled.view?.scroll).toBe(2)
-    expect(scrolled.scroll).toBe(0)
-    // And the record itself is left as it was, so reopening shows the tail.
-    expect(scrolled.history[0].scroll).toBe(0)
+    expect(scrolled.scroll).toBeGreaterThan(0) // something scrolled back
+    expect(scrolled.scroll).toBeLessThanOrEqual(4) // clamped to maxScroll
   })
 
-  it("focuses within the turn being read, not the one that is running", () => {
-    const agents = withAgents("a", "b").agents
-    // Auto-follow left the focus on the last agent to start.
-    const opened = tuiReducer(withHistory(record(1, agents, "b")), { type: "view:open", turn: 1 })
-
-    const cycled = tuiReducer(opened, { type: "focus:cycle", delta: 1 })
-
-    expect(cycled.view?.focusId).toBe("a")
-    expect(cycled.focusId).toBe("leader")
+  it("visibleTimeline spans all history turns for the focused agent", () => {
+    const agents1 = reduceEvent(withAgents("a"), output("a", "turn1-line")).agents
+    const agents2 = reduceEvent(withAgents("a"), output("a", "turn2-line")).agents
+    const state: TuiState = {
+      ...withHistory(record(1, agents1, "a")),
+      history: [
+        { ...initialState, turn: 1, phase: "complete", agents: agents1, focusId: "a" },
+        { ...initialState, turn: 2, phase: "complete", agents: agents2, focusId: "a" },
+      ],
+      focusId: "a",
+    }
+    const rows = visibleTimeline(state, "a", 100, WIDTH, 0).rows
+    const combined = rows.join("\n")
+    expect(combined).toContain("turn1-line")
+    expect(combined).toContain("turn2-line")
+    expect(combined).toContain("turn 1")
+    expect(combined).toContain("turn 2")
   })
 
-  // A console note is about work happening *now*, so it belongs to the live
-  // turn even while an old one is open: writing it into the record on screen
-  // would edit history that the run never produced.
-  it("writes a console note to the live turn, not the one being read", () => {
+  // A console note is about work happening now so it belongs to the live turn.
+  it("writes a console note to the live turn", () => {
     const live: TuiState = { ...withAgents("a"), phase: "running", requirement: "live" }
-    const opened = tuiReducer(
-      { ...live, history: [record(1, live.agents, "a")] },
-      { type: "view:open", turn: 1 }
-    )
 
-    const noted = tuiReducer(opened, { type: "stream:note", agentId: "a", text: "[steer] go left" })
+    const noted = tuiReducer(live, { type: "stream:note", agentId: "a", text: "[steer] go left" })
 
     expect(noted.agents.a.logs).toEqual([{ kind: "system", text: "[steer] go left" }])
-    expect(noted.view?.agents.a.logs).toEqual([])
-    expect(noted.history[0].agents.a.logs).toEqual([])
-  })
-
-  it("goes back to the live turn when a new one starts", () => {
-    const opened = tuiReducer(start(start(withAgents("a"), "first"), "second"), {
-      type: "view:open",
-      turn: 1,
-    })
-    expect(start(opened, "third").view).toBeUndefined()
   })
 })
 
@@ -1715,7 +1694,6 @@ describe("conversationTurns", () => {
     const state = ran(cancelled, "second")
     expect(state.history[0].cancelled).toBe(true)
     expect(state.history[0].effectiveRequirement).toBe("resolved doomed request")
-    expect(tuiReducer(state, { type: "view:open", turn: 1 }).view?.cancelled).toBe(true)
     expect(state.cancelled).toBeUndefined()
     expect(state.effectiveRequirement).toBeUndefined()
     expect(conversationTurns(state).map((turn) => turn.requirement)).toEqual(["second"])
@@ -1968,7 +1946,6 @@ describe("session:reset and session:load", () => {
     expect(next.turn).toBe(0)
     expect(next.history).toEqual([])
     expect(next.requirement).toBeUndefined()
-    expect(next.view).toBeUndefined()
     expect(next.verbose).toBe(true)
     expect(Object.keys(next.agents)).toEqual(["leader", "architect", "dev"])
   })
@@ -1982,7 +1959,6 @@ describe("session:reset and session:load", () => {
     expect(next.history).toBe(history)
     expect(next.turn).toBe(4)
     expect(next.requirement).toBeUndefined()
-    expect(next.view).toBeUndefined()
   })
 
   it("session:load with an empty history starts the counter at zero", () => {

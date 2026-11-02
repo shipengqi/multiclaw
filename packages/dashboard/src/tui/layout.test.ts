@@ -174,17 +174,6 @@ describe("computeLayout", () => {
     expect(computeLayout({ ...base, turn: 0, overlay: true }).welcome).toBe(false)
   })
 
-  it("charges the review banner against the body", () => {
-    const layout = computeLayout({ ...base, viewing: true })
-    expect(layout.bodyHeight).toBe(30 - 7 - 1)
-  })
-
-  it("does not charge for a review banner that is not there", () => {
-    expect(computeLayout(base).bodyHeight).toBe(
-      computeLayout({ ...base, viewing: false }).bodyHeight
-    )
-  })
-
   // Help is modal. Without this the first screen would *gain* a rail the moment
   // the user pressed `?`, which reads as the overlay rearranging the page.
   it("suppresses the rail while help is open", () => {
