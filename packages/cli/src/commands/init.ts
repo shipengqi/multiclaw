@@ -12,7 +12,7 @@ const AGENT_BLOCKS: Record<string, string> = {
     agents.backendDeveloper({ dependsOn: ["arch-design-reviewer"] }),
     agents.tester({ dependsOn: ["backend-developer"] }),
     agents.codeReviewer({ dependsOn: ["tester"] }),
-    agents.devops({ dependsOn: ["tester"] }),`,
+    agents.devops({ dependsOn: ["code-reviewer"] }),`,
 
   frontend: `    agents.architect(),
     agents.uiDesigner({ dependsOn: ["architect"] }),
@@ -30,16 +30,16 @@ const AGENT_BLOCKS: Record<string, string> = {
     agents.frontendDeveloper({ dependsOn: ["backend-developer", "ui-design-reviewer"] }),
     agents.tester({ dependsOn: ["frontend-developer"] }),
     agents.codeReviewer({ dependsOn: ["tester"] }),
-    agents.devops({ dependsOn: ["tester"] }),`,
+    agents.devops({ dependsOn: ["code-reviewer"] }),`,
 }
 
 const PRESET_DESCRIPTIONS: Record<string, string> = {
   backend:
-    "Product Manager → Architect → Arch Design Reviewer → Backend Developer → Tester → Code Reviewer + DevOps  (7 agents)",
+    "Product Manager → Architect → Arch Design Reviewer → Backend Developer → Tester → Code Reviewer → DevOps  (7 agents)",
   frontend:
     "Architect → UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer  (6 agents)",
   fullstack:
-    "Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer + DevOps  (10 agents)",
+    "Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer → DevOps  (10 agents)",
 }
 
 /**
@@ -84,6 +84,20 @@ export const PRESET_AGENT_IDS: Record<string, string[]> = {
   ],
 }
 
+// Each gate repairs its owners; code review includes testing to revalidate code edits.
+const REVIEW_GATE_BLOCKS: Record<string, string> = {
+  backend: `    { reviewer: "arch-design-reviewer", repairAgents: ["architect"], maxRepairRounds: 3 },
+    { reviewer: "tester", repairAgents: ["backend-developer"], maxRepairRounds: 3 },
+    { reviewer: "code-reviewer", repairAgents: ["backend-developer", "tester"], maxRepairRounds: 3 },`,
+  frontend: `    { reviewer: "ui-design-reviewer", repairAgents: ["ui-designer"], maxRepairRounds: 3 },
+    { reviewer: "tester", repairAgents: ["frontend-developer"], maxRepairRounds: 3 },
+    { reviewer: "code-reviewer", repairAgents: ["frontend-developer", "tester"], maxRepairRounds: 3 },`,
+  fullstack: `    { reviewer: "arch-design-reviewer", repairAgents: ["architect"], maxRepairRounds: 3 },
+    { reviewer: "ui-design-reviewer", repairAgents: ["ui-designer"], maxRepairRounds: 3 },
+    { reviewer: "tester", repairAgents: ["backend-developer", "frontend-developer"], maxRepairRounds: 3 },
+    { reviewer: "code-reviewer", repairAgents: ["backend-developer", "frontend-developer", "tester"], maxRepairRounds: 3 },`,
+}
+
 // ─── Config Generator ─────────────────────────────────────────────────────────
 
 export function generateConfig(opts: {
@@ -111,6 +125,9 @@ export default defineConfig({
   },
   agents: [
 ${AGENT_BLOCKS[opts.preset]}
+  ],
+  reviewGates: [
+${REVIEW_GATE_BLOCKS[opts.preset]}
   ],
 })
 `

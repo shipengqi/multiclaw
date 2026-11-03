@@ -159,7 +159,7 @@ export class ConsoleReporter {
         break
       }
       case "orchestration:complete": {
-        const { success, totalDuration, agentResults, reply, acceptance } = e.payload
+        const { success, totalDuration, agentResults, reply, acceptance, gateResults } = e.payload
         // A turn that ran no pipeline has no table worth printing — the leader's
         // words are the whole result, so they go above the summary box.
         if (reply) {
@@ -175,13 +175,15 @@ export class ConsoleReporter {
               ? `${S.warn} Needs your input`
               : `${S.ok} Answered`
             : acceptance
-              ? acceptance.status === "approved"
-                ? `${S.ok} Approved`
-                : acceptance.status === "changes_required"
-                  ? `${S.warn} Changes required`
-                  : acceptance.status === "cancelled"
-                    ? `${S.skip} Acceptance cancelled`
-                    : `${S.fail} Acceptance failed`
+              ? acceptance.status === "approved" && !success
+                ? `${S.fail} Execution failed after approval`
+                : acceptance.status === "approved"
+                  ? `${S.ok} Approved`
+                  : acceptance.status === "changes_required"
+                    ? `${S.warn} Changes required`
+                    : acceptance.status === "cancelled"
+                      ? `${S.skip} Acceptance cancelled`
+                      : `${S.fail} Acceptance failed`
               : e.payload.cancelled
                 ? `${S.skip} Cancelled`
                 : success
@@ -190,7 +192,13 @@ export class ConsoleReporter {
         console.log(`\n${C.bold}${C.purple}${edge[0]}${line}${edge[3]}`)
         console.log(`${edge[1]}  ${title.padEnd(48)}${edge[1]}`)
         console.log(`${edge[2]}${line}${edge[4]}${C.reset}`)
-        if (acceptance) {
+        const reviewResults = [
+          ...(gateResults ?? []),
+          ...(acceptance && !gateResults?.some((gate) => gate.reviewer === acceptance.reviewer)
+            ? [acceptance]
+            : []),
+        ]
+        for (const acceptance of reviewResults) {
           console.log(
             `  Reviewer: ${acceptance.reviewer}  Repair rounds: ${acceptance.repairRounds}`
           )

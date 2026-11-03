@@ -47,9 +47,9 @@ export interface TurnOutcome {
 export interface ReviewPolicy {
   /** Configured agent reserved for final review, outside the normal pipeline. */
   reviewer: string
-  /** Configured workers allowed to repair, in dependency order. */
+  /** Selected workers and verification gates to rerun, in dependency order. */
   repairAgents: string[]
-  /** Maximum repair passes (0–5); defaults to 1. Review runs once more after each pass. */
+  /** Per-reviewer repair budget (0–5), default 1; retained across nested rechecks and reroutes. */
   maxRepairRounds?: number
 }
 
@@ -142,6 +142,8 @@ export interface MultiClawConfig {
   useLeader?: boolean
   /** Opt-in delivery gate. Execution success alone does not satisfy this policy. */
   review?: ReviewPolicy
+  /** In-pipeline reviewers. dependsOn locates each gate; downstream waits for approval. */
+  reviewGates?: ReviewPolicy[]
   /** Pause points after specific agents complete, for human review before continuation. */
   checkpoints?: CheckpointPolicy[]
   /** Caller-owned checkpoint handler; absent checkpoints proceed automatically. */
@@ -202,6 +204,8 @@ export interface OrchestratorResult {
   success: boolean
   /** Present only for a review-gated pipeline, never for a leader reply/ask. */
   acceptance?: AcceptanceResult
+  /** Latest result per pipeline gate, including all verdicts and repair counts. */
+  gateResults?: AcceptanceResult[]
   totalDuration: number
   agentResults: import("./agent").AgentResult[]
   startTime: string

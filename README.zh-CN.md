@@ -197,6 +197,12 @@ export default defineConfig({
 | `maxConcurrency` | number | | 最大并行 Agent 数，默认不限制。 |
 | `permissions` | object | | 权限模式：`{ mode: "auto" \| "ask" \| "deny", onRequest? }`。`"auto"` 批准所有工具请求，`"ask"` 把每个请求交给 `onRequest`，`"deny"` 全部拒绝。默认：`run` 为 `"auto"`，控制台为 `"ask"`。 |
 
+### 多轮评审与返工
+
+用顶层 `reviewGates` 把架构评审、UI 评审、测试和代码评审设为流水线关卡。每个策略指定 `reviewer`、`repairAgents` 和 `maxRepairRounds`；位置由 reviewer 的 `dependsOn` 决定。不通过时串行修复并重新验收，通过后才执行下游。代码评审的修复列表应包含 tester，确保修改后重新测试；tester 再次调用时仍沿用本轮已消耗的预算。
+
+新生成的团队配置启用对应关卡，每个关卡最多修复三轮；已有配置需要加入 `reviewGates`。原有 `review` 仍用于流水线末尾的最终验收。内置验收角色保留报告并返回结构化结论；预算耗尽或无效结论会停止流水线。详见[配置与验证证据](docs/multi-agent-rework.md)。
+
 ### Agent 字段说明
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -458,9 +464,9 @@ workDir/
 
 | 模板 | 流水线 | Agent 数 |
 |------|--------|---------|
-| `backend` | 产品经理 → 架构师 → 架构评审 → 后端开发 → 测试 → 代码评审 + DevOps | 7 |
+| `backend` | 产品经理 → 架构师 → 架构评审 → 后端开发 → 测试 → 代码评审 → DevOps | 7 |
 | `frontend` | 架构师 → UI 设计师 → UI 评审 → 前端开发 → 测试 → 代码评审 | 6 |
-| `fullstack` | 产品经理 → 架构师 → 架构评审 → 后端开发 + UI 设计师 → UI 评审 → 前端开发 → 测试 → 代码评审 + DevOps | 10 |
+| `fullstack` | 产品经理 → 架构师 → 架构评审 → 后端开发 + UI 设计师 → UI 评审 → 前端开发 → 测试 → 代码评审 → DevOps | 10 |
 
 ## Leader
 

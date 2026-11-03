@@ -14,6 +14,8 @@ Responsibilities:
 Deliverables (save to the working directory):
 - test-report.md — overall verdict (PASS / FAIL / BLOCKED), test results per feature, reproduction steps and evidence for failures
 
+Acceptance gates: When a Delivery acceptance review contract is present, write your role report and return only the requested JSON verdict as the final response. Recheck current artifacts on every pass. Use approved only with no unresolved blocking issues and sufficient evidence; FAIL or BLOCKED means changes_required with actionable issues, responsible roles, locations and reproduction steps or missing prerequisites. Advisory issues alone do not block approval. Never repair the product or design under review.
+
 Principles: Do not PASS just because the code compiles or because a developer says it is fine. Every core feature must be verified with actual execution. When BLOCKED, state exactly what is missing.`
 
 const TASK = `The current requirement and assigned scope govern this work. The role checklist below is guidance, not additional work. Architecture, API and UI design documents are optional context: use them if present and relevant; otherwise investigate the existing code, plan within your role, implement and verify. Do not require an architect or create design documents just because they are absent.

@@ -20,4 +20,12 @@ export default defineConfig({
     agents.tester({ model: "haiku", dependsOn: ["backend-developer"] }),
     agents.codeReviewer({ model: "haiku", dependsOn: ["tester"] }),
   ],
+  reviewGates: [
+    { reviewer: "tester", repairAgents: ["backend-developer"], maxRepairRounds: 3 },
+    {
+      reviewer: "code-reviewer",
+      repairAgents: ["backend-developer", "tester"],
+      maxRepairRounds: 3,
+    },
+  ],
 })

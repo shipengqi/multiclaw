@@ -11,6 +11,7 @@ import type {
   MultiClawConfig,
   OrchestrationPreview,
   OrchestratorResult,
+  ReviewPolicy,
   ReviewVerdict,
   RoutingInfo,
   WorkContext,
@@ -52,7 +53,8 @@ export class Orchestrator {
   private assignments = new Map<string, string>()
   private excluded = new Set<string>()
   private rerouting = false
-  private repairSpent = 0
+  private repairSpent = new Map<string, number>()
+  private gateResults = new Map<string, AcceptanceResult>()
   private leaderCosts: Array<{ costUsd?: number }> = []
   private ownsSessions: boolean
   private cleanupAttempted = false
@@ -335,7 +337,7 @@ export class Orchestrator {
       this.warn(policyError)
       const result = this.finishEmpty(startTime, {
         status: "failed",
-        reviewer: this.config.review?.reviewer ?? "",
+        reviewer: this.config.review?.reviewer ?? this.config.reviewGates?.[0]?.reviewer ?? "",
         repairRounds: 0,
         reviews: [],
         reason: policyError,
@@ -424,6 +426,8 @@ export class Orchestrator {
     })
 
     const results: AgentResult[] = []
+    let acceptance: AcceptanceResult | undefined
+    let gateFailed = false
     let allSuccess = true
     let cancelled = false
     // Guards the task-plan application to the first stage that runs the planner.
@@ -456,14 +460,7 @@ export class Orchestrator {
       // failed agent's partial output is not a conclusion a downstream agent
       // should build on. Set before the abort check so the loop's invariant —
       // "the context reflects every completed stage" — holds on every exit.
-      this.contextManager.set(
-        "upstreamOutputs",
-        renderUpstreamOutputs(
-          results
-            .filter((r) => r.status === "success")
-            .map((r) => ({ agentId: r.agentId, name: r.agentName, output: r.output }))
-        )
-      )
+      this.updateUpstream(results)
 
       // Cancelled mid-stage: stop scheduling further stages and fall through to
       // the completion result rather than emitting a misleading stage:complete.
@@ -545,8 +542,64 @@ export class Orchestrator {
         payload: { stageIndex: i },
       })
 
+      // A process completing is not approval. Finish gates before downstream work.
+      const cursor = { index: i + 1 }
+      for (const agent of stage) {
+        const policy = this.config.reviewGates?.find((gate) => gate.reviewer === agent.id)
+        if (!policy) continue
+        acceptance = await this.reviewDelivery(
+          agents,
+          results,
+          stages,
+          allSuccess,
+          cancelled,
+          options.signal,
+          policy,
+          cursor,
+          stageResults.find((item) => item.agentId === agent.id)
+        )
+        this.gateResults.set(policy.reviewer, acceptance)
+        if (acceptance.status !== "approved") {
+          gateFailed = true
+          allSuccess = false
+          cancelled ||= acceptance.status === "cancelled"
+          break
+        }
+      }
+      i = cursor.index - 1
+      for (const item of results) executedIds.add(item.agentId)
+      // Repaired planners may change scopes and dependencies of pending workers.
+      if (
+        stage.some((agent) =>
+          this.config.reviewGates?.some(
+            (gate) =>
+              gate.reviewer === agent.id &&
+              gate.repairAgents.some((id) =>
+                agents.some((worker) => worker.id === id && this.isPlanner(worker))
+              )
+          )
+        )
+      ) {
+        await this.applyTaskPlan(agents, executedIds)
+        const pending = agents
+          .filter((agent) => !executedIds.has(agent.id))
+          .map((agent) => ({
+            ...agent,
+            dependsOn: agent.dependsOn?.filter((id) => !executedIds.has(id)),
+          }))
+        stages = [
+          ...stages.slice(0, i + 1),
+          ...this.buildStagesOrFallback(pending, "Could not order pending workers"),
+        ]
+        this.eventBus.emit({
+          type: "orchestration:stages",
+          timestamp: new Date().toISOString(),
+          payload: { totalAgents: agents.length, stages: toStageInfos(stages) },
+        })
+      }
+
       // Check for human checkpoints after this stage.
-      if (this.config.checkpoints?.length && this.config.onCheckpoint) {
+      if (!gateFailed && this.config.checkpoints?.length && this.config.onCheckpoint) {
         for (let cpIdx = 0; cpIdx < this.config.checkpoints.length; cpIdx++) {
           if (this.checkpointTriggered.has(cpIdx)) continue
           const cp = this.config.checkpoints[cpIdx]
@@ -569,7 +622,7 @@ export class Orchestrator {
         }
       }
 
-      if (cancelled || (!allSuccess && !this.config.continueOnError)) {
+      if (gateFailed || cancelled || (!allSuccess && !this.config.continueOnError)) {
         for (const remainingStage of stages.slice(i + 1)) {
           for (const agent of remainingStage) {
             this.eventBus.emit({
@@ -583,8 +636,7 @@ export class Orchestrator {
       }
     }
 
-    let acceptance: AcceptanceResult | undefined
-    if (this.config.review && !handedBack) {
+    if (this.config.review && !handedBack && !gateFailed) {
       acceptance = await this.reviewDelivery(
         agents,
         results,
@@ -606,6 +658,7 @@ export class Orchestrator {
       name: this.config.name,
       success: allSuccess,
       ...(acceptance ? { acceptance } : {}),
+      ...(this.gateResults.size ? { gateResults: [...this.gateResults.values()] } : {}),
       totalDuration: endTime.getTime() - startTime.getTime(),
       agentResults: results,
       startTime: startTime.toISOString(),
@@ -620,28 +673,82 @@ export class Orchestrator {
   }
 
   private reviewPolicyError(): string | undefined {
-    const policy = this.config.review
-    if (!policy) return undefined
+    const policies = [
+      ...(this.config.reviewGates ?? []),
+      ...(this.config.review ? [this.config.review] : []),
+    ]
+    if (!policies.length) return undefined
     const ids = this.config.agents.map((agent) => agent.id)
     if (new Set(ids).size !== ids.length) return "Review policy requires unique agent ids."
-    if (!ids.includes(policy.reviewer) || policy.reviewer === this.config.leader?.id) {
-      return "Review policy must name a configured non-leader reviewer."
-    }
-    if (
-      !Array.isArray(policy.repairAgents) ||
-      !policy.repairAgents.length ||
-      new Set(policy.repairAgents).size !== policy.repairAgents.length ||
-      policy.repairAgents.some(
-        (id) => !ids.includes(id) || id === policy.reviewer || id === this.config.leader?.id
+    if (new Set(policies.map((policy) => policy.reviewer)).size !== policies.length)
+      return "Review policies require unique reviewers."
+    for (const policy of policies) {
+      if (!ids.includes(policy.reviewer) || policy.reviewer === this.config.leader?.id)
+        return "Review policy must name a configured non-leader reviewer."
+      if (
+        !Array.isArray(policy.repairAgents) ||
+        !policy.repairAgents.length ||
+        new Set(policy.repairAgents).size !== policy.repairAgents.length ||
+        policy.repairAgents.some(
+          (id) => !ids.includes(id) || id === policy.reviewer || id === this.config.leader?.id
+        )
       )
-    ) {
-      return "Review policy must name unique configured repair workers, excluding the reviewer and leader."
+        return "Review policy must name unique configured repair workers, excluding the reviewer and leader."
+      const limit = policy.maxRepairRounds ?? 1
+      if (!Number.isInteger(limit) || limit < 0 || limit > 5)
+        return "Review policy maxRepairRounds must be an integer from 0 to 5."
     }
-    const limit = policy.maxRepairRounds ?? 1
-    if (!Number.isInteger(limit) || limit < 0 || limit > 5) {
-      return "Review policy maxRepairRounds must be an integer from 0 to 5."
+    const visiting = new Set<string>()
+    const visited = new Set<string>()
+    const visit = (id: string): boolean => {
+      if (visiting.has(id)) return false
+      if (visited.has(id)) return true
+      visiting.add(id)
+      for (const child of policies.find((policy) => policy.reviewer === id)?.repairAgents ?? [])
+        if (policies.some((policy) => policy.reviewer === child) && !visit(child)) return false
+      visiting.delete(id)
+      visited.add(id)
+      return true
     }
+    if (policies.some((policy) => !visit(policy.reviewer)))
+      return "Review policies contain a recursive repair cycle."
+    if (
+      this.config.reviewGates?.some((gate) =>
+        gate.repairAgents.includes(this.config.review?.reviewer ?? "")
+      )
+    )
+      return "Pipeline gates cannot repair the reserved delivery reviewer."
     return undefined
+  }
+
+  private reviewInstruction(policy: ReviewPolicy): string {
+    return [
+      "## Delivery acceptance review",
+      `Review gate: ${policy.reviewer}. Inspect the current workspace against the complete requirement and your assigned responsibility.`,
+      "Verify current artifacts and tests, not earlier reports. Testers must execute tests; design reviewers evaluate design documents without requiring implementation.",
+      "Do not repair the artifacts under review. You may execute tests and write your report; testers may create or update test files, but must not weaken assertions or change product code to obtain approval.",
+      "Return ONLY a JSON object with this exact contract:",
+      '{"verdict":"approved"|"changes_required","summary":"non-empty explanation","issues":["actionable unresolved issue with owner, location, reproduction/evidence and fix direction"]}',
+      "Approval requires an empty issues array; changes_required requires at least one issue. Missing verification prerequisites are changes_required with the exact blocker. A successful process exit is not approval.",
+    ].join("\n")
+  }
+
+  private updateUpstream(results: AgentResult[]): void {
+    const latest = new Map<string, AgentResult>()
+    for (const item of results) {
+      latest.delete(item.agentId)
+      latest.set(item.agentId, item)
+    }
+    this.contextManager.set(
+      "upstreamOutputs",
+      renderUpstreamOutputs(
+        [...latest.values()]
+          .filter(
+            (item) => item.status === "success" && item.agentId !== this.config.review?.reviewer
+          )
+          .map((item) => ({ agentId: item.agentId, name: item.agentName, output: item.output }))
+      )
+    )
   }
 
   private async reviewDelivery(
@@ -650,15 +757,17 @@ export class Orchestrator {
     stages: AgentDefinition[][],
     executionSuccess: boolean,
     cancelled: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    policy = this.config.review,
+    cursor = { index: stages.length },
+    initialReview?: AgentResult
   ): Promise<AcceptanceResult> {
-    const policy = this.config.review
     if (!policy) throw new Error("Delivery review requires a configured policy.")
     const acceptance: AcceptanceResult = {
       status: "failed",
       reviewer: policy.reviewer,
-      repairRounds: this.repairSpent,
-      reviews: [],
+      repairRounds: this.repairSpent.get(policy.reviewer) ?? 0,
+      reviews: [...(this.gateResults.get(policy.reviewer)?.reviews ?? [])],
     }
     if (cancelled || signal?.aborted) return { ...acceptance, status: "cancelled" }
     if (!executionSuccess)
@@ -674,13 +783,13 @@ export class Orchestrator {
       })),
       "Could not order repair workers"
     ).flatMap((stage) => stage.map((agent) => [agent]))
-    let stageIndex = stages.length
     const execute = async (stage: AgentDefinition[], instruction: string): Promise<boolean> => {
       if (signal?.aborted) {
         acceptance.status = "cancelled"
         return false
       }
-      stages.push(stage)
+      const index = cursor.index++
+      stages.splice(index, 0, stage)
       this.eventBus.emit({
         type: "orchestration:stages",
         timestamp: new Date().toISOString(),
@@ -689,7 +798,6 @@ export class Orchestrator {
           stages: this.stageInfos(stages),
         },
       })
-      const index = stageIndex++
       this.eventBus.emit({
         type: "stage:start",
         timestamp: new Date().toISOString(),
@@ -701,23 +809,14 @@ export class Orchestrator {
           acceptance.status = "cancelled"
           return false
         }
+        const gate = this.config.reviewGates?.find((gate) => gate.reviewer === agent.id)
         const result = await this.runner.run(
           agent,
           signal,
-          `${this.recovery}\n${instruction}\n\n## Latest worker outputs\n${this.contextManager.get("upstreamOutputs") ?? ""}`
+          `${this.recovery}\n${instruction}\n${gate ? this.reviewInstruction(gate) : ""}\n\n## Latest worker outputs\n${this.contextManager.get("upstreamOutputs") ?? ""}`
         )
         results.push(result)
-        // Repeated agents replace their earlier upstream output, not their audit results.
-        const latest = new Map<string, AgentResult>()
-        for (const item of results) latest.set(item.agentId, item)
-        this.contextManager.set(
-          "upstreamOutputs",
-          renderUpstreamOutputs(
-            [...latest.values()]
-              .filter((item) => item.status === "success" && item.agentId !== policy.reviewer)
-              .map((item) => ({ agentId: item.agentId, name: item.agentName, output: item.output }))
-          )
-        )
+        this.updateUpstream(results)
         if (result.status !== "success" || signal?.aborted) {
           acceptance.status =
             result.status === "cancelled" || signal?.aborted ? "cancelled" : "failed"
@@ -730,17 +829,39 @@ export class Orchestrator {
         timestamp: new Date().toISOString(),
         payload: { stageIndex: index },
       })
+      for (const agent of stage) {
+        const gate = this.config.reviewGates?.find((gate) => gate.reviewer === agent.id)
+        if (gate && gate.reviewer !== policy.reviewer) {
+          const nested = await this.reviewDelivery(
+            agents,
+            results,
+            stages,
+            true,
+            false,
+            signal,
+            gate,
+            cursor,
+            [...results].reverse().find((item) => item.agentId === agent.id)
+          )
+          this.gateResults.set(gate.reviewer, nested)
+          if (nested.status !== "approved") {
+            acceptance.status = nested.status
+            acceptance.reason = `${gate.reviewer}: ${nested.reason ?? "Acceptance did not pass."}`
+            return false
+          }
+        }
+      }
       return true
     }
+    let reviewed = initialReview
     while (true) {
-      if (
-        !(await execute(
-          [reviewer],
-          `## Delivery acceptance review\nInspect the current workspace against the complete task and verify the changes. Do not repair files. Return ONLY a JSON object with this exact contract:\n{"verdict":"approved"|"changes_required","summary":"non-empty explanation","issues":["actionable unresolved issue"]}\nApproval requires an empty issues array; changes_required requires at least one issue. A successful process exit is not approval.`
-        ))
-      )
-        return acceptance
-      const verdict = parseReviewVerdict(results[results.length - 1].output)
+      if (!reviewed) {
+        if (!(await execute([reviewer], this.reviewInstruction(policy)))) return acceptance
+        reviewed = [...results].reverse().find((item) => item.agentId === reviewer.id)
+      }
+      const verdict =
+        reviewed?.status === "success" ? parseReviewVerdict(reviewed.output) : undefined
+      reviewed = undefined
       if (!verdict) {
         acceptance.reason = "Reviewer returned an invalid delivery verdict; acceptance is blocked."
         this.warn(acceptance.reason)
@@ -756,12 +877,35 @@ export class Orchestrator {
         return acceptance
       }
       acceptance.repairRounds++
-      this.repairSpent++
+      this.repairSpent.set(policy.reviewer, acceptance.repairRounds)
       this.warn(
-        `Delivery requires changes — repair pass ${acceptance.repairRounds}/${policy.maxRepairRounds ?? 1}.`
+        `Delivery requires changes (${reviewer.name}) — repair pass ${acceptance.repairRounds}/${policy.maxRepairRounds ?? 1}: ${verdict.summary}`
       )
       const instruction = `## Repair requested by delivery review\n${JSON.stringify(verdict)}\nAddress these findings within your assigned scope, preserve the complete task requirements, and report what you changed and verified.`
       for (const stage of repairStages) if (!(await execute(stage, instruction))) return acceptance
+      // Approval before an edit cannot authorize the modified artifacts.
+      for (let cpIdx = 0; cpIdx < (this.config.checkpoints?.length ?? 0); cpIdx++) {
+        const cp = this.config.checkpoints?.[cpIdx]
+        if (!cp) continue
+        if (
+          !this.config.onCheckpoint ||
+          !cp.afterAgents.some((id) => repairIds.has(id)) ||
+          !cp.afterAgents.every((id) =>
+            results.some((item) => item.agentId === id && item.status === "success")
+          )
+        )
+          continue
+        const response = await this.handleCheckpoint(cp, results, signal)
+        this.checkpointTriggered.add(cpIdx)
+        if (response.action === "cancel" || signal?.aborted)
+          return { ...acceptance, status: "cancelled" }
+        if (response.action === "modify") {
+          this.contextManager.set(
+            "requirement",
+            `${this.contextManager.get("requirement") ?? ""}\n\n[Checkpoint feedback] ${response.instruction}`
+          )
+        }
+      }
       acceptance.status = "failed"
     }
   }
@@ -780,7 +924,9 @@ export class Orchestrator {
     if (!onCheckpoint) return { action: "continue" }
     const completedAgents = policy.afterAgents
       .map((id) => {
-        const r = results.find((res) => res.agentId === id && res.status === "success")
+        const r = [...results]
+          .reverse()
+          .find((res) => res.agentId === id && res.status === "success")
         if (!r) return undefined
         return { id: r.agentId, name: r.agentName, output: r.output }
       })
@@ -823,7 +969,12 @@ export class Orchestrator {
    */
   private buildStagesOrFallback(agents: AgentDefinition[], context: string): AgentDefinition[][] {
     try {
-      return buildStages(agents)
+      const gates = new Set(this.config.reviewGates?.map((gate) => gate.reviewer))
+      return buildStages(agents).flatMap((stage) => {
+        const reviewers = stage.filter((agent) => gates.has(agent.id)).map((agent) => [agent])
+        const workers = stage.filter((agent) => !gates.has(agent.id))
+        return [...reviewers, ...(workers.length ? [workers] : [])]
+      })
     } catch (err) {
       this.warn(`${context} (${errorMessage(err)}) — running the agents in declaration order.`)
       return agents.map((agent) => [agent])
@@ -1159,7 +1310,12 @@ export class Orchestrator {
         while (next < agents.length && !signal?.aborted && !cancelled) {
           const index = next
           next += 1
-          const result = await this.runner.run(agents[index], signal, this.recovery || undefined)
+          const gate = this.config.reviewGates?.find((gate) => gate.reviewer === agents[index].id)
+          const result = await this.runner.run(
+            agents[index],
+            signal,
+            gate ? `${this.recovery}\n${this.reviewInstruction(gate)}` : this.recovery || undefined
+          )
           results.set(index, result)
           if (result.status === "cancelled") cancelled = true
         }
@@ -1278,7 +1434,13 @@ export class Orchestrator {
         }
         if (executedIds.has(agent.id)) continue
         agent.taskTitle = task.title
-        agent.dependsOn = dependsOn ?? agent.dependsOn
+        // A generated plan cannot bypass a configured, selected review barrier.
+        const gates = new Set(this.config.reviewGates?.map((gate) => gate.reviewer))
+        const barriers =
+          this.config.agents
+            .find((item) => item.id === agent.id)
+            ?.dependsOn?.filter((id) => selected.has(id) && gates.has(id)) ?? []
+        agent.dependsOn = dependsOn ? [...new Set([...dependsOn, ...barriers])] : agent.dependsOn
         agent.agentScope = this.assignments.get(agent.id) ?? task.scope ?? agent.agentScope
         if (task.plan?.length) {
           agent.agentPlan = task.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")

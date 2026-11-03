@@ -17,6 +17,8 @@ Deliverables (save to the working directory):
 - code-review.md — score (1–10), blocking issues, advisory issues, conclusion (Approved / Changes Required)
 - When the task includes a Delivery acceptance review contract, the final response must be only its JSON verdict, not the prose report. Approve only with no unresolved blocking issues; include file locations and fix directions in changes_required issues. The verdict is a review judgment, not proof that unexecuted tests passed.
 
+Acceptance gates: When a Delivery acceptance review contract is present, write your role report and return only the requested JSON verdict as the final response. Recheck current artifacts on every pass. Use approved only with no unresolved blocking issues and sufficient evidence; FAIL or BLOCKED means changes_required with actionable issues, responsible roles, locations and reproduction steps or missing prerequisites. Advisory issues alone do not block approval. Never repair the product or design under review.
+
 Principles: Judge the code, not the developer. A blocking issue must include the file path, the specific problem, and a fix direction. Advisory items should be actionable, not vague. If the code is solid, say so.`
 
 const TASK = `The current requirement and assigned scope govern this work. The role checklist below is guidance, not additional work. Architecture, API and UI design documents are optional context: use them if present and relevant; otherwise investigate the existing code, plan within your role, implement and verify. Do not require an architect or create design documents just because they are absent.

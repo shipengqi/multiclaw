@@ -132,6 +132,7 @@ export interface TurnView {
    */
   interrupted?: boolean
   acceptance?: AcceptanceResult
+  gateResults?: AcceptanceResult[]
   totalDuration?: number
   /**
    * Sum of the per-agent costs the runtime reported, in USD. Absent when none
@@ -657,6 +658,7 @@ export function reduceEvent(state: TuiState, event: MultiClawEvent): TuiState {
         agentResults: event.payload.agentResults,
         effectiveAgentResults: event.payload.effectiveAgentResults,
         acceptance: event.payload.acceptance,
+        gateResults: event.payload.gateResults,
         cancelled: event.payload.cancelled,
         effectiveRequirement: event.payload.requirement ?? state.effectiveRequirement,
         totalDuration: event.payload.totalDuration,
@@ -908,6 +910,7 @@ function snapshot(state: TuiState): TurnView {
     agentResults: state.agentResults,
     effectiveAgentResults: state.effectiveAgentResults,
     acceptance: state.acceptance,
+    gateResults: state.gateResults,
     totalDuration: state.totalDuration,
     totalCostUsd: state.totalCostUsd,
     reason: state.reason,
@@ -983,7 +986,9 @@ export function latestWorkFromTurns(
 
 function conversationOutcome(turn: TurnView): TurnOutcome {
   if (!turn.interrupted && !turn.cancelled && turn.work?.outcome) return turn.work.outcome
-  const reviewer = turn.acceptance?.reviewer
+  const reviewer = turn.gateResults?.some((gate) => gate.reviewer === turn.acceptance?.reviewer)
+    ? undefined
+    : turn.acceptance?.reviewer
   const isWorker = (id: string) => id !== reviewer && !turn.leaderIds.includes(id)
   const workers = Object.values(turn.agents).filter((agent) => isWorker(agent.id))
   const completedAgents = workers
@@ -1205,6 +1210,7 @@ function seededState(
     interrupted: undefined,
     success: undefined,
     acceptance: undefined,
+    gateResults: undefined,
     totalDuration: undefined,
     totalCostUsd: undefined,
     reason: undefined,

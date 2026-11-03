@@ -69,6 +69,8 @@ function isTurnView(value: unknown): value is TurnView {
     (turn.sessionEvents === undefined ||
       (Array.isArray(turn.sessionEvents) && turn.sessionEvents.every(isSessionEvent))) &&
     (turn.acceptance === undefined || isAcceptance(turn.acceptance)) &&
+    (turn.gateResults === undefined ||
+      (Array.isArray(turn.gateResults) && turn.gateResults.every(isAcceptance))) &&
     (turn.effectiveRequirement === undefined || typeof turn.effectiveRequirement === "string") &&
     isObject(turn.agents) &&
     Object.values(turn.agents).every(
@@ -209,18 +211,26 @@ export function formatTurnMarkdown(turn: TurnView): string {
     const status = turn.interrupted
       ? "interrupted"
       : acceptance
-        ? acceptance.status === "failed"
-          ? "acceptance failed"
-          : acceptance.status === "cancelled"
-            ? "acceptance cancelled"
-            : acceptance.status.replace("_", " ")
+        ? acceptance.status === "approved" && turn.success === false
+          ? "execution failed after approval"
+          : acceptance.status === "failed"
+            ? "acceptance failed"
+            : acceptance.status === "cancelled"
+              ? "acceptance cancelled"
+              : acceptance.status.replace("_", " ")
         : turn.cancelled
           ? "cancelled"
           : turn.success
             ? "success"
             : "failed"
     lines.push("## Result", "", `Status: ${status}`, "")
-    if (acceptance) {
+    const reviewResults = [
+      ...(turn.gateResults ?? []),
+      ...(acceptance && !turn.gateResults?.some((gate) => gate.reviewer === acceptance.reviewer)
+        ? [acceptance]
+        : []),
+    ]
+    for (const acceptance of reviewResults) {
       lines.push(
         `Reviewer: ${acceptance.reviewer}`,
         `Repair rounds: ${acceptance.repairRounds}`,

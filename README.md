@@ -202,6 +202,12 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `maxConcurrency` | number | | Max agents running in parallel. Default: unlimited. |
 | `permissions` | object | | Permission mode: `{ mode: "auto" \| "ask" \| "deny", onRequest? }`. `"auto"` approves every tool request, `"ask"` escalates each one to `onRequest`, `"deny"` refuses all of them. Default: `"auto"` for `run`, `"ask"` in the console. |
 
+### Multi-round review and repair
+
+Top-level `reviewGates` turns pipeline reviewers into approval gates. Each policy names a `reviewer`, `repairAgents` and `maxRepairRounds`; the reviewer's `dependsOn` locates the gate. Rejected work runs the selected repair agents sequentially and is reviewed again before downstream work starts. Include tester in code-review repairs to revalidate code changes. Each gate retains its own budget across nested retesting and handoff rerouting.
+
+New backend, frontend and fullstack configs enable their review gates with three repair rounds. Existing configs must opt in. The original `review` still supports a reserved final reviewer. Invalid verdicts and exhausted budgets block delivery; reports and console history preserve every gate's verdicts. See the [configuration and verification record](docs/multi-agent-rework.md).
+
 ### Agent fields
 
 | Field | Type | Required | Description |
@@ -572,9 +578,9 @@ Presets are pipeline templates you can pick during `multiclaw init`:
 
 | Preset | Pipeline | Agents |
 |--------|----------|--------|
-| `backend` | Product Manager → Architect → Arch Design Reviewer → Backend Developer → Tester → Code Reviewer + DevOps | 7 |
+| `backend` | Product Manager → Architect → Arch Design Reviewer → Backend Developer → Tester → Code Reviewer → DevOps | 7 |
 | `frontend` | Architect → UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer | 6 |
-| `fullstack` | Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer + DevOps | 10 |
+| `fullstack` | Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer → DevOps | 10 |
 
 ## Leader
 

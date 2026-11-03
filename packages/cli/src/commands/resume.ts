@@ -90,7 +90,10 @@ export function resumeOptionsFromReport(
   const latest = new Map(
     (report.effectiveAgentResults ?? report.agentResults).map((result) => [result.agentId, result])
   )
-  const agents = [...latest.keys()].filter((id) => id !== report.acceptance?.reviewer)
+  const agents = [...latest.keys()].filter(
+    (id) =>
+      id !== report.acceptance?.reviewer || report.gateResults?.some((gate) => gate.reviewer === id)
+  )
   if (agents.length === 0) {
     throw new Error("The previous run has no agent results — nothing to resume")
   }

@@ -362,6 +362,331 @@ describe("review-gated orchestration", () => {
   })
 })
 
+describe("pipeline review gates", () => {
+  it("preserves configured barriers and applies a repaired planner's fresh scope", async () => {
+    const seen: AgentTask[] = []
+    let plans = 0
+    let reviews = 0
+    handler = async (task) => {
+      seen.push(task)
+      if (task.agentId === "architect") {
+        fs.writeFileSync(
+          path.join(workDir, "task-plan.json"),
+          JSON.stringify({
+            tasks: [
+              {
+                id: "dev",
+                scope: "scope revision " + ++plans,
+                dependsOn: ["architect"],
+              },
+            ],
+          })
+        )
+      }
+      return {
+        exitCode: 0,
+        output:
+          task.agentId === "design-review"
+            ? JSON.stringify({
+                verdict: ++reviews === 1 ? "changes_required" : "approved",
+                summary: "Check",
+                issues: reviews === 1 ? ["Fix the architecture"] : [],
+              })
+            : "done",
+      }
+    }
+    const { result } = await runOrch(
+      [
+        agent("architect"),
+        agent("design-review", { dependsOn: ["architect"] }),
+        agent("dev", { dependsOn: ["design-review"] }),
+      ],
+      {
+        reviewGates: [{ reviewer: "design-review", repairAgents: ["architect"] }],
+      }
+    )
+    expect(result.success).toBe(true)
+    expect(seen.map((task) => task.agentId)).toEqual([
+      "architect",
+      "design-review",
+      "architect",
+      "design-review",
+      "dev",
+    ])
+    expect(seen[4].prompt).toContain("scope revision 2")
+    expect(result.work?.agents.find((item) => item.agentId === "dev")?.scope).toBe(
+      "scope revision 2"
+    )
+  })
+
+  it("shares a tester's budget across initial tests and code-review retesting", async () => {
+    const counts = new Map<string, number>()
+    handler = async (task) => {
+      const count = (counts.get(task.agentId) ?? 0) + 1
+      counts.set(task.agentId, count)
+      const approves = task.agentId === "tester" && count === 4
+      return {
+        exitCode: 0,
+        output:
+          task.agentId === "dev"
+            ? "done"
+            : JSON.stringify({
+                verdict: approves ? "approved" : "changes_required",
+                summary: "Check",
+                issues: approves ? [] : ["Bug"],
+              }),
+      }
+    }
+    const { result } = await runOrch(
+      [
+        agent("dev"),
+        agent("tester", { dependsOn: ["dev"] }),
+        agent("code", { dependsOn: ["tester"] }),
+        agent("deploy", { dependsOn: ["code"] }),
+      ],
+      {
+        reviewGates: [
+          { reviewer: "tester", repairAgents: ["dev"], maxRepairRounds: 3 },
+          { reviewer: "code", repairAgents: ["dev", "tester"], maxRepairRounds: 3 },
+        ],
+      }
+    )
+    expect(result.success).toBe(false)
+    expect(counts.get("tester")).toBe(5)
+    expect(counts.get("code")).toBe(1)
+    expect(counts.has("deploy")).toBe(false)
+    expect(result.gateResults?.find((gate) => gate.reviewer === "tester")).toMatchObject({
+      status: "changes_required",
+      repairRounds: 3,
+      reason: "Repair budget exhausted.",
+    })
+  })
+
+  it.each(["FAIL", '{"verdict":"approved","summary":"ok","issues":["bug"]}'])(
+    "blocks malformed gate verdict %s even with continueOnError",
+    async (output) => {
+      const seen: string[] = []
+      handler = async (task) => {
+        seen.push(task.agentId)
+        return { exitCode: 0, output }
+      }
+      const { result } = await runOrch(
+        [
+          agent("dev"),
+          agent("tester", { dependsOn: ["dev"] }),
+          agent("deploy", { dependsOn: ["tester"] }),
+        ],
+        {
+          continueOnError: true,
+          reviewGates: [{ reviewer: "tester", repairAgents: ["dev"] }],
+        }
+      )
+      expect(result.success).toBe(false)
+      expect(result.acceptance?.status).toBe("failed")
+      expect(seen).toEqual(["dev", "tester"])
+    }
+  )
+
+  it("rejects recursive repair policies before starting any agent", async () => {
+    const seen: string[] = []
+    handler = async (task) => {
+      seen.push(task.agentId)
+      return { exitCode: 0, output: "done" }
+    }
+    const { result } = await runOrch([agent("a"), agent("b")], {
+      reviewGates: [
+        { reviewer: "a", repairAgents: ["b"] },
+        { reviewer: "b", repairAgents: ["a"] },
+      ],
+    })
+    expect(result.success).toBe(false)
+    expect(seen).toEqual([])
+    expect(result.acceptance?.reason).toContain("recursive repair cycle")
+  })
+
+  it("keeps repairs within the leader-selected roster", async () => {
+    const seen: string[] = []
+    handler = async (task) => {
+      seen.push(task.agentId)
+      return {
+        exitCode: 0,
+        output:
+          task.agentId === "leader"
+            ? '{"mode":"run","run":["other","tester"]}'
+            : task.agentId === "tester"
+              ? '{"verdict":"changes_required","summary":"Fix","issues":["Bug"]}'
+              : "done",
+      }
+    }
+    const { result } = await runOrch(
+      [agent("dev"), agent("other"), agent("tester", { dependsOn: ["other"] })],
+      {
+        leader: agent("leader"),
+        reviewGates: [{ reviewer: "tester", repairAgents: ["dev"] }],
+      }
+    )
+    expect(result.success).toBe(false)
+    expect(result.acceptance?.reason).toContain("No configured repair worker was selected")
+    expect(seen).toEqual(["leader", "other", "tester"])
+  })
+
+  it("rechecks checkpoints with latest repaired outputs and honors cancellation", async () => {
+    let workers = 0
+    let reviews = 0
+    const outputs: string[] = []
+    handler = async (task) => ({
+      exitCode: 0,
+      output:
+        task.agentId === "dev"
+          ? "revision " + ++workers
+          : (++reviews, '{"verdict":"changes_required","summary":"Fix","issues":["Bug"]}'),
+    })
+    const { result } = await runOrch([agent("dev"), agent("tester", { dependsOn: ["dev"] })], {
+      reviewGates: [{ reviewer: "tester", repairAgents: ["dev"], maxRepairRounds: 3 }],
+      checkpoints: [{ afterAgents: ["dev"] }],
+      onCheckpoint: async (info) => {
+        outputs.push(info.completedAgents[0].output ?? "")
+        return { action: outputs.length === 3 ? "cancel" : "continue" }
+      },
+    })
+    expect(outputs).toEqual(["revision 1", "revision 2", "revision 3"])
+    expect(reviews).toBe(2)
+    expect(result.cancelled).toBe(true)
+    expect(result.acceptance?.status).toBe("cancelled")
+  })
+
+  it("runs pipeline gates again when the final delivery reviewer requests repairs", async () => {
+    const seen: string[] = []
+    let deliveries = 0
+    handler = async (task) => {
+      seen.push(task.agentId)
+      const approved = task.agentId !== "final" || ++deliveries > 1
+      return {
+        exitCode: 0,
+        output:
+          task.agentId === "dev"
+            ? "done"
+            : JSON.stringify({
+                verdict: approved ? "approved" : "changes_required",
+                summary: "Check",
+                issues: approved ? [] : ["Bug"],
+              }),
+      }
+    }
+    const { result } = await runOrch(
+      [agent("dev"), agent("tester", { dependsOn: ["dev"] }), agent("final")],
+      {
+        reviewGates: [{ reviewer: "tester", repairAgents: ["dev"] }],
+        review: { reviewer: "final", repairAgents: ["dev", "tester"] },
+      }
+    )
+    expect(result.success).toBe(true)
+    expect(seen).toEqual(["dev", "tester", "final", "dev", "tester", "final"])
+    expect(result.gateResults?.[0].reviews).toHaveLength(2)
+  })
+
+  it("repairs architecture, UI, backend and frontend, and retests code-review repairs", async () => {
+    const seen: AgentTask[] = []
+    const counts = new Map<string, number>()
+    handler = async (task) => {
+      seen.push(task)
+      const count = (counts.get(task.agentId) ?? 0) + 1
+      counts.set(task.agentId, count)
+      const reviewing = ["arch-review", "ui-review", "tester", "code-review"].includes(task.agentId)
+      return {
+        exitCode: 0,
+        costUsd: 0.1,
+        output: reviewing
+          ? JSON.stringify({
+              verdict: count === 1 ? "changes_required" : "approved",
+              summary: count === 1 ? `Fix ${task.agentId}` : "Verified",
+              issues: count === 1 ? [`${task.agentId} actionable failure`] : [],
+            })
+          : `${task.agentId} revision ${count}`,
+      }
+    }
+    const { result, events } = await runOrch(
+      [
+        agent("architect"),
+        agent("arch-review", { dependsOn: ["architect"] }),
+        agent("ui", { dependsOn: ["arch-review"] }),
+        agent("ui-review", { dependsOn: ["ui"] }),
+        agent("backend", { dependsOn: ["arch-review"] }),
+        agent("frontend", { dependsOn: ["backend", "ui-review"] }),
+        agent("tester", { dependsOn: ["frontend"] }),
+        agent("code-review", { dependsOn: ["tester"] }),
+        agent("devops", { dependsOn: ["code-review"] }),
+      ],
+      {
+        context: { requirement: "Build a working fullstack app" },
+        reviewGates: [
+          { reviewer: "arch-review", repairAgents: ["architect"], maxRepairRounds: 3 },
+          { reviewer: "ui-review", repairAgents: ["ui"], maxRepairRounds: 3 },
+          { reviewer: "tester", repairAgents: ["backend", "frontend"], maxRepairRounds: 3 },
+          {
+            reviewer: "code-review",
+            repairAgents: ["backend", "frontend", "tester"],
+            maxRepairRounds: 3,
+          },
+        ],
+      }
+    )
+    expect(result.success).toBe(true)
+    expect(counts.get("architect")).toBe(2)
+    expect(counts.get("ui")).toBe(2)
+    expect(counts.get("backend")).toBe(3)
+    expect(counts.get("frontend")).toBe(3)
+    expect(counts.get("tester")).toBe(3)
+    expect(counts.get("code-review")).toBe(2)
+    expect(seen[seen.length - 1]?.agentId).toBe("devops")
+    const backendRepairs = seen.filter((task) => task.agentId === "backend").slice(1)
+    expect(backendRepairs[0].prompt).toContain("tester actionable failure")
+    expect(backendRepairs[1].prompt).toContain("code-review actionable failure")
+    expect([...seen].reverse().find((task) => task.agentId === "tester")?.prompt).toContain(
+      "frontend revision 3"
+    )
+    expect(result.agentResults).toHaveLength(seen.length)
+    expect(result.totalCostUsd).toBeCloseTo(seen.length * 0.1)
+    expect(
+      events
+        .filter((event) => event.type === "stage:start")
+        .map((event) => event.payload.stageIndex)
+    ).toEqual(
+      events
+        .filter((event) => event.type === "stage:complete")
+        .map((event) => event.payload.stageIndex)
+    )
+    expect(events.filter((event) => event.type === "orchestration:complete")).toHaveLength(1)
+  })
+
+  it("blocks downstream execution after three unsuccessful repair rounds", async () => {
+    const seen: string[] = []
+    handler = async (task) => {
+      seen.push(task.agentId)
+      return {
+        exitCode: 0,
+        output:
+          task.agentId === "tester"
+            ? '{"verdict":"changes_required","summary":"Bug","issues":["Repro"]}'
+            : "done",
+      }
+    }
+    const { result } = await runOrch(
+      [
+        agent("dev"),
+        agent("tester", { dependsOn: ["dev"] }),
+        agent("deploy", { dependsOn: ["tester"] }),
+      ],
+      {
+        reviewGates: [{ reviewer: "tester", repairAgents: ["dev"], maxRepairRounds: 3 }],
+      }
+    )
+    expect(result.success).toBe(false)
+    expect(result.acceptance).toMatchObject({ status: "changes_required", repairRounds: 3 })
+    expect(seen).toEqual(["dev", "tester", "dev", "tester", "dev", "tester", "dev", "tester"])
+  })
+})
+
 describe("Orchestrator.run", () => {
   it("runs independent agents and reports overall success", async () => {
     const { result, events } = await runOrch([agent("a"), agent("b")])

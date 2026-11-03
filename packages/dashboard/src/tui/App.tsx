@@ -171,7 +171,10 @@ function retryCandidates(state: ReturnType<typeof tuiReducer>): string[] {
   if (turn.acceptance && turn.acceptance.status !== "approved") {
     return [
       ...new Set(turn.stages.flatMap((stage) => stage.agents.map((agent) => agent.id))),
-    ].filter((id) => id !== turn.acceptance?.reviewer)
+    ].filter(
+      (id) =>
+        id !== turn.acceptance?.reviewer || turn.gateResults?.some((gate) => gate.reviewer === id)
+    )
   }
   return Object.values(turn.agents)
     .filter((agent) => agent.status === "failed")
@@ -298,11 +301,13 @@ function StatusLine({
     // along beside it rather than replacing it.
     const outcome = state.acceptance
       ? `${state.success ? STATUS.success.glyph : STATUS.failed.glyph} ${
-          state.acceptance.status === "approved"
-            ? "delivery approved"
-            : state.acceptance.status === "changes_required"
-              ? "changes required"
-              : "acceptance failed"
+          state.acceptance.status === "approved" && !state.success
+            ? "execution failed after approval"
+            : state.acceptance.status === "approved"
+              ? "delivery approved"
+              : state.acceptance.status === "changes_required"
+                ? "changes required"
+                : "acceptance failed"
         }${time}`
       : state.success
         ? `${STATUS.success.glyph} done${time}`
@@ -1346,7 +1351,11 @@ export function App({
           ) {
             ids = [
               ...new Set(turn.stages.flatMap((stage) => stage.agents.map((agent) => agent.id))),
-            ].filter((id) => id !== turn.acceptance?.reviewer)
+            ].filter(
+              (id) =>
+                id !== turn.acceptance?.reviewer ||
+                turn.gateResults?.some((gate) => gate.reviewer === id)
+            )
           } else if (args[0]) {
             const resolved = resolveAgentId(args[0], Object.keys(turn.agents))
             if ("error" in resolved) {

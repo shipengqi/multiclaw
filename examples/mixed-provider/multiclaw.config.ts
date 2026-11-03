@@ -26,4 +26,7 @@ export default defineConfig({
     // Review on Claude Sonnet for careful diff reading.
     agents.codeReviewer({ provider: "claude", model: "sonnet", dependsOn: ["backend-developer"] }),
   ],
+  reviewGates: [
+    { reviewer: "code-reviewer", repairAgents: ["backend-developer"], maxRepairRounds: 3 },
+  ],
 })
