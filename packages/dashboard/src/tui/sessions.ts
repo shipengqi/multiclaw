@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { ensureMulticlawDir } from "@multiclawcli/core"
 
 /**
  * Sessions: the unit of history and resumption.
@@ -88,6 +89,7 @@ export function latestSession(workDir: string): SessionMeta | undefined {
 function mutateIndex(workDir: string, fn: (metas: SessionMeta[]) => SessionMeta[]): void {
   const next = fn(readIndex(workDir))
   const target = indexPath(workDir)
+  ensureMulticlawDir(workDir)
   fs.mkdirSync(path.dirname(target), { recursive: true })
   const tmp = `${target}.tmp`
   fs.writeFileSync(tmp, JSON.stringify(next), "utf-8")

@@ -229,6 +229,7 @@ describe("runCommand · dry run and deliverables", () => {
   it("records files created by the run in report.json", async () => {
     await runCommand("make a file", {})
 
+    expect(fs.readFileSync(path.join(root, ".multiclaw", ".gitignore"), "utf-8")).toBe("*\n")
     expect(state.ran).toBe(1)
     const reportPath = path.join(state.logDir as string, "report.json")
     const report = JSON.parse(fs.readFileSync(reportPath, "utf-8")) as OrchestratorResult
@@ -246,6 +247,7 @@ describe("runCommand · resume wiring", () => {
 
     await runCommand(undefined, { resume: true })
 
+    expect(fs.readFileSync(path.join(root, ".multiclaw", ".gitignore"), "utf-8")).toBe("*\n")
     // The agents must continue where they wrote, so the run dir becomes the
     // work dir — not a fresh sandbox.
     expect(state.config?.workDir).toBe(runDir)

@@ -15,6 +15,7 @@ import type {
 import {
   AgentSessionManager,
   describeResumePlan,
+  ensureMulticlawDir,
   isAbortError,
   Orchestrator,
   resolvePermissionMode,
@@ -343,6 +344,7 @@ export function App({
   const launchNoticeRef = useRef<string | undefined>(undefined)
   const openPickerOnMountRef = useRef(false)
   if (!sessionIdRef.current) {
+    ensureMulticlawDir(config.workDir)
     const latest = () => latestSession(config.workDir)?.id ?? createSession(config.workDir).id
     if (initialSession?.kind === "new") {
       sessionIdRef.current = createSession(config.workDir).id

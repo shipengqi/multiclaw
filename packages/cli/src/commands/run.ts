@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import {
   describeResumePlan,
+  ensureMulticlawDir,
   Orchestrator as OrchestratorImpl,
   type OrchestratorResult,
   resolvePermissionMode,
@@ -33,6 +34,7 @@ export async function runCommand(
   options: RunOptions
 ): Promise<void> {
   const config = await loadConfig(options.config, requirementArg)
+  const projectWorkDir = config.workDir
 
   if (options.leader === false || options.noLeader) {
     config.useLeader = false
@@ -71,6 +73,8 @@ export async function runCommand(
   } else {
     config.workDir = path.join(config.workDir, ".multiclaw", "runs", `run-${stamp}`)
   }
+
+  ensureMulticlawDir(projectWorkDir)
 
   if (options.dryRun) {
     const preview = await new OrchestratorImpl(config).preview()

@@ -324,6 +324,10 @@ are per-run: `workDir/.multiclaw/runs/run-<timestamp>/logs/`.
 `multiclaw run` is deliberately different: it sandboxes each invocation in its own
 `run-<timestamp>/` directory.
 
+Runtime storage automatically gets a `.multiclaw/.gitignore` containing `*`, so Git
+ignores generated runtime files. Missing ignore files in existing directories are
+added on startup; existing rules are preserved.
+
 ### History
 
 The stream panel shows the focused agent's whole session: every turn it took part in, oldest first,

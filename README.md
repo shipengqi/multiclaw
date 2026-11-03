@@ -471,6 +471,10 @@ Only the logs are per-run: each turn writes `workDir/.multiclaw/runs/run-<timest
 shape `multiclaw run` produces. The run directory is a record of what happened, not where the work
 happens.
 
+Runtime storage automatically gets a `.multiclaw/.gitignore` containing `*`, so Git
+ignores generated runtime files. Missing ignore files in existing directories are
+added on startup; existing rules are preserved.
+
 ### History
 
 Finished turns are written to `workDir/.multiclaw/sessions/<id>/turns.jsonl`, one line per turn, so

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -32,6 +33,37 @@ function writeIndexRaw(value: unknown): void {
 }
 
 describe("sessions index", () => {
+  it("ignores session artifacts through the runtime directory's own Git rules", () => {
+    execFileSync("git", ["init", "--quiet"], { cwd: workDir })
+    const session = createSession(workDir)
+    const dir = sessionDir(workDir, session.id)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "session.json"), "{}")
+    const ignored = execFileSync(
+      "git",
+      [
+        "-c",
+        "core.excludesFile=/dev/null",
+        "check-ignore",
+        "--verbose",
+        ".multiclaw/.gitignore",
+        `.multiclaw/sessions/${session.id}/session.json`,
+      ],
+      { cwd: workDir, encoding: "utf-8" }
+    )
+    expect(ignored.split("\n").filter(Boolean)).toHaveLength(2)
+    expect(ignored).toContain(".multiclaw/.gitignore:1:*")
+  })
+
+  it("preserves existing runtime ignore rules when writing the session index", () => {
+    const meta = createSession(workDir)
+    const ignorePath = path.join(workDir, ".multiclaw", ".gitignore")
+    const rules = "*\n!keep.txt\n"
+    fs.writeFileSync(ignorePath, rules)
+    touchSession(workDir, meta.id, { title: "updated" })
+    expect(fs.readFileSync(ignorePath, "utf-8")).toBe(rules)
+  })
+
   it("has nothing in an empty workspace", () => {
     expect(listSessions(workDir)).toEqual([])
     expect(latestSession(workDir)).toBeUndefined()

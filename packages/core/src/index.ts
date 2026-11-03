@@ -12,6 +12,7 @@ export { RuntimeBase } from "./runtime/RuntimeBase"
 export * from "./types"
 export type { SessionEvent, SessionIntent, SessionRecord } from "./types/session"
 export { ABORT_ERROR_NAME, abortError, isAbortError } from "./utils/abort"
+export { ensureMulticlawDir } from "./utils/multiclawDir"
 export { describeResumePlan, type ResumePlan } from "./utils/resumePlan"
 export {
   describeSession,
