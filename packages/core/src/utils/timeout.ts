@@ -1,5 +1,8 @@
 import { abortError, isAbortError } from "./abort"
 
+/** Default per-agent attempt and runtime turn deadline: 30 minutes. */
+export const DEFAULT_AGENT_TIMEOUT_MS = 30 * 60 * 1000
+
 export function withTimeout<T>(
   factory: (signal: AbortSignal) => Promise<T>,
   ms: number,

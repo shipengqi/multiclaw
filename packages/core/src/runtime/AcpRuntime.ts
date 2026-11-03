@@ -19,6 +19,7 @@ import type {
 } from "../types/runtime"
 import { abortError } from "../utils/abort"
 import { PermanentError } from "../utils/errors"
+import { DEFAULT_AGENT_TIMEOUT_MS } from "../utils/timeout"
 import { hasToolArgs } from "../utils/toolSummary"
 import { RuntimeBase } from "./RuntimeBase"
 
@@ -37,7 +38,6 @@ const CLEANUP_ACK_MS = 3000
  * is worse than a refused one, because the user cannot tell whether it landed.
  */
 const STEER_ACK_MS = 15_000
-const DEFAULT_TIMEOUT_MS = 600_000
 const DEFAULT_COMMAND = "opencode"
 const DEFAULT_ARGS = ["acp"]
 
@@ -307,7 +307,7 @@ function errorMessage(err: unknown): string {
 }
 
 function timeoutMs(value: number | undefined): number {
-  const timeout = value ?? DEFAULT_TIMEOUT_MS
+  const timeout = value ?? DEFAULT_AGENT_TIMEOUT_MS
   if (!Number.isFinite(timeout) || timeout < 0 || timeout > 2_147_483_647) {
     throw new PermanentError("ACP timeout must be a finite non-negative timer duration")
   }

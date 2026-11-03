@@ -194,7 +194,7 @@ export type RuntimeSessionOptions = Omit<
   questionForms?: boolean
   /** Lifetime cancellation, including startup and idle time; closes the session. */
   signal?: AbortSignal
-  /** Startup deadline and default per-turn timeout in ms (ACP defaults to 600,000). */
+  /** Startup deadline and default per-turn timeout in ms (ACP defaults to 1,800,000 / 30 minutes). */
   timeout?: number
 }
 

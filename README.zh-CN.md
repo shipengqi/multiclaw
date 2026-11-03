@@ -166,7 +166,7 @@ export default defineConfig({
 读取 {{file:brief.md}} 中的需求说明，并输出 architecture.md。`,
       permissions: { mode: "ask" }, // 可选；在此 Agent 上覆盖项目级模式
       dependsOn: [],          // 可选；此 Agent 等待哪些 Agent 完成后再启动
-      timeout: 600_000,       // 可选；超时时间（毫秒），默认 600 000（10 分钟）
+      timeout: 1_800_000,     // 可选；超时时间（毫秒），默认 1 800 000（30 分钟）
       retries: 0,             // 可选；失败后重试次数，默认 0
       workDir: "architect",   // 可选；相对于全局 workDir 的子目录
     },
@@ -214,9 +214,15 @@ export default defineConfig({
 | `models` | Record<string, string> | | Provider id（或旧别名 `"acp"`）到模型 id 的映射，例如 `{ claude: "sonnet", opencode: "opencode/big-pickle" }`。当未设置 `model`/`modelTier` 时使用。 |
 | `permissions` | `{ mode: "auto" \| "ask" \| "deny" }` | | 该 Agent 工具调用的审批模式。覆盖 `permissions` 与 `defaults.permissions`。 |
 | `dependsOn` | string[] | | 必须在此 Agent 启动前完成的 Agent id 列表。 |
-| `timeout` | number | | 单个 Agent 超时时间（毫秒），默认 `600000`（10 分钟）。 |
+| `timeout` | number | | 单个 Agent 每次尝试的超时时间（毫秒），默认 `1800000`（30 分钟）；长任务可配置更大的值。 |
 | `retries` | number | | 失败后的重试次数，默认 `0`。 |
 | `workDir` | string | | 此 Agent 的工作目录（相对于全局 `workDir`）。 |
+
+开发类 Agent 可以单独配置更长的超时时间，例如 60 分钟：
+
+```ts
+agents.backendDeveloper({ timeout: 60 * 60 * 1000 })
+```
 
 ### 模板变量
 

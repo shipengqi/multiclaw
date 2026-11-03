@@ -14,7 +14,7 @@ import { isPermanent } from "../utils/errors"
 import { HANDOFF_INSTRUCTION, parseHandoff } from "../utils/handoff"
 import { renderPrompt } from "../utils/prompt"
 import { DEFAULT_RETRY_DELAY_MS, retryBudgetMs, withRetry } from "../utils/retry"
-import { withTimeout } from "../utils/timeout"
+import { DEFAULT_AGENT_TIMEOUT_MS, withTimeout } from "../utils/timeout"
 import { summarizeToolInput, summarizeToolOutput } from "../utils/toolSummary"
 import { AgentSessionManager } from "./AgentSessionManager"
 import type { ContextManager } from "./ContextManager"
@@ -38,7 +38,7 @@ export class AgentRunner {
       systemPrompt: agent.systemPrompt,
       prompt: "",
       workDir: agent.workDir ? path.resolve(this.globalWorkDir, agent.workDir) : this.globalWorkDir,
-      timeout: agent.timeout ?? 600_000,
+      timeout: agent.timeout ?? DEFAULT_AGENT_TIMEOUT_MS,
       model: resolveModel(agent, this.config),
       provider: resolveProvider(agent, this.config),
       command: resolveCommand(agent, this.config),
@@ -109,7 +109,7 @@ export class AgentRunner {
 
       const runtime = runtimeRegistry.get(agent.runtime ?? "acp")
       const retries = agent.retries ?? 0
-      const timeout = agent.timeout ?? 600_000
+      const timeout = agent.timeout ?? DEFAULT_AGENT_TIMEOUT_MS
       const permissionMode = resolvePermissionMode(this.config, agent)
 
       // The inner timeout bounds one attempt; the outer deadline covers every

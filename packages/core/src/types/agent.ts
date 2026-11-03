@@ -60,6 +60,7 @@ export interface AgentDefinition {
   agentPlan?: string
   permissions?: { mode: PermissionMode }
   dependsOn?: string[]
+  /** Per-attempt timeout in ms. Defaults to 1,800,000 (30 minutes); can be increased. */
   timeout?: number
   retries?: number
   workDir?: string

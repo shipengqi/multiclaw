@@ -171,7 +171,7 @@ export default defineConfig({
 Read the brief at {{file:brief.md}} and write architecture.md.`,
       permissions: { mode: "ask" }, // optional; overrides the project mode here
       dependsOn: [],          // optional; list of agent ids this agent waits for
-      timeout: 600_000,       // optional; ms, default: 600 000 (10 min)
+      timeout: 1_800_000,     // optional; ms, default: 1 800 000 (30 min)
       retries: 0,             // optional; retry count on failure, default: 0
       workDir: "architect",   // optional; subdirectory relative to global workDir
     },
@@ -219,9 +219,15 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `models` | Record<string, string> | | Map of provider id (or the legacy `"acp"`) to a model id, e.g. `{ claude: "sonnet", opencode: "opencode/big-pickle" }`. Used when `model`/`modelTier` are unset. |
 | `permissions` | `{ mode: "auto" \| "ask" \| "deny" }` | | Approval mode for this agent's tool calls. Overrides `permissions` and `defaults.permissions`. |
 | `dependsOn` | string[] | | Agent ids that must complete before this agent starts. |
-| `timeout` | number | | Per-agent timeout in ms. Default: `600000` (10 min). |
+| `timeout` | number | | Per-attempt timeout in ms. Default: `1800000` (30 min); set a larger value for longer tasks. |
 | `retries` | number | | Number of retry attempts on failure. Default: `0`. |
 | `workDir` | string | | Subdirectory (relative to global `workDir`) for this agent's CWD. |
+
+For longer development tasks, override the agent timeout, for example to 60 minutes:
+
+```ts
+agents.backendDeveloper({ timeout: 60 * 60 * 1000 })
+```
 
 ### Template variables
 
