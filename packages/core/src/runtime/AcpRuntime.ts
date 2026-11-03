@@ -828,17 +828,17 @@ export class AcpRuntime extends RuntimeBase {
        *
        * Three things are deliberate here:
        *
-       * - It never starts a turn. Both bridges will happily start one when
-       *   nothing is running (Codex always, Claude unless asked not to), and a
-       *   turn started from a steer has no `prompt` call owning it: nothing here
+       * - It never starts a turn. Without an explicit idle fallback, both
+       *   bridges can start one when nothing is running, and a turn started
+       *   from a steer has no `prompt` call owning it: nothing here
        *   would settle it, attribute its output, or show it to the user. So an
        *   idle session answers `idle` and the caller keeps its text.
        * - It asks the provider not to start a turn either, via
-       *   `_meta.steering.idleBehavior`. Claude honours that and answers
-       *   `promptRequired`; Codex ignores unknown meta and answers
-       *   `startedNewTurn`, which is why that branch below has to clean up after
-       *   it (measured 2026-10-31: `session/cancel` sent as a notification does
-       *   stop the turn Codex started this way).
+       *   `_meta.steering.idleBehavior: "promptRequired"`. Claude and Codex
+       *   (since codex-acp 2.4.0) honour that and answer `promptRequired` when
+       *   no turn can accept the input. Older Codex bridges can ignore the
+       *   metadata and answer `startedNewTurn`, so that branch below cancels
+       *   the turn they started.
        * - It has a deadline. "Did my message land?" cannot be a guess.
        *
        * `injected` is about delivery, not obedience. Counting probes stopped
