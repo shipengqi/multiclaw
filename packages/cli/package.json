@@ -34,9 +34,9 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "^0.95.0",
-    "@agentclientprotocol/codex-acp": "^2.2.2",
-    "@inquirer/prompts": "^8.7.4",
+    "@agentclientprotocol/claude-agent-acp": "^0.99.1",
+    "@agentclientprotocol/codex-acp": "^2.5.0",
+    "@inquirer/prompts": "^8.7.5",
     "@multiclawcli/core": "workspace:*",
     "@multiclawcli/dashboard": "workspace:*",
     "commander": "^15.0.0",
