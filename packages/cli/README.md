@@ -350,6 +350,11 @@ the run warns about this before it starts. The console starts in `"ask"` unless 
 otherwise. `shift+tab` toggles between `auto` and `ask` at runtime, and `/mode auto|ask|deny` sets any
 of the three; the active mode is shown in the header.
 
+Mode changes apply during the active turn. `auto` immediately approves pending tool
+permissions and subsequent tools, including MCP tools; `ask` restores prompts for
+subsequent tools, and `deny` cancels pending permissions. Business questions and
+checkpoints still require their own answers.
+
 On a narrow terminal (under 72 columns) the team panel is dropped and the stream takes the full
 width; on a short one (under 16 rows) the pipeline rail goes too. The header, prompt and hint bar are
 never dropped.

@@ -336,6 +336,7 @@ export class AgentSessionManager {
         timeout: task.timeout,
         onEvent: task.onEvent,
         permissionMode: task.permissionMode,
+        getPermissionMode: task.getPermissionMode,
         onPermission: task.onPermission,
         onQuestion: task.onQuestion,
       })

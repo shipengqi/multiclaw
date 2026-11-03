@@ -172,6 +172,7 @@ export class AgentRunner {
                 ...this.sessionTask(agent),
                 prompt,
                 permissionMode,
+                getPermissionMode: this.config.permissions?.getMode,
                 onPermission: this.config.permissions?.onRequest,
                 onQuestion: this.config.questions?.onRequest,
                 signal:

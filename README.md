@@ -409,6 +409,11 @@ every tool call; it warns about this before the team starts. The console starts 
 any of the three — a runtime choice outranks a per-agent mode, so the header always
 describes what the agents are actually doing.
 
+Switching to `auto` during a turn immediately approves pending tool permissions and
+automatically approves subsequent tools, including MCP tools. Switching back to
+`ask` restores prompts for subsequent tools; `deny` cancels pending permissions.
+Business questions and checkpoints still require their own answers.
+
 The console's permission bar shows the requesting agent, the tool input, and the
 provider's offered choices. Requests from concurrent agents are queued with unique
 aliases; normal input still queues a follow-up and never grants approval.

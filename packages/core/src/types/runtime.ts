@@ -136,6 +136,8 @@ export interface AgentTask {
   onEvent?: (event: RuntimeEvent) => void
   /** Approval mode for tool calls; the runtime defaults to `"auto"` when unset. */
   permissionMode?: "auto" | "ask" | "deny"
+  /** Live policy read for each permission request, overriding permissionMode. */
+  getPermissionMode?: () => "auto" | "ask" | "deny"
   onPermission?: RuntimePermissionHandler
   onQuestion?: RuntimeQuestionHandler
   /**
@@ -179,7 +181,14 @@ export interface AgentOutput {
 /** Immutable agent configuration shared by all turns in an open session. */
 export type RuntimeSessionOptions = Omit<
   AgentTask,
-  "prompt" | "onEvent" | "signal" | "timeout" | "permissionMode" | "onPermission" | "onQuestion"
+  | "prompt"
+  | "onEvent"
+  | "signal"
+  | "timeout"
+  | "permissionMode"
+  | "getPermissionMode"
+  | "onPermission"
+  | "onQuestion"
 > & {
   /** Immutable negotiated form capability; callbacks remain turn-local. */
   questionForms?: boolean
@@ -198,6 +207,8 @@ export interface RuntimePromptOptions {
   onEvent?: (event: RuntimeEvent) => void
   /** Waiting uses the existing turn timeout; it does not pause the deadline. */
   permissionMode?: "auto" | "ask" | "deny"
+  /** Live policy read for each permission request, overriding permissionMode. */
+  getPermissionMode?: () => "auto" | "ask" | "deny"
   onPermission?: RuntimePermissionHandler
   onQuestion?: RuntimeQuestionHandler
 }

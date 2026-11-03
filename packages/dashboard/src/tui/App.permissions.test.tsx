@@ -624,15 +624,96 @@ describe("App · explicit permission decisions", () => {
       await ui.send("write files", "\r")
       await vi.waitFor(() => expect(ui.complete()).toBe(1))
       expect(tasks.every((task) => task.permissionMode === mode)).toBe(true)
-      // The console owns the handler: `auto` and `deny` never ask anybody, so a
-      // config-supplied `onRequest` is not carried into the turn.
-      expect(tasks.every((task) => task.onPermission === undefined)).toBe(true)
+      // The console keeps its live handler so a mid-turn switch to ask works.
+      expect(tasks.every((task) => task.getPermissionMode?.() === mode)).toBe(true)
+      for (const task of tasks) {
+        await expect(
+          task.onPermission?.(request(task.agentId), new AbortController().signal)
+        ).resolves.toBe(mode === "auto" ? `${task.agentId}-once` : undefined)
+      }
       expect(callback).not.toHaveBeenCalled()
     }
   )
 })
 
 describe("App · permission mode switching", () => {
+  it("switches auto back to ask within an active turn", async () => {
+    config.permissions = { mode: "auto" }
+    let resume!: () => void
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const tasks: AgentTask[] = []
+    const decisions = new Map<string, string | undefined>()
+    respond = async (task) => {
+      tasks.push(task)
+      await paused
+      expect(task.getPermissionMode?.()).toBe("ask")
+      decisions.set(
+        task.agentId,
+        await task.onPermission?.(request(task.agentId), new AbortController().signal)
+      )
+      return { output: "done", exitCode: 0 }
+    }
+    const ui = await mount()
+    await ui.send("work", "\r")
+    await vi.waitFor(() => expect(tasks).toHaveLength(2))
+    await ui.send("/mode ask", "\r")
+    resume()
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(decisions.size).toBe(0)
+    await ui.send("1", "\r", "3", "\r")
+    await vi.waitFor(() => expect(ui.complete()).toBe(1))
+    expect(decisions.get("alpha")).toBe("alpha-once")
+    expect(decisions.get("beta")).toBe("beta-reject")
+  })
+
+  it("denies queued permissions without dismissing a business question", async () => {
+    const decisions = new Map<string, unknown>()
+    respond = async (task) => {
+      decisions.set(
+        task.agentId,
+        task.agentId === "alpha"
+          ? await task.onPermission?.(request(task.agentId), new AbortController().signal)
+          : await task.onQuestion?.(question(task.agentId), new AbortController().signal)
+      )
+      return { output: "done", exitCode: 0 }
+    }
+    const ui = await mount()
+    await ui.send("work", "\r", "/mode deny", "\r")
+    await vi.waitFor(() => expect(decisions.has("alpha")).toBe(true))
+    expect(decisions.get("alpha")).toBeUndefined()
+    expect(decisions.has("beta")).toBe(false)
+    await ui.send("\u0003")
+    await vi.waitFor(() => expect(decisions.get("beta")).toEqual({ action: "cancel" }))
+  })
+
+  it("approves pending and subsequent MCP requests when switched to auto mid-turn", async () => {
+    const decisions = new Map<string, string | undefined>()
+    let requests = 0
+    respond = async (task) => {
+      for (const suffix of ["pending", "next"]) {
+        const permission = request(`${task.agentId}-${suffix}`)
+        permission.toolName = "mcp__graft__graft_repo_map"
+        permission.title = "graft repo map"
+        requests += 1
+        decisions.set(
+          `${task.agentId}-${suffix}`,
+          await task.onPermission?.(permission, task.signal ?? new AbortController().signal)
+        )
+      }
+      return { output: "done", exitCode: 0 }
+    }
+    const ui = await mount()
+    await ui.send("inspect repo", "\r")
+    await vi.waitFor(() => expect(requests).toBe(2))
+    expect(decisions.size).toBe(0)
+    await ui.send("\u001b[Z")
+    await vi.waitFor(() => expect(decisions.size).toBe(4))
+    for (const [id, decision] of decisions) expect(decision).toBe(`${id}-once`)
+    await vi.waitFor(() => expect(ui.complete()).toBe(1))
+  })
+
   it("starts in the mode the config resolves to, project level first", async () => {
     // `permissions` outranks `defaults.permissions` in the runner, so the
     // header has to agree — announcing `auto` here would be a lie about what

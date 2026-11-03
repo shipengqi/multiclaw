@@ -401,6 +401,7 @@ export function App({
     // one, because a human is sitting here to answer.
     resolvePermissionMode(config) ?? "ask"
   )
+  const permissionModeRef = useRef(permissionMode)
   const [notice, setNotice] = useState<string | undefined>(
     launchNoticeRef.current ?? restored.notice
   )
@@ -460,6 +461,13 @@ export function App({
 
   const requestPermission = useCallback<RuntimePermissionHandler>((request, signal) => {
     if (closingRef.current || signal.aborted) return Promise.resolve(undefined)
+    if (permissionModeRef.current !== "ask") {
+      return Promise.resolve(
+        permissionModeRef.current === "auto"
+          ? request.options.find((option) => option.kind === "allow_once")?.optionId
+          : undefined
+      )
+    }
     // Aliases never repeat during this console session, so an old command cannot
     // accidentally decide a later request. Full request ids remain exact matches.
     const shortId = `p${++permissionSerialRef.current}`
@@ -481,6 +489,20 @@ export function App({
       signal.addEventListener("abort", onAbort, { once: true })
       if (mountedRef.current) setInteractions([...interactionsRef.current])
     })
+  }, [])
+
+  const changePermissionMode = useCallback((mode: "auto" | "ask" | "deny") => {
+    permissionModeRef.current = mode
+    setPermissionMode(mode)
+    if (mode === "ask") return
+    for (const entry of [...interactionsRef.current]) {
+      if (entry.kind !== "permission") continue
+      entry.settle(
+        mode === "auto"
+          ? entry.request.options.find((option) => option.kind === "allow_once")?.optionId
+          : undefined
+      )
+    }
   }, [])
 
   const requestQuestion = useCallback<RuntimeQuestionHandler>((request, signal) => {
@@ -748,10 +770,11 @@ export function App({
           ? undefined
           : (opts?.work ?? latestWorkFromTurns(recordedTurns(stateRef.current))),
         logDir,
-        permissions:
-          permissionMode === "ask"
-            ? { mode: "ask", onRequest: requestPermission }
-            : { mode: permissionMode },
+        permissions: {
+          mode: permissionMode,
+          getMode: () => permissionModeRef.current,
+          onRequest: requestPermission,
+        },
         // The console's mode is a live decision, so it outranks any per-agent
         // `permissions` written in the file: otherwise shift+tab would relabel
         // the header while an agent that declares its own mode kept the old
@@ -1208,7 +1231,7 @@ export function App({
         case "mode": {
           const m = args[0]
           if (m === "auto" || m === "ask" || m === "deny") {
-            setPermissionMode(m)
+            changePermissionMode(m)
             setNotice(`permission mode: ${m}`)
           } else {
             setNotice("usage: /mode auto | ask | deny")
@@ -1462,7 +1485,16 @@ export function App({
           setNotice(`unknown command: /${name}`)
       }
     },
-    [config, layout.logViewport, layout.streamWidth, running, state, startTurn, steerRunningAgents]
+    [
+      config,
+      layout.logViewport,
+      layout.streamWidth,
+      running,
+      state,
+      startTurn,
+      steerRunningAgents,
+      changePermissionMode,
+    ]
   )
 
   const submit = useCallback(() => {
@@ -1710,7 +1742,7 @@ export function App({
       if (key.shift) {
         // Shift+Tab toggles permission mode (like Claude Code)
         const next = permissionMode === "auto" ? "ask" : "auto"
-        setPermissionMode(next)
+        changePermissionMode(next)
         setNotice(`permission mode: ${next}`)
         return
       }

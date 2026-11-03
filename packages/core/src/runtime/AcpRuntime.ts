@@ -349,7 +349,16 @@ export class AcpRuntime extends RuntimeBase {
   }
 
   async execute(task: AgentTask): Promise<AgentOutput> {
-    const { prompt, onEvent, signal, permissionMode, onPermission, onQuestion, ...options } = task
+    const {
+      prompt,
+      onEvent,
+      signal,
+      permissionMode,
+      getPermissionMode,
+      onPermission,
+      onQuestion,
+      ...options
+    } = task
     // Startup cancellation must not remain a lifetime listener: once opened,
     // execute's signal cancels the turn through session/cancel before teardown.
     const startup = new AbortController()
@@ -372,6 +381,7 @@ export class AcpRuntime extends RuntimeBase {
         timeout: task.timeout,
         onEvent,
         permissionMode,
+        getPermissionMode,
         onPermission,
         onQuestion,
       })
@@ -649,7 +659,7 @@ export class AcpRuntime extends RuntimeBase {
           context.signal.aborted
         )
           return cancelled
-        const mode = turn.options.permissionMode ?? "auto"
+        const mode = turn.options.getPermissionMode?.() ?? turn.options.permissionMode ?? "auto"
         // auto: approve all tool calls unconditionally
         if (mode === "auto") {
           const opt = params.options.find((o) => o.kind === "allow_once")

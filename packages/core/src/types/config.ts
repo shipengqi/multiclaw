@@ -149,6 +149,8 @@ export interface MultiClawConfig {
   /** Caller-owned live approvals. Ask mode without a handler fails closed. */
   permissions?: {
     mode: "auto" | "ask" | "deny"
+    /** Live caller policy, read for each tool request; overrides configured modes. */
+    getMode?: () => PermissionMode
     onRequest?: RuntimePermissionHandler
   }
   /** Caller-owned structured questions; headless callers cancel explicitly. */

@@ -49,12 +49,14 @@ const makeRunner = (overrides: Partial<MultiClawConfig> = {}) =>
 describe("AgentRunner.run", () => {
   it("passes caller-owned human permission policy to the runtime", async () => {
     const onRequest = vi.fn(async () => "allow-once")
+    const getMode = vi.fn(() => "auto" as const)
     handler = async (task) => {
       expect(task.permissionMode).toBe("ask")
       expect(task.onPermission).toBe(onRequest)
+      expect(task.getPermissionMode).toBe(getMode)
       return { output: "done", exitCode: 0 }
     }
-    const result = await makeRunner({ permissions: { mode: "ask", onRequest } }).run(
+    const result = await makeRunner({ permissions: { mode: "ask", getMode, onRequest } }).run(
       makeAgent({ id: "a", runtime: RUNTIME })
     )
     expect(result.status).toBe("success")

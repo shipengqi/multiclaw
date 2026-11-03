@@ -53,11 +53,16 @@ describe("AgentSessionManager", () => {
     const { manager, runtime, live } = setup()
     const first = vi.fn(async () => "allow-once")
     const second = vi.fn(async () => undefined)
-    await manager.execute(runtime, task({ permissionMode: "ask", onPermission: first }))
+    const getPermissionMode = vi.fn(() => "auto" as const)
+    await manager.execute(
+      runtime,
+      task({ permissionMode: "ask", getPermissionMode, onPermission: first })
+    )
     expect(runtime.openSession.mock.calls[0][0]).not.toHaveProperty("onPermission")
+    expect(runtime.openSession.mock.calls[0][0]).not.toHaveProperty("getPermissionMode")
     expect(live.prompt).toHaveBeenLastCalledWith(
       "first",
-      expect.objectContaining({ permissionMode: "ask", onPermission: first })
+      expect.objectContaining({ permissionMode: "ask", getPermissionMode, onPermission: first })
     )
     await manager.execute(
       runtime,

@@ -2214,6 +2214,40 @@ describe("AcpRuntime · session/request_permission", () => {
     expect(decision).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } })
   })
 
+  it("reads live permission mode for each MCP request within the same turn", async () => {
+    const child = new FakeChild()
+    let mode: "auto" | "ask" | "deny" = "auto"
+    const onPermission = vi.fn(async () => "reject-once")
+    const decisions: unknown[] = []
+    attachAgent(child, {
+      prompt: async (ctx) => {
+        for (const next of ["auto", "ask", "deny", "auto"] as const) {
+          mode = next
+          decisions.push(
+            await askPermission(ctx, {
+              name: "mcp__graft__graft_repo_map",
+              options: PERMISSION_OPTIONS,
+            })
+          )
+        }
+        return { stopReason: "end_turn" }
+      },
+    })
+    await runWith(child, {
+      permissionMode: "ask",
+      getPermissionMode: () => mode,
+      onPermission,
+      onWarning: () => {},
+    })
+    expect(onPermission).toHaveBeenCalledTimes(1)
+    expect(decisions).toEqual([
+      { outcome: { outcome: "selected", optionId: "allow-once" } },
+      { outcome: { outcome: "selected", optionId: "reject-once" } },
+      { outcome: { outcome: "cancelled" } },
+      { outcome: { outcome: "selected", optionId: "allow-once" } },
+    ])
+  })
+
   it("records a refusal chosen by the person, marked as theirs", async () => {
     const child = new FakeChild()
     const { events, onEvent } = collect()
