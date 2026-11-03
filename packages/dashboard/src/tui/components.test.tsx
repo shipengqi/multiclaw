@@ -402,6 +402,21 @@ describe("StreamPanel", () => {
     expect(frame).toContain("THE-NEWEST-LINE")
   })
 
+  it.each([0, 2])(
+    "keeps Markdown paragraph spacing inside the viewport at scroll offset %i",
+    async (scroll) => {
+      const markdown = Array.from({ length: 10 }, (_, i) => `Paragraph ${i}`).join("\n\n")
+      const state = { ...withLogs(`${markdown}\n\nTHE-NEWEST-LINE`), scroll }
+      const frame = await stream(state, 8)
+      const rows = frame.split("\n")
+      const tail = scroll === 0 ? "THE-NEWEST-LINE" : "Paragraph 9"
+      expect(rows.findIndex((row) => row.includes(tail))).toBe(7)
+      expect(rows[2].trim()).toBe("")
+      expect(rows[4].trim()).toBe("")
+      expect(rows[6].trim()).toBe("")
+    }
+  )
+
   it("swaps the live marker for a parked one once the user scrolls back", async () => {
     const scrolled = tuiReducer(midRun(), {
       type: "stream:scroll",

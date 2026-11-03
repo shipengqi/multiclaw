@@ -239,9 +239,11 @@ export function StreamPanel({
         // wrong.
         <Box flexDirection="column" flexShrink={0} height={viewport} overflow="hidden">
           {window.rows.map((row, index) => (
+            // Empty Markdown rows must occupy the same height that scrolling
+            // counted; an empty Text otherwise collapses to zero rows in Yoga.
             // Rows are an append-only tail; position is the identity.
             // biome-ignore lint/suspicious/noArrayIndexKey: positional log tail
-            <Box key={index} flexShrink={0}>
+            <Box key={index} flexShrink={0} height={1}>
               <Text wrap="truncate-end">{row}</Text>
             </Box>
           ))}
