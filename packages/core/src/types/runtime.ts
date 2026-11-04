@@ -123,6 +123,12 @@ export type RuntimeQuestionHandler = (
   signal: AbortSignal
 ) => Promise<RuntimeQuestionResponse>
 
+export interface RuntimeImage {
+  /** Base64-encoded image bytes, without a data URL prefix. */
+  data: string
+  mimeType: string
+}
+
 export interface AgentTask {
   /** Host work identity, independent of provider session identity. */
   workId?: string
@@ -130,6 +136,7 @@ export interface AgentTask {
   provider?: string
   systemPrompt: string
   prompt: string
+  images?: RuntimeImage[]
   workDir: string
   timeout: number
   signal?: AbortSignal
@@ -182,6 +189,7 @@ export interface AgentOutput {
 export type RuntimeSessionOptions = Omit<
   AgentTask,
   | "prompt"
+  | "images"
   | "onEvent"
   | "signal"
   | "timeout"
@@ -199,6 +207,7 @@ export type RuntimeSessionOptions = Omit<
 }
 
 export interface RuntimePromptOptions {
+  images?: RuntimeImage[]
   /** Cancels only this turn. A cooperative provider leaves the session reusable. */
   signal?: AbortSignal
   /** Overrides the session's default per-turn deadline. */
@@ -247,7 +256,10 @@ export interface RuntimeSession {
    * started has no owner to settle it, cancel it or show its output. Rejects on
    * provider errors — "did it land?" must never be a guess.
    */
-  supplement?(text: string, options?: { signal?: AbortSignal }): Promise<RuntimeSupplementResult>
+  supplement?(
+    text: string,
+    options?: { signal?: AbortSignal; images?: RuntimeImage[] }
+  ): Promise<RuntimeSupplementResult>
   /**
    * Idempotently cancels the current turn and waits for its terminal response.
    * ACP closes uncooperative providers after a grace period; cleanup failure rejects.

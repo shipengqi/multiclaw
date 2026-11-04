@@ -301,6 +301,14 @@ and it answers in prose: the body swaps to the reply, the footer reads `✓ answ
 runs. When the request is a real task but too vague to plan, the leader asks instead — the footer
 reads `? needs your input` and your next line is the answer.
 
+Copy an image, then press `Ctrl+V` in the conversation prompt to attach it. You can send images
+with text or on their own; `Alt+Backspace` removes the last attachment and `Esc` clears the draft.
+Messages support up to five images, each up to 10 MiB (PNG, JPEG, GIF or WebP). Attachments are
+saved under `.multiclaw/attachments/` and survive queued messages and retries. The agent must
+advertise ACP image support. macOS and Windows use their system clipboard; Linux needs
+`wl-clipboard` (Wayland) or `xclip` (X11). Terminal paste shortcuts such as `Cmd+V` usually only
+forward text; use `Ctrl+V` for clipboard images.
+
 ### Keys
 
 The prompt always holds focus, so exactly two keys are reserved: `?` and `/`, and only while the
@@ -318,6 +326,8 @@ which is what keeps typing a requirement from tripping over shortcuts.
 | `?` | Key map (idle, empty line only) |
 | `/` | Command menu (empty line only) |
 | `ctrl+l` | Clear the focused agent's output for the current turn |
+| `ctrl+v` | Paste an image or text from the system clipboard |
+| `alt+backspace` | Remove the last attached image |
 | `ctrl+c` | Cancel the running turn *and its queue*; again when idle to quit |
 
 Scrolling up parks the stream and scrolling back to the bottom resumes it, so there is no follow

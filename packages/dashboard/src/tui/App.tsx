@@ -16,7 +16,9 @@ import {
   AgentSessionManager,
   describeResumePlan,
   ensureMulticlawDir,
+  imageReference,
   isAbortError,
+  MAX_PROMPT_IMAGES,
   Orchestrator,
   resolvePermissionMode,
   validateRuntimeQuestionContent,
@@ -24,6 +26,7 @@ import {
 import { Box, type Key, Text, useApp, useInput, useWindowSize } from "ink"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { pendingWrite } from "./atomic"
+import { readClipboard, saveClipboardImage } from "./clipboard"
 import {
   argQuery,
   canRun,
@@ -158,6 +161,7 @@ const RUNNING_PLACEHOLDER = "type to queue a follow-up…"
 interface Line {
   text: string
   cursor: number
+  images?: string[]
 }
 
 const EMPTY_LINE: Line = { text: "", cursor: 0 }
@@ -391,6 +395,11 @@ export function App({
   const stateRef = useRef(state)
   stateRef.current = state
   const [line, setLine] = useState<Line>(EMPTY_LINE)
+  const lineRef = useRef(line)
+  lineRef.current = line
+  const [pasting, setPasting] = useState(false)
+  const pasteRef = useRef(false)
+  const pasteCancelledRef = useRef(false)
   const [caretOn, setCaretOn] = useState(true)
   const [tick, setTick] = useState(0)
   const [running, setRunning] = useState(false)
@@ -1012,14 +1021,16 @@ export function App({
     awaitingAnswer,
     checkpoint: checkpointResolveRef.current !== null,
   }
-  const query = interactions[0]?.kind === "question" ? undefined : menuQuery(line.text)
+  const query =
+    interactions[0]?.kind === "question" || line.images?.length ? undefined : menuQuery(line.text)
   const matches = query === undefined ? [] : matchCommands(query, running, commandContext)
 
   // The palette shows one of two lists, never both: the command names while the
   // command is still being typed, or — once a space commits to arguments — the
   // agents a completer command's first argument could name. `menuQuery` closes
   // on a space and `argQuery` opens there, so the two are mutually exclusive.
-  const arg = interactions[0]?.kind === "question" ? undefined : argQuery(line.text)
+  const arg =
+    interactions[0]?.kind === "question" || line.images?.length ? undefined : argQuery(line.text)
   const argRows: PaletteRow[] = arg
     ? completeAgents(arg.partial, Object.keys(state.agents)).map((id) => ({
         key: id,
@@ -1088,11 +1099,9 @@ export function App({
   // row it takes is a row the body cannot have. Measured here, before the
   // layout, for the same reason `railCells` is: Ink cannot be asked how tall a
   // wrapping line will be until it has already laid the screen out.
-  const promptRows = promptRowCount(
-    line.text,
-    line.cursor,
-    Math.max(MIN_COLUMNS, columns) - MARKER_WIDTH
-  )
+  const promptRows =
+    (line.images?.length ? 1 : 0) +
+    promptRowCount(line.text, line.cursor, Math.max(MIN_COLUMNS, columns) - MARKER_WIDTH)
 
   const layout = computeLayout({
     columns,
@@ -1509,7 +1518,17 @@ export function App({
   )
 
   const submit = useCallback(() => {
-    const text = line.text.trim()
+    if (pasteRef.current) {
+      setNotice("reading clipboard — wait before sending")
+      return
+    }
+    if (line.images?.length && (operationInput || parseCommand(line.text.trim()))) {
+      setNotice("images attach to messages — remove them with alt+backspace before using a command")
+      return
+    }
+    const text = [line.text.trim(), ...(line.images ?? []).map(imageReference)]
+      .filter(Boolean)
+      .join("\n\n")
     if (!text || closingRef.current) return
     if (operationInput) {
       const operation = operationInput
@@ -1549,12 +1568,13 @@ export function App({
       return
     }
     void startTurn(text)
-  }, [line.text, operationInput, runCommand, running, startTurn])
+  }, [line, operationInput, runCommand, running, startTurn])
 
   // Line edits are expressed as functional updates over one object so a fast
   // typist can never interleave a text change with a stale cursor position.
   const insert = useCallback((chunk: string) => {
     setLine((l) => ({
+      ...l,
       text: l.text.slice(0, l.cursor) + chunk + l.text.slice(l.cursor),
       cursor: l.cursor + chunk.length,
     }))
@@ -1564,7 +1584,11 @@ export function App({
     setLine((l) =>
       l.cursor === 0
         ? l
-        : { text: l.text.slice(0, l.cursor - 1) + l.text.slice(l.cursor), cursor: l.cursor - 1 }
+        : {
+            ...l,
+            text: l.text.slice(0, l.cursor - 1) + l.text.slice(l.cursor),
+            cursor: l.cursor - 1,
+          }
     )
   }, [])
 
@@ -1572,7 +1596,7 @@ export function App({
     setLine((l) =>
       l.cursor >= l.text.length
         ? l
-        : { text: l.text.slice(0, l.cursor) + l.text.slice(l.cursor + 1), cursor: l.cursor }
+        : { ...l, text: l.text.slice(0, l.cursor) + l.text.slice(l.cursor + 1), cursor: l.cursor }
     )
   }, [])
 
@@ -1583,6 +1607,52 @@ export function App({
   const moveTo = useCallback((cursor: number) => {
     setLine((l) => ({ ...l, cursor }))
   }, [])
+
+  const pasteClipboard = async () => {
+    if (pasteRef.current) return
+    pasteRef.current = true
+    pasteCancelledRef.current = false
+    setPasting(true)
+    // Discard asynchronous results if the draft/session was cleared meanwhile.
+    const draft = lineRef.current
+    const sessionId = sessionIdRef.current
+    try {
+      const content = await readClipboard()
+      if (
+        pasteCancelledRef.current ||
+        closingRef.current ||
+        sessionIdRef.current !== sessionId ||
+        lineRef.current !== draft
+      )
+        return
+      if ("image" in content) {
+        if ((draft.images?.length ?? 0) >= MAX_PROMPT_IMAGES) {
+          setNotice(`a message supports up to ${MAX_PROMPT_IMAGES} images`)
+          return
+        }
+        const file = await saveClipboardImage(config.workDir, content.image)
+        if (
+          pasteCancelledRef.current ||
+          closingRef.current ||
+          sessionIdRef.current !== sessionId ||
+          lineRef.current !== draft
+        )
+          return
+        setLine((l) => ({ ...l, images: [...(l.images ?? []), file] }))
+        setNotice("image attached · alt+backspace removes the last image")
+      } else if (content.text) {
+        insert(content.text.replace(/\r\n?/g, "\n"))
+      } else {
+        setNotice("clipboard contains no image or text")
+      }
+    } catch (err) {
+      if (!closingRef.current)
+        setNotice(`paste failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      pasteRef.current = false
+      if (!closingRef.current) setPasting(false)
+    }
+  }
 
   // The palette draws at most `layout.menuRows` rows, so the window has to
   // follow the selection: `listWindowStart` keeps the highlighted row on screen
@@ -1600,6 +1670,7 @@ export function App({
     // ctrl+c is the one key that must always do something: it peels the console
     // back one layer at a time instead of quitting from under the user.
     if (key.ctrl && char === "c") {
+      pasteCancelledRef.current = true
       if (picker || operationInput) {
         setNotice(undefined)
         setPicker(null)
@@ -1617,10 +1688,18 @@ export function App({
         setNotice(queue.length > 0 ? `cancelling… · dropped ${queue.length} queued` : "cancelling…")
         setQueue([])
         setCancelled(true)
-      } else if (line.text) {
+      } else if (line.text || line.images?.length || pasting) {
         setLine(EMPTY_LINE)
       } else {
         void shutdown()
+      }
+      return
+    }
+    if (pasting) {
+      if (key.escape) {
+        pasteCancelledRef.current = true
+        setLine(EMPTY_LINE)
+        setNotice(undefined)
       }
       return
     }
@@ -1727,7 +1806,7 @@ export function App({
       return
     }
     if (key.ctrl && char === "d") {
-      if (!line.text) void shutdown()
+      if (!line.text && !line.images?.length && !pasting) void shutdown()
       return
     }
     if (key.ctrl && char === "l") {
@@ -1741,6 +1820,24 @@ export function App({
     }
     if (key.ctrl && char === "e") {
       setLine((l) => ({ ...l, cursor: l.text.length }))
+      return
+    }
+    if (key.ctrl && char === "v") {
+      if (
+        picker ||
+        operationInput ||
+        frontQuestion ||
+        checkpointResolveRef.current ||
+        (front && !menu.released)
+      ) {
+        setNotice("clipboard images can be pasted into a conversation message")
+      } else {
+        void pasteClipboard()
+      }
+      return
+    }
+    if (key.meta && key.backspace && line.images?.length) {
+      setLine((l) => ({ ...l, images: l.images?.slice(0, -1) }))
       return
     }
 
@@ -2270,6 +2367,7 @@ export function App({
       {paletteOpen ? <CommandMenu rows={paletteWindow} selected={paletteSelected} /> : null}
 
       <Prompt
+        imageCount={line.images?.length ?? 0}
         value={line.text}
         cursor={line.cursor}
         caretVisible={caretOn}
@@ -2289,7 +2387,7 @@ export function App({
             queued={queue.length}
           />
         }
-        keys={keys}
+        keys={pasting ? "reading clipboard…" : `${keys} · ctrl+v paste`}
       />
     </Box>
   )

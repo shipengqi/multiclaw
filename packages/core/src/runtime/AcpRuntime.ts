@@ -10,6 +10,7 @@ import type {
   RuntimeCapabilities,
   RuntimeEvent,
   RuntimeEventBase,
+  RuntimeImage,
   RuntimeInfo,
   RuntimePromptOptions,
   RuntimeQuery,
@@ -81,7 +82,7 @@ const BASE_CAPABILITIES: RuntimeCapabilities = {
   resume: true,
   permissions: true,
   models: false,
-  images: false,
+  images: true,
   usage: true,
   cost: true,
   sandbox: false,
@@ -351,6 +352,7 @@ export class AcpRuntime extends RuntimeBase {
   async execute(task: AgentTask): Promise<AgentOutput> {
     const {
       prompt,
+      images,
       onEvent,
       signal,
       permissionMode,
@@ -377,6 +379,7 @@ export class AcpRuntime extends RuntimeBase {
     }
     try {
       return await session.prompt(prompt, {
+        images,
         signal,
         timeout: task.timeout,
         onEvent,
@@ -430,6 +433,7 @@ export class AcpRuntime extends RuntimeBase {
       /** Negotiated during `initialize`; decides whether `supplement` exists. */
       let steeringSupported = false
       let loadSupported = false
+      let imagesSupported = false
       let active: ActiveTurn | undefined
       let childClosed = false
       let terminalError: Error | undefined
@@ -849,20 +853,25 @@ export class AcpRuntime extends RuntimeBase {
        */
       const supplement = async (
         text: string,
-        supplementOptions: { signal?: AbortSignal } = {}
+        supplementOptions: { signal?: AbortSignal; images?: RuntimeImage[] } = {}
       ): Promise<RuntimeSupplementResult> => {
         if (!steeringSupported) {
           throw new Error(`${command} does not accept mid-turn input`)
         }
         const turn = active
         if (!turn || state !== "running") return { status: "idle" }
+        if (supplementOptions.images?.length && !imagesSupported)
+          throw new PermanentError(`${command} does not support image prompts`)
         if (supplementOptions.signal?.aborted) throw abortError()
         let timer: NodeJS.Timeout | undefined
         try {
           const response = await Promise.race([
             ctx.request<{ outcome?: unknown }, Record<string, unknown>>(STEER_METHOD, {
               sessionId,
-              prompt: [{ type: "text", text }],
+              prompt: [
+                { type: "text", text },
+                ...(supplementOptions.images ?? []).map((image) => ({ type: "image", ...image })),
+              ],
               _meta: { steering: { idleBehavior: "promptRequired" } },
             }),
             new Promise<never>((_, reject) => {
@@ -903,6 +912,8 @@ export class AcpRuntime extends RuntimeBase {
         if (options.signal?.aborted || promptOptions.signal?.aborted) {
           return Promise.reject(abortError())
         }
+        if (promptOptions.images?.length && !imagesSupported)
+          return Promise.reject(new PermanentError(`${command} does not support image prompts`))
         let duration: number
         try {
           duration = timeoutMs(promptOptions.timeout ?? defaultTimeout)
@@ -940,7 +951,10 @@ export class AcpRuntime extends RuntimeBase {
           emit({ type: "run_started", model: options.model })
           // A synchronous event callback may close or cancel this turn.
           if (active !== turn) return
-          const response = await ctx.request(acp.methods.agent.session.prompt, {
+          const response = await ctx.request<
+            import("@agentclientprotocol/sdk").PromptResponse,
+            import("@agentclientprotocol/sdk").PromptRequest
+          >(acp.methods.agent.session.prompt, {
             sessionId,
             prompt: [
               {
@@ -950,6 +964,10 @@ export class AcpRuntime extends RuntimeBase {
                     ? `${options.systemPrompt}\n\n---\n\n${text}`
                     : text,
               },
+              ...(promptOptions.images ?? []).map((image) => ({
+                type: "image" as const,
+                ...image,
+              })),
             ],
           })
           if (active !== turn) return
@@ -1002,6 +1020,7 @@ export class AcpRuntime extends RuntimeBase {
         if (terminalError) throw terminalError
         steeringSupported = advertisesSteering(init)
         loadSupported = init.agentCapabilities?.loadSession === true
+        imagesSupported = init.agentCapabilities?.promptCapabilities?.image === true
         if (options.sessionId) {
           if (init.agentCapabilities?.loadSession !== true) {
             throw new PermanentError(

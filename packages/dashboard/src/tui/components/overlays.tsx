@@ -28,6 +28,7 @@ export const HELP_GROUPS: readonly HelpGroup[] = [
       ["enter (busy)", "Queue only; the bar above decides tools and questions"],
       ["esc", "Clear the line, close an overlay"],
       ["← → home end", "Move the caret"],
+      ["ctrl+v / alt+⌫", "Paste clipboard / remove last image"],
     ],
   },
   {
@@ -102,7 +103,13 @@ export function HelpOverlay({ width, maxRows }: { width: number; maxRows: number
   const gap = compact ? 0 : 1
 
   return (
-    <Box flexDirection="column" flexShrink={0} paddingLeft={2} paddingTop={1} width={width}>
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      paddingLeft={2}
+      paddingTop={compact ? 0 : 1}
+      width={width}
+    >
       <Text dimColor>? keys</Text>
       {HELP_GROUPS.map((group) => (
         <Box key={group.title} flexDirection="column" marginTop={gap}>

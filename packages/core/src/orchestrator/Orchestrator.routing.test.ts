@@ -14,6 +14,7 @@ import type {
   RuntimeSession,
   RuntimeSessionOptions,
 } from "../types/runtime"
+import { imageReference } from "../utils/images"
 import { AgentSessionManager } from "./AgentSessionManager"
 import { Orchestrator } from "./Orchestrator"
 
@@ -102,6 +103,27 @@ async function run(overrides: Partial<MultiClawConfig> = {}, sessions?: AgentSes
 }
 
 describe("work routing", () => {
+  it("preserves native images when the leader rewrites the requirement", async () => {
+    const image = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "base64"
+    )
+    const file = path.join(dir, "screenshot.png")
+    fs.writeFileSync(file, image)
+    handler = async (task) =>
+      task.agentId === "leader"
+        ? route(["dev"], { requirement: "Build the pictured interface" })
+        : ok()
+    const { result } = await run({
+      context: { requirement: `Use this screenshot\n${imageReference(file)}` },
+    })
+    expect(result.success).toBe(true)
+    expect(result.requirement).toContain(imageReference(file))
+    expect(seen.map((task) => task.images)).toEqual([
+      [{ data: image.toString("base64"), mimeType: "image/png" }],
+      [{ data: image.toString("base64"), mimeType: "image/png" }],
+    ])
+  })
   it("continues only the supplied work and preserves source and full requirements", async () => {
     handler = async (task) =>
       task.agentId === "leader"

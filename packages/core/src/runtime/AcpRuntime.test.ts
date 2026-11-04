@@ -1120,6 +1120,75 @@ describe("AcpRuntime · mid-turn input", () => {
   })
 })
 
+describe("AcpRuntime images", () => {
+  const images = [{ data: "aW1hZ2U=", mimeType: "image/png" }]
+  it("sends text and native images through execute and reused session turns", async () => {
+    const child = new FakeChild()
+    const prompts: unknown[] = []
+    attachAgent(child, {
+      initialize: () => ({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        agentCapabilities: { promptCapabilities: { image: true } },
+      }),
+      prompt: (ctx) => {
+        prompts.push(ctx.params.prompt)
+        return { stopReason: "end_turn" }
+      },
+    })
+    const session = await openWith(child)
+    try {
+      await session.prompt("look", { images })
+      await session.prompt("plain")
+      expect(prompts).toEqual([
+        [
+          { type: "text", text: "look" },
+          { type: "image", ...images[0] },
+        ],
+        [{ type: "text", text: "plain" }],
+      ])
+    } finally {
+      await session.close()
+    }
+    const next = new FakeChild()
+    const received = vi.fn((ctx: AgentPromptContext) => ({
+      stopReason: "end_turn",
+      text: ctx.params.prompt,
+    }))
+    attachAgent(next, {
+      initialize: () => ({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        agentCapabilities: { promptCapabilities: { image: true } },
+      }),
+      prompt: received,
+    })
+    await runWith(next, { images })
+    expect(received.mock.calls[0]?.[0]?.params.prompt).toEqual([
+      { type: "text", text: "do it" },
+      { type: "image", ...images[0] },
+    ])
+  })
+  it("rejects unsupported images without sending a prompt or poisoning the session", async () => {
+    const child = new FakeChild()
+    const received = vi.fn((ctx: AgentPromptContext) => ({
+      stopReason: "end_turn",
+      text: ctx.params.prompt,
+    }))
+    attachAgent(child, { prompt: received })
+    const session = await openWith(child)
+    try {
+      await expect(session.prompt("look", { images })).rejects.toThrow(
+        /does not support image prompts/
+      )
+      expect(session.state).toBe("idle")
+      expect(received).not.toHaveBeenCalled()
+      await session.prompt("plain")
+      expect(received).toHaveBeenCalledTimes(1)
+    } finally {
+      await session.close()
+    }
+  })
+})
+
 describe("AcpRuntime.describe", () => {
   it("reports exactly the capabilities this adapter implements", async () => {
     // Asked about the one bridge that selects models through config options, so
@@ -1134,7 +1203,7 @@ describe("AcpRuntime.describe", () => {
         resume: true,
         permissions: true,
         models: true,
-        images: false,
+        images: true,
         usage: true,
         cost: true,
         sandbox: false,

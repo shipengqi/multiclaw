@@ -120,12 +120,14 @@ export function promptRowCount(value: string, cursor: number, width: number): nu
  * the row the text actually reached.
  */
 export function Prompt({
+  imageCount = 0,
   value,
   cursor,
   caretVisible,
   placeholder,
   width,
 }: {
+  imageCount?: number
   value: string
   cursor: number
   caretVisible: boolean
@@ -156,6 +158,11 @@ export function Prompt({
 
   return (
     <Box flexDirection="column" flexShrink={0}>
+      {imageCount > 0 ? (
+        <Text color={COLOR.accent}>
+          {imageCount} image{imageCount === 1 ? "" : "s"} attached · alt+backspace remove
+        </Text>
+      ) : null}
       {lines.slice(start, start + MAX_PROMPT_ROWS).map((line, index) => {
         const caret = line.caret
         // Empty line → the ghost text supplies the cell; otherwise it is the

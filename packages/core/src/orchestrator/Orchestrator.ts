@@ -20,6 +20,7 @@ import type { StageInfo } from "../types/event"
 import type { LeaderMessage } from "../types/leader"
 import type { SessionRecord } from "../types/session"
 import { renderConversation } from "../utils/conversation"
+import { imagePaths, imageReference } from "../utils/images"
 import { parseLeaderDecision } from "../utils/leaderDecision"
 import { renderUpstreamOutputs } from "../utils/upstream"
 import { isWorkContext } from "../utils/work"
@@ -1075,8 +1076,20 @@ export class Orchestrator {
             decision.workId !== previous.id)
         )
           continue
-        if (decision.requirement) this.contextManager.set("requirement", decision.requirement)
-        else if (decision.mode === "continue" && previous)
+        if (decision.requirement) {
+          // A leader may rewrite the prose; keep the caller's image attachments.
+          const images = imagePaths(
+            this.contextManager.get("requirement") ?? this.originalRequirement
+          )
+          const present = new Set(imagePaths(decision.requirement))
+          this.contextManager.set(
+            "requirement",
+            [
+              decision.requirement,
+              ...images.filter((file) => !present.has(file)).map(imageReference),
+            ].join("\n\n")
+          )
+        } else if (decision.mode === "continue" && previous)
           this.contextManager.set(
             "requirement",
             previous.requirement + "\n\n[Follow-up] " + this.originalRequirement

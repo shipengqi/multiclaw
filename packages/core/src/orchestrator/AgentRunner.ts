@@ -12,6 +12,7 @@ import type { SessionIntent, SessionRecord } from "../types/session"
 import { abortError, isAbortError } from "../utils/abort"
 import { isPermanent } from "../utils/errors"
 import { HANDOFF_INSTRUCTION, parseHandoff } from "../utils/handoff"
+import { loadPromptImages } from "../utils/images"
 import { renderPrompt } from "../utils/prompt"
 import { DEFAULT_RETRY_DELAY_MS, retryBudgetMs, withRetry } from "../utils/retry"
 import { DEFAULT_AGENT_TIMEOUT_MS, withTimeout } from "../utils/timeout"
@@ -171,6 +172,7 @@ export class AgentRunner {
               const task: AgentTask = {
                 ...this.sessionTask(agent),
                 prompt,
+                images: await loadPromptImages(`${requirement ?? ""}\n${instruction ?? ""}`),
                 permissionMode,
                 getPermissionMode: this.config.permissions?.getMode,
                 onPermission: this.config.permissions?.onRequest,

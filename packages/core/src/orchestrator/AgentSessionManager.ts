@@ -3,6 +3,7 @@ import type { AgentOutput, AgentRuntime, AgentTask, RuntimeSession } from "../ty
 import type { SessionEvent, SessionIntent, SessionRecord } from "../types/session"
 import { abortError, isAbortError } from "../utils/abort"
 import { PermanentError } from "../utils/errors"
+import { loadPromptImages } from "../utils/images"
 import { sessionCompatibilityKey } from "../utils/session"
 
 interface SessionObservation {
@@ -332,6 +333,7 @@ export class AgentSessionManager {
           (entry.record.reason ? "\n" + entry.record.reason : "")
         : task.prompt
       const turn = session.prompt(prompt, {
+        images: task.images,
         signal: task.signal,
         timeout: task.timeout,
         onEvent: task.onEvent,
@@ -394,7 +396,11 @@ export class AgentSessionManager {
           return { agentId, status: "unsupported" }
         }
         try {
-          return { agentId, status: (await session.supplement(text)).status }
+          const images = await loadPromptImages(text)
+          const result = images.length
+            ? await session.supplement(text, { images })
+            : await session.supplement(text)
+          return { agentId, status: result.status }
         } catch (error) {
           return {
             agentId,
