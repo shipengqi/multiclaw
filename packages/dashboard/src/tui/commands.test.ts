@@ -126,6 +126,20 @@ describe("matchCommands", () => {
 })
 
 describe("isCommandLine", () => {
+  it.each([
+    "/Users/test/截图.png",
+    "/tmp/photo.png explain this",
+    "/image.png",
+    "/Users/test/Application\\ Support/image.png",
+  ])("does not treat a path as a command: %s", (input) => {
+    expect(isCommandLine(input)).toBe(false)
+    expect(parseCommand(input)).toBeUndefined()
+    expect(menuQuery(input)).toBeUndefined()
+  })
+  it("keeps unknown command errors and command path arguments", () => {
+    expect(parseCommand("/nope")).toEqual({ name: "nope", args: [] })
+    expect(parseCommand("/export /tmp/chat.md")).toEqual({ name: "export", args: ["/tmp/chat.md"] })
+  })
   it("is true only for a leading slash", () => {
     expect(isCommandLine("/sessions")).toBe(true)
     expect(isCommandLine(" /sessions")).toBe(false)

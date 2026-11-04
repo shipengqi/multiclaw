@@ -3,6 +3,7 @@ import * as path from "node:path"
 import {
   type EventBus,
   imageReference,
+  MAX_PROMPT_IMAGES,
   type MultiClawConfig,
   validateRuntimeQuestionContent,
 } from "@multiclawcli/core"
@@ -16,6 +17,7 @@ import { PermissionBar, QuestionForm } from "./components/interaction"
 import { StreamPanel, TeamRow } from "./components/panels"
 import { Prompt, promptRowCount } from "./components/prompt"
 import { truncate, wrapLine } from "./format"
+import { splitInputImages } from "./input-images"
 import {
   clean,
   commitField,
@@ -79,6 +81,7 @@ export function App({
   const [caretVisible, setCaretVisible] = useState(true)
   const [spinnerFrame, setSpinnerFrame] = useState(0)
   const mounted = useRef(true)
+  const pasting = useRef(false)
   const current = runtime.current
   const front = current?.interactions[0]
   const summaries = runtime.summaries
@@ -106,11 +109,10 @@ export function App({
           ? checkpointDraft
           : ""
       : runtime.draft
-  const promptRows = promptRowCount(
-    draft,
-    Math.min(cursor, draft.length),
-    Math.max(1, promptWidth - 2)
-  )
+  const images = focus === "interaction" || searchDraft !== undefined ? [] : runtime.draftImages
+  const promptRows =
+    (images.length ? 1 : 0) +
+    promptRowCount(draft, Math.min(cursor, draft.length), Math.max(1, promptWidth - 2))
   const showRules = rows >= 8 && rows - promptRows >= 6
   const compactInteraction = focus === "interaction" && rows < 14
   const interactionHeight =
@@ -165,6 +167,15 @@ export function App({
     else if (focus === "interaction" && front?.kind === "checkpoint") setCheckpointDraft(next)
     else runtime.setDraft(next)
     setCursor(at + text.length)
+  }
+  const insertMessage = (text: string) => {
+    const input = splitInputImages(text)
+    if (runtime.draftImages.length + input.images.length > MAX_PROMPT_IMAGES) {
+      setNotice(`A message supports up to ${MAX_PROMPT_IMAGES} images`)
+      return
+    }
+    if (input.images.length) runtime.setDraftImages([...runtime.draftImages, ...input.images])
+    insert(input.text)
   }
   const command = async (text: string) => {
     const parsed = parseCommand(text)
@@ -470,18 +481,44 @@ export function App({
       return
     }
     if (key.ctrl && char === "v") {
+      if (focus === "interaction") {
+        setNotice("Paste images into the main chat")
+        return
+      }
+      if (pasting.current) return
+      pasting.current = true
       const id = runtime.selectedId
+      const originalDraft = runtime.draft
+      const originalImages = runtime.draftImages
+      const at = Math.min(cursor, originalDraft.length)
       void readClipboard()
         .then(async (content) => {
-          const text =
+          if ("image" in content && originalImages.length >= MAX_PROMPT_IMAGES)
+            throw new Error(`A message supports up to ${MAX_PROMPT_IMAGES} images`)
+          const input =
             "text" in content
-              ? content.text
-              : imageReference(await saveClipboardImage(config.workDir, content.image))
-          if (runtime.selectedId !== id || !mounted.current) return
-          runtime.setDraft(runtime.draft + text)
-          setCursor(runtime.draft.length)
+              ? splitInputImages(content.text.replace(/\r\n?/g, "\n"))
+              : { text: "", images: [await saveClipboardImage(config.workDir, content.image)] }
+          if (
+            runtime.selectedId !== id ||
+            !mounted.current ||
+            runtime.draftImages !== originalImages
+          )
+            return
+          if (input.text && runtime.draft !== originalDraft)
+            throw new Error("Draft changed while reading clipboard; paste the text again")
+          if (originalImages.length + input.images.length > MAX_PROMPT_IMAGES)
+            throw new Error(`A message supports up to ${MAX_PROMPT_IMAGES} images`)
+          runtime.setDraftImages([...originalImages, ...input.images])
+          if (input.text) {
+            runtime.setDraft(originalDraft.slice(0, at) + input.text + originalDraft.slice(at))
+            setCursor(at + input.text.length)
+          }
         })
         .catch(report)
+        .finally(() => {
+          pasting.current = false
+        })
       return
     }
     if (key.ctrl && char === "a") {
@@ -509,6 +546,10 @@ export function App({
       return
     }
     if (key.backspace || key.delete) {
+      if (key.meta && focus === "chat" && runtime.draftImages.length) {
+        runtime.setDraftImages(runtime.draftImages.slice(0, -1))
+        return
+      }
       const at = Math.min(cursor, draft.length)
       const text = draft.slice(0, Math.max(0, at - 1)) + draft.slice(at)
       if (focus === "interaction" && question) setFormEntry({ id: question.id, form, draft: text })
@@ -522,9 +563,28 @@ export function App({
         insert("\n")
         return
       }
-      if (!draft.trim()) return
-      const text = draft
+      if (pasting.current) {
+        setNotice("Reading clipboard — wait before sending")
+        return
+      }
+      const input = splitInputImages(draft)
+      const attachments = [...runtime.draftImages, ...input.images]
+      if (!input.text.trim() && !attachments.length) return
+      if (attachments.length > MAX_PROMPT_IMAGES) {
+        setNotice(`A message supports up to ${MAX_PROMPT_IMAGES} images`)
+        return
+      }
+      if (attachments.length && parseCommand(input.text)) {
+        setNotice(
+          "Images attach to messages; remove them with alt+backspace before using a command"
+        )
+        return
+      }
+      const text = [input.text.trim(), ...attachments.map(imageReference)]
+        .filter(Boolean)
+        .join("\n\n")
       runtime.setDraft("")
+      runtime.setDraftImages([])
       setCursor(0)
       setChatScroll(0)
       setNotice("")
@@ -535,7 +595,11 @@ export function App({
       setHelp(true)
       return
     }
-    if (char && !key.ctrl && !key.meta) insert(char.replace(/\r\n?/g, "\n"))
+    if (char && !key.ctrl && !key.meta) {
+      const text = char.replace(/\r\n?/g, "\n")
+      if (focus === "chat" && text.length > 1) insertMessage(text)
+      else insert(text)
+    }
   })
 
   const savedSessionRows = Math.max(1, bodyHeight - 2 - (showPaneRules ? 1 : 0))
@@ -756,6 +820,7 @@ export function App({
             <Text>Ctrl+B sessions · Ctrl+T team · Ctrl+G answer request</Text>
             <Text>Ctrl+C stop current work · Ctrl+D exit all sessions</Text>
             <Text>Esc returns to chat · Shift+Tab permission mode</Text>
+            <Text>Ctrl+V paste image · paste/drop image path · Alt+Backspace remove image</Text>
             {COMMANDS.map((c) => (
               <Text key={c.name}>
                 /{c.name} {c.args} · {c.description}
@@ -825,6 +890,7 @@ export function App({
       ) : null}
       <Box paddingLeft={focus === "interaction" || temporary ? 0 : sidebarWidth + 1}>
         <Prompt
+          imageCount={images.length}
           value={searchDraft ?? draft}
           cursor={Math.min(cursor, draft.length)}
           caretVisible={caretVisible}

@@ -74,6 +74,7 @@ export interface ChatSession {
   title: string
   messages: ChatMessage[]
   draft: string
+  draftImages: string[]
   running: boolean
   paused: boolean
   queue: QueuedWork[]
@@ -201,6 +202,7 @@ export class SessionRuntime {
   private saveTimer: ReturnType<typeof setInterval>
   selectedId?: string
   blankDraft = ""
+  private blankImages: string[] = []
   notice?: string
 
   constructor(
@@ -230,6 +232,14 @@ export class SessionRuntime {
     const s = this.current
     if (s) s.draft = text
     else this.blankDraft = text
+    this.changed()
+  }
+  get draftImages(): string[] {
+    return this.current?.draftImages ?? this.blankImages
+  }
+  setDraftImages(images: string[]): void {
+    if (this.current) this.current.draftImages = images
+    else this.blankImages = images
     this.changed()
   }
   get summaries(): Array<SessionMeta & { status: string }> {
@@ -277,6 +287,7 @@ export class SessionRuntime {
       title,
       messages: [],
       draft: "",
+      draftImages: [],
       running: false,
       paused: false,
       queue: [],
@@ -423,9 +434,11 @@ export class SessionRuntime {
       this.live.set(s.id, s)
       this.selectedId = s.id
       this.blankDraft = ""
+      this.blankImages = []
     }
     if (s.unsupported) throw new Error(s.unsupported)
     s.draft = ""
+    s.draftImages = []
     const message = this.message(s, "user", text)
     message.status = "pending"
     const owner = s

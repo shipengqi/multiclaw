@@ -1,9 +1,10 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { App } from "./App"
 import { SessionRuntime } from "./chat-session"
+import * as clipboard from "./clipboard"
 import { displayWidth } from "./format"
 import { createSession, sessionDir } from "./sessions"
 import { createInitialState, stripAnsi } from "./state"
@@ -12,6 +13,128 @@ import { DEMO, driveFrame, renderFrame } from "./test-helpers"
 const frame = (keys: string[] = [], columns = 145, rows = 30) =>
   driveFrame(<App config={DEMO} />, { keys, columns, rows, settleMs: 0 }).then(stripAnsi)
 describe("chat-centered terminal UI", () => {
+  it("attaches an image path pasted at the beginning instead of running a command", async () => {
+    const runtime = new SessionRuntime(DEMO)
+    const submit = vi.spyOn(runtime, "submit").mockResolvedValue(undefined)
+    try {
+      const output = stripAnsi(
+        await driveFrame(<App config={DEMO} runtime={runtime} />, {
+          keys: ["/Users/test/Library/Application\\ Support/PixPin/截图.png", "\r"],
+          settleMs: 0,
+        })
+      )
+      expect(output).not.toContain("Unknown command")
+      expect(submit).toHaveBeenCalledWith(
+        "![multiclaw-image](</Users/test/Library/Application Support/PixPin/截图.png>)"
+      )
+    } finally {
+      await runtime.close()
+    }
+  })
+  it("shows attachments without exposing the path and removes them with alt+backspace", async () => {
+    const runtime = new SessionRuntime(DEMO)
+    try {
+      const output = stripAnsi(
+        await driveFrame(<App config={DEMO} runtime={runtime} />, {
+          keys: ["/tmp/截图.png", "描述图片"],
+          columns: 145,
+          rows: 30,
+          settleMs: 0,
+        })
+      )
+      expect(runtime.draft).toBe("描述图片")
+      expect(runtime.draftImages).toEqual(["/tmp/截图.png"])
+      expect(output).toContain("1 image attached")
+      expect(output).not.toContain("/tmp/截图.png")
+      expect(output.trimEnd().split("\n")).toHaveLength(30)
+      await driveFrame(<App config={DEMO} runtime={runtime} />, { keys: ["\x1b\x7f"], settleMs: 0 })
+      expect(runtime.draftImages).toEqual([])
+      expect(runtime.draft).toBe("描述图片")
+    } finally {
+      await runtime.close()
+    }
+  })
+  it("sends a native clipboard image with subsequent text", async () => {
+    const runtime = new SessionRuntime(DEMO)
+    vi.spyOn(clipboard, "readClipboard").mockResolvedValue({ image: Buffer.from("image") })
+    vi.spyOn(clipboard, "saveClipboardImage").mockResolvedValue("/tmp/native.png")
+    const submit = vi.spyOn(runtime, "submit").mockResolvedValue(undefined)
+    try {
+      await driveFrame(<App config={DEMO} runtime={runtime} />, {
+        keys: ["\x16", "看下图片", "\r"],
+        settleMs: 0,
+      })
+      expect(submit).toHaveBeenCalledWith("看下图片\n\n![multiclaw-image](</tmp/native.png>)")
+      expect(runtime.draftImages).toEqual([])
+    } finally {
+      vi.restoreAllMocks()
+      await runtime.close()
+    }
+  })
+  it("keeps images with their session drafts when switching chats", async () => {
+    const runtime = new SessionRuntime(DEMO)
+    const first = createSession(DEMO.workDir)
+    const second = createSession(DEMO.workDir)
+    try {
+      runtime.open(first.id)
+      await driveFrame(<App config={DEMO} runtime={runtime} />, {
+        keys: ["/tmp/first.png"],
+        settleMs: 0,
+      })
+      runtime.open(second.id)
+      expect(runtime.draftImages).toEqual([])
+      runtime.setDraftImages(["/tmp/second.png"])
+      runtime.open(first.id)
+      expect(runtime.draftImages).toEqual(["/tmp/first.png"])
+      runtime.newChat()
+      expect(runtime.draftImages).toEqual([])
+    } finally {
+      await runtime.close()
+    }
+  })
+  it("waits for clipboard reading before submitting", async () => {
+    const runtime = new SessionRuntime(DEMO)
+    let release!: (content: clipboard.ClipboardContent) => void
+    vi.spyOn(clipboard, "readClipboard").mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve
+      })
+    )
+    const submit = vi.spyOn(runtime, "submit").mockResolvedValue(undefined)
+    try {
+      const output = stripAnsi(
+        await driveFrame(<App config={DEMO} runtime={runtime} />, {
+          keys: ["说明", "\x16", "\r"],
+          settleMs: 0,
+        })
+      )
+      expect(output).toContain("Reading clipboard")
+      expect(submit).not.toHaveBeenCalled()
+      expect(runtime.draft).toBe("说明")
+    } finally {
+      release({ text: "" })
+      vi.restoreAllMocks()
+      await runtime.close()
+    }
+  })
+  it("preserves attachments when a slash command is submitted", async () => {
+    const runtime = new SessionRuntime(DEMO)
+    const submit = vi.spyOn(runtime, "submit").mockResolvedValue(undefined)
+    try {
+      const output = stripAnsi(
+        await driveFrame(<App config={DEMO} runtime={runtime} />, {
+          keys: ["/tmp/image.png", "/new", "\r"],
+          settleMs: 0,
+        })
+      )
+      expect(output).toContain("Images attach to messages")
+      expect(runtime.draft).toBe("/new")
+      expect(runtime.draftImages).toEqual(["/tmp/image.png"])
+      expect(submit).not.toHaveBeenCalled()
+    } finally {
+      await runtime.close()
+    }
+  })
   it("starts blank with sessions on the left and team hidden", async () => {
     const output = stripAnsi(await renderFrame(<App config={DEMO} />, 145, 30))
     expect(output).toContain("Sessions")

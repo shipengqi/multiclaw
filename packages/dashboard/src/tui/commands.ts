@@ -185,7 +185,9 @@ export function matchCommands(
 
 /** True once the line has committed to command mode. */
 export function isCommandLine(text: string): boolean {
-  return text.startsWith("/")
+  // A filesystem path may start with '/', but it has more than one path segment
+  // or punctuation in its first token. Keep unknown command names reportable.
+  return /^\/(?:[a-z][a-z0-9-]*)?(?=\s|$)/i.test(text)
 }
 
 /**

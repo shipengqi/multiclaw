@@ -258,8 +258,11 @@ The central chat always talks to the permanent coordinator. The team panel is hi
 | Ctrl+C | Cancel the current chat's work |
 | Ctrl+D | Stop all work, save and exit |
 | Ctrl+V | Paste clipboard text or an image |
+| Alt+Backspace | Remove the last attached image |
 | Up/Down, PageUp/PageDown | Scroll focused output |
 | ? on an empty input | Help |
+
+Pasting or dropping an absolute PNG, JPEG, GIF or WebP path attaches the image, including quoted paths and escaped spaces. The prompt shows an attachment count; type your message and press Enter, or send the image alone. Image paths are never slash commands. Attachments stay with their chat draft when switching sessions.
 
 During execution the coordinator answers progress questions and directs additional requirements to individual agents. Independent new work is queued. Explicit replacement stops current work before dispatching its replacement; ambiguous instructions trigger clarification.
 
