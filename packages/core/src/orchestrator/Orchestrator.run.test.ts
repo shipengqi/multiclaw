@@ -4,12 +4,15 @@ import * as path from "node:path"
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { runtimeRegistry } from "../runtime"
 import { fakeRuntime, makeAgent, makeSessionRecord } from "../testing/helpers"
+import {
+  type TestConfig as MultiClawConfig,
+  TestOrchestrator as Orchestrator,
+} from "../testing/orchestration"
 import type { AgentDefinition } from "../types/agent"
-import type { MultiClawConfig, TurnRecord } from "../types/config"
+import type { TurnRecord } from "../types/config"
 import type { MultiClawEvent } from "../types/event"
 import type { AgentOutput, AgentTask } from "../types/runtime"
 import { AgentSessionManager } from "./AgentSessionManager"
-import { Orchestrator } from "./Orchestrator"
 
 const RUNTIME = "test-orchestrator-run"
 
@@ -177,7 +180,7 @@ describe("review-gated orchestration", () => {
       }
     }
     const { result, events } = await runOrch([agent("worker"), agent("reviewer")], {
-      leader: agent("leader", { taskPrompt: "{{availableAgents}}" }),
+      coordinatorFixture: agent("leader", { taskPrompt: "{{availableAgents}}" }),
       review: { reviewer: "reviewer", repairAgents: ["worker"] },
     })
     expect(leaderPrompt).not.toContain("reviewer")
@@ -354,7 +357,7 @@ describe("review-gated orchestration", () => {
     })
     const { result } = await runOrch([agent("worker"), agent("other"), agent("reviewer")], {
       review,
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
     })
     expect(result.success).toBe(false)
     expect(result.agentResults.map((r) => r.agentId)).toEqual(["other", "reviewer"])
@@ -521,7 +524,7 @@ describe("pipeline review gates", () => {
     const { result } = await runOrch(
       [agent("dev"), agent("other"), agent("tester", { dependsOn: ["other"] })],
       {
-        leader: agent("leader"),
+        coordinatorFixture: agent("leader"),
         reviewGates: [{ reviewer: "tester", repairAgents: ["dev"] }],
       }
     )
@@ -759,7 +762,7 @@ describe("Orchestrator.run", () => {
     const config: MultiClawConfig = {
       name: "test",
       workDir,
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
       agents: [agent("a"), agent("b", { dependsOn: ["a"] })],
       context: { requirement: "ship it" },
     }
@@ -788,7 +791,7 @@ describe("Orchestrator.run", () => {
     const config: MultiClawConfig = {
       name: "test",
       workDir,
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
       agents: [agent("a"), agent("b")],
       context: { requirement: "fix the typo" },
     }
@@ -816,7 +819,7 @@ describe("Orchestrator.run", () => {
     const config: MultiClawConfig = {
       name: "test",
       workDir,
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
       agents: [agent("a")],
     }
 
@@ -1261,7 +1264,7 @@ describe("Orchestrator.run", () => {
         : { output: "should not have run", exitCode: 0 }
 
     const { result, events } = await runOrch([agent("a"), agent("b")], {
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
     })
 
     // The bug this guards: `filter` returned an empty list, so zero stages ran —
@@ -1282,7 +1285,7 @@ describe("Orchestrator.run", () => {
         : { output: `out:${task.agentId}`, exitCode: 0 }
 
     const { result, events } = await runOrch([agent("a"), agent("b")], {
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
     })
 
     expect(result.agentResults).toEqual([])
@@ -1294,7 +1297,7 @@ describe("Orchestrator.run", () => {
     const { result, events } = await runOrch([])
 
     expect(result.success).toBe(false)
-    expect(warningsOf(events)[0].payload.message).toMatch(/config lists no agents/)
+    expect(warningsOf(events)[0].payload.message).toContain("Invalid routing agents")
   })
 
   // The console runs every turn in the same workspace, so the plan file outlives
@@ -1354,8 +1357,8 @@ describe("Orchestrator.run · intent routing", () => {
   it("ignores the leader when useLeader is false", async () => {
     leaderSays('{"mode":"run","run":["a"]}')
     const { result, events } = await runOrch([agent("a"), agent("b")], {
-      leader: agent("leader"),
-      useLeader: false,
+      coordinatorFixture: agent("leader"),
+      skipRoutingFixture: true,
     })
 
     expect(startedIds(events)).toEqual(["a", "b"])
@@ -1365,7 +1368,7 @@ describe("Orchestrator.run · intent routing", () => {
   it("keeps only the agents the leader named, and skips the rest", async () => {
     leaderSays('Here is the plan: {"mode":"run","run":["a","c"]} — done.')
     const { events } = await runOrch([agent("a"), agent("b"), agent("c")], {
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
     })
 
     expect(startedIds(events)).toEqual(["leader", "a", "c"])
@@ -1375,7 +1378,9 @@ describe("Orchestrator.run · intent routing", () => {
 
   it("honours a plan that omits the mode", async () => {
     leaderSays('{"run":["b"]}')
-    const { events } = await runOrch([agent("a"), agent("b")], { leader: agent("leader") })
+    const { events } = await runOrch([agent("a"), agent("b")], {
+      coordinatorFixture: agent("leader"),
+    })
 
     expect(startedIds(events)).toEqual(["leader", "b"])
   })
@@ -1385,7 +1390,7 @@ describe("Orchestrator.run · intent routing", () => {
     // a → b (skip) → c: c must inherit b's dep on a and run after a, not in parallel.
     const { result, events } = await runOrch(
       [agent("a"), agent("b", { dependsOn: ["a"] }), agent("c", { dependsOn: ["b"] })],
-      { leader: agent("leader") }
+      { coordinatorFixture: agent("leader") }
     )
 
     expect(result.success).toBe(true)
@@ -1408,7 +1413,7 @@ describe("Orchestrator.run · intent routing", () => {
         agent("c", { dependsOn: ["b"] }),
         agent("d", { dependsOn: ["c"] }),
       ],
-      { leader: agent("leader") }
+      { coordinatorFixture: agent("leader") }
     )
 
     expect(result.success).toBe(true)
@@ -1429,7 +1434,7 @@ describe("Orchestrator.run · intent routing", () => {
         agent("backend-developer"),
         agent("frontend-developer", { dependsOn: ["backend-developer", "ui-design-reviewer"] }),
       ],
-      { leader: agent("leader") }
+      { coordinatorFixture: agent("leader") }
     )
 
     expect(result.success).toBe(true)
@@ -1448,7 +1453,7 @@ describe("Orchestrator.run · intent routing", () => {
     // a → b → c; skip both a and b → c has nothing to wait for
     const { result, events } = await runOrch(
       [agent("a"), agent("b", { dependsOn: ["a"] }), agent("c", { dependsOn: ["b"] })],
-      { leader: agent("leader") }
+      { coordinatorFixture: agent("leader") }
     )
 
     expect(result.success).toBe(true)
@@ -1464,7 +1469,7 @@ describe("Orchestrator.run · intent routing", () => {
       return { output: `out:${task.agentId}`, exitCode: 0 }
     }
     const { result, events } = await runOrch([agent("a"), agent("b")], {
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
     })
 
     expect(startedIds(events)).toEqual(["leader", "leader"])
@@ -1475,7 +1480,7 @@ describe("Orchestrator.run · intent routing", () => {
   it("retries routing once and stops when the leader returns nothing", async () => {
     leaderSays("   \n  ")
     const { result, events } = await runOrch([agent("a"), agent("b")], {
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
     })
 
     expect(startedIds(events)).toEqual(["leader", "leader"])
@@ -1501,7 +1506,7 @@ describe("Orchestrator.run · earlier turns", () => {
       return { output: `out:${task.agentId}`, exitCode: 0 }
     }
     await runOrch([agent("a")], {
-      leader: agent("leader", { taskPrompt: "req: {{requirement}}\n{{conversation}}" }),
+      coordinatorFixture: agent("leader", { taskPrompt: "req: {{requirement}}\n{{conversation}}" }),
       context: { requirement: "Postgres" },
       ...(history ? { history } : {}),
     })
@@ -1523,7 +1528,7 @@ describe("Orchestrator.run · earlier turns", () => {
   it("leaves no conversation behind on a single-turn run", async () => {
     const prompt = await leaderPromptWith(undefined)
 
-    expect(prompt).toBe("req: Postgres\n")
+    expect(prompt).toContain("req: Postgres\n")
     expect(prompt).not.toContain("{{conversation}}")
   })
 })
@@ -1534,7 +1539,7 @@ describe("Orchestrator.run · a turn that ends in words", () => {
   it("answers prose instead of running the team", async () => {
     leaderSays("Hi! I'm the leader for this project — ask me for a change.")
     const { result, events } = await runOrch([agent("a"), agent("b")], {
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
     })
 
     expect(startedIds(events)).toEqual(["leader"])
@@ -1551,7 +1556,7 @@ describe("Orchestrator.run · a turn that ends in words", () => {
 
   it("carries an explicit reply through", async () => {
     leaderSays('{"mode":"reply","message":"Nothing to do here."}')
-    const { result, events } = await runOrch([agent("a")], { leader: agent("leader") })
+    const { result, events } = await runOrch([agent("a")], { coordinatorFixture: agent("leader") })
 
     expect(result.reply).toEqual({ mode: "reply", message: "Nothing to do here." })
     expect(startedIds(events)).toEqual(["leader"])
@@ -1559,7 +1564,7 @@ describe("Orchestrator.run · a turn that ends in words", () => {
 
   it("carries a question through", async () => {
     leaderSays('{"mode":"ask","message":"Which database should I target?"}')
-    const { result, events } = await runOrch([agent("a")], { leader: agent("leader") })
+    const { result, events } = await runOrch([agent("a")], { coordinatorFixture: agent("leader") })
 
     expect(result.reply).toEqual({ mode: "ask", message: "Which database should I target?" })
     expect(startedIds(events)).toEqual(["leader"])
@@ -1569,7 +1574,7 @@ describe("Orchestrator.run · a turn that ends in words", () => {
 
   it("publishes the reply on the completion event, like every other outcome", async () => {
     leaderSays("just a greeting")
-    const { events } = await runOrch([agent("a")], { leader: agent("leader") })
+    const { events } = await runOrch([agent("a")], { coordinatorFixture: agent("leader") })
 
     const complete = events.find((e) => e.type === "orchestration:complete")
     expect(complete?.payload).toMatchObject({
@@ -1595,7 +1600,7 @@ describe("Orchestrator.run · regression boundaries", () => {
     const config: MultiClawConfig = {
       name: "test",
       workDir,
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
       agents: [agent("dev", { taskPrompt: "{{requirement}}" })],
       context: { requirement: "Postgres, without authentication" },
       history: [
@@ -1622,7 +1627,7 @@ describe("Orchestrator.run · regression boundaries", () => {
     const orch = new Orchestrator({
       name: "test",
       workDir,
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
       agents: [agent("a")],
     })
     const events: MultiClawEvent[] = []
@@ -1630,12 +1635,12 @@ describe("Orchestrator.run · regression boundaries", () => {
     const result = await orch.run({ signal: controller.signal })
     expect(result).toMatchObject({ success: false, cancelled: true, agentResults: [] })
     expect(startedIds(events)).toEqual([])
-    expect(events.map((e) => e.type)).toEqual(["orchestration:complete"])
+    expect(events.map((e) => e.type)).toEqual(["coordinator:message", "orchestration:complete"])
   })
 
   it("does not fall back to the team when the provider cancels the leader", async () => {
     handler = async () => ({ output: "", exitCode: 0, stopReason: "cancelled" })
-    const { result, events } = await runOrch([agent("a")], { leader: agent("leader") })
+    const { result, events } = await runOrch([agent("a")], { coordinatorFixture: agent("leader") })
     expect(result).toMatchObject({ success: false, cancelled: true, agentResults: [] })
     expect(startedIds(events)).toEqual(["leader"])
     expect(warningsOf(events)).toEqual([])
@@ -1650,7 +1655,7 @@ describe("Orchestrator.run · regression boundaries", () => {
     const orch = new Orchestrator({
       name: "test",
       workDir,
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
       agents: [agent("a")],
     })
     const events: MultiClawEvent[] = []
@@ -1906,7 +1911,7 @@ describe("Orchestrator.run · a broken agent graph", () => {
     // Without the filter, `buildStages` would throw on dev's dangling dependency
     // even though the leader legitimately left `unused` out of the run.
     const { result, events } = await runOrch([agent("architect"), agent("dev"), agent("unused")], {
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
     })
 
     expect(result.success).toBe(true)
@@ -2032,7 +2037,7 @@ describe("Orchestrator.run · resume", () => {
     }
 
     const { result, events } = await runOrch([agent("architect"), agent("dev")], {
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
       resume: { agents: ["dev"] },
     })
 
@@ -2162,7 +2167,7 @@ describe("Orchestrator.run · resume", () => {
     }
 
     const { result, events } = await runOrch([agent("dev")], {
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
       resume: { sessions: { dev: makeSessionRecord({ agentId: "dev", sessionId: "sess-7" }) } },
     })
 
@@ -2196,7 +2201,7 @@ describe("Orchestrator.run · resume", () => {
   it("carries the requirement onto a turn that ends in words", async () => {
     leaderSays("hello there")
     const { result } = await runOrch([agent("a")], {
-      leader: agent("leader"),
+      coordinatorFixture: agent("leader"),
       context: { requirement: "say hi" },
     })
 
@@ -2316,6 +2321,7 @@ describe("checkpoint-gated orchestration", () => {
   })
 
   it("injects feedback into the requirement on modify", async () => {
+    let approvals = 0
     handler = async (task) => ({
       output: `out:${task.agentId} · prompt:${task.prompt}`,
       exitCode: 0,
@@ -2324,15 +2330,19 @@ describe("checkpoint-gated orchestration", () => {
       [agent("architect"), agent("developer", { dependsOn: ["architect"] })],
       {
         checkpoints: [{ afterAgents: ["architect"] }],
-        onCheckpoint: async () => ({
-          action: "modify",
-          instruction: "use postgres instead of sqlite",
-        }),
+        onCheckpoint: async () =>
+          ++approvals === 1
+            ? {
+                action: "modify",
+                instruction: "use postgres instead of sqlite",
+              }
+            : { action: "continue" },
       }
     )
     expect(result.success).toBe(true)
     const devResult = result.agentResults.find((r) => r.agentId === "developer")
     expect(devResult?.output).toContain("postgres")
+    expect(approvals).toBe(2)
   })
 
   it("does not trigger a checkpoint until all afterAgents have run", async () => {

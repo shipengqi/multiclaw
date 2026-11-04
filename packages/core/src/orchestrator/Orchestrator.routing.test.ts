@@ -5,8 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { agents as presets } from "../agents"
 import { runtimeRegistry } from "../runtime"
 import { fakeRuntime, makeAgent, makeSessionRecord } from "../testing/helpers"
+import {
+  type TestConfig as MultiClawConfig,
+  TestOrchestrator as Orchestrator,
+} from "../testing/orchestration"
 import type { AgentDefinition } from "../types/agent"
-import type { MultiClawConfig, WorkContext } from "../types/config"
+import type { WorkContext } from "../types/config"
 import type { MultiClawEvent } from "../types/event"
 import type {
   AgentOutput,
@@ -16,7 +20,6 @@ import type {
 } from "../types/runtime"
 import { imageReference } from "../utils/images"
 import { AgentSessionManager } from "./AgentSessionManager"
-import { Orchestrator } from "./Orchestrator"
 
 const runtime = "test-work-routing"
 let dir: string
@@ -92,7 +95,7 @@ const config = (overrides: Partial<MultiClawConfig> = {}): MultiClawConfig => ({
   workDir: dir,
   context: { requirement: "Add pagination" },
   agents: [agent("dev"), agent("other")],
-  leader: agent("leader"),
+  coordinatorFixture: agent("leader"),
   ...overrides,
 })
 async function run(overrides: Partial<MultiClawConfig> = {}, sessions?: AgentSessionManager) {
@@ -388,11 +391,13 @@ describe("worker handoff", () => {
   it.each([false, true])("does not expand a leaderless or fixed retry team (%s)", async (fixed) => {
     handler = async () => handoff()
     const { result } = await run(
-      fixed ? { resume: { agents: ["dev"] } } : { leader: undefined, agents: [agent("dev")] }
+      fixed
+        ? { resume: { agents: ["dev"] } }
+        : { coordinatorFixture: undefined, agents: [agent("dev")] }
     )
     expect(result.success).toBe(false)
     expect(seen.map((task) => task.agentId)).toEqual(["dev"])
-    expect(result.routing?.error).toContain("fixed team")
+    expect(result.routing?.error).toContain(fixed ? "fixed team" : "Routing incomplete")
   })
 
   it.each(["failed", "cancelled"])("does not reroute over a same-stage %s", async (status) => {

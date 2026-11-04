@@ -30,7 +30,8 @@ export interface SupplementReport {
    * `injected` landed in the running turn; `idle` had no turn to land in;
    * `unsupported` cannot take mid-turn input at all; `error` failed.
    */
-  status: "injected" | "idle" | "unsupported" | "error"
+  bindingId?: string
+  status: "injected" | "idle" | "unsupported" | "error" | "unknown"
   error?: string
 }
 
@@ -383,10 +384,10 @@ export class AgentSessionManager {
    * the caller has to be able to say "architect took it, qa did not" rather than
    * "steering failed".
    */
-  async supplement(text: string): Promise<SupplementReport[]> {
+  async supplement(text: string, agentIds?: readonly string[]): Promise<SupplementReport[]> {
     if (this.closed) return []
     const targets = [...this.entries.entries()].filter(
-      ([, entry]) => entry.session?.state === "running"
+      ([id, entry]) => entry.session?.state === "running" && (!agentIds || agentIds.includes(id))
     )
     return await Promise.all(
       targets.map(async ([agentId, entry]): Promise<SupplementReport> => {
@@ -400,11 +401,12 @@ export class AgentSessionManager {
           const result = images.length
             ? await session.supplement(text, { images })
             : await session.supplement(text)
-          return { agentId, status: result.status }
+          return { agentId, bindingId: entry.record.bindingId, status: result.status }
         } catch (error) {
           return {
             agentId,
-            status: "error",
+            bindingId: entry.record.bindingId,
+            status: "unknown",
             error: error instanceof Error ? error.message : String(error),
           }
         }

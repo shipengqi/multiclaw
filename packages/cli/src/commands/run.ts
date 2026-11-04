@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import {
@@ -15,8 +16,6 @@ import { readReport, resolveRunDir, resumeOptionsFromReport } from "./resume"
 
 export interface RunOptions {
   config?: string
-  leader?: boolean
-  noLeader?: boolean
   /**
    * `true` for a bare `--resume` (latest run), or a path to a specific run.
    * Commander only ever produces `undefined`, `true` or a string, so `false` is
@@ -36,11 +35,7 @@ export async function runCommand(
   const config = await loadConfig(options.config, requirementArg)
   const projectWorkDir = config.workDir
 
-  if (options.leader === false || options.noLeader) {
-    config.useLeader = false
-  }
-
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + "-" + randomUUID()
   if (options.resume !== undefined) {
     // Resolve against the project directory: `loadConfig` already resolved
     // `workDir` against the config file's directory, and the run dirs live under

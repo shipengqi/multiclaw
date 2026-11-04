@@ -1,3 +1,12 @@
+# 主聊天与 Session 管理
+
+本次重构在运行时生命周期规则上新增实时协调。session 管聊天和交互，work 管目标与需求版本，provider session 管执行者对话。以下旧计划保留运行时恢复背景；控制台启动、切换、队列和历史格式以 README 的新设计为准。
+
+- 内置协调者脱离 team；各 session 持有独立运行时管理器，共享工作目录并行执行。
+- 协调者调用串行、worker 独立；定向补充保留投递事实，未知结果不自动重放。
+- DAG 与评审保留；需求变化触发返工和重新验收，旧验收不能证明新要求完成。
+- 新 journal 版本为 2，不迁移旧历史；后台 RPC 不跨进程恢复。
+
 # multiclaw Session 管理改进计划
 
 状态：已按确认范围实现；开发阶段采用新记录格式，不提供旧字段、旧报告或旧历史的迁移兼容层。
@@ -41,7 +50,7 @@ AgentResult 和 WorkContext 的执行者条目使用可选 session: SessionRecor
 - 建立方式：created / loaded；每次执行另外记录 reused / loaded / created 等实际动作。
 - 失效、加载失败或清理失败的结构化原因及必要说明。
 
-leader 使用明确的 leader 所有者，不绑定 worker workId；reviewer 绑定当前工作，但其会话信息不能作为新修改已获验收的证据。
+协调者使用明确的主聊天所有者，不绑定 worker workId；reviewer 绑定当前工作，但其会话信息不能作为新修改已获验收的证据。
 
 兼容性摘要复用现有检查项：runtime/provider、command/args、模型、有效工作目录、systemPrompt、协商所需的固定选项。工作身份独立校验，加载目标独立校验。持久摘要采用稳定 hash，不把原始提示词或命令参数复制进历史。保留 systemPrompt 检查，不用提示词版本号替代兼容性检查。
 
@@ -55,7 +64,7 @@ RuntimeSession.capabilities 明确提供 continuation / load / supplement 三个
 
 | 情况 | 动作与说明 |
 | --- | --- |
-| 新工作 | 关闭旧执行者句柄，再建立新 Session；leader 保留当前对话 |
+| 新工作 | 关闭旧执行者句柄，再建立新 Session；协调者保留当前对话 |
 | 同一工作，live Session 兼容、idle 且支持 continuation | 复用句柄，记录 reused |
 | 同一工作，但 live Session 已结束或不支持 continuation | 依据可靠记录和 load 能力判断是否加载；否则新建并携带恢复上下文 |
 | 重启后有可靠归属和兼容记录，且支持 load | 尝试加载；成功后记录 loaded |
@@ -72,7 +81,7 @@ RuntimeSession.capabilities 明确提供 continuation / load / supplement 三个
 - CLI --resume / TUI /retry 保持固定 agent 集合。显式 SessionRecord 已知不兼容或不支持加载时报告无法续接，不忽略显式目标。没有实际获得 ID 的创建失败记录不冒充加载候选。
 - 不从相邻 turn 或其他工作推断 Session 归属，不提供旧记录格式适配；缺少有效工作身份时不自动猜测目标。
 - 无 openSession 的运行时使用 execute 行为；只记录它实际返回的事实，不伪造 live Session、load 或复用成功。
-- preview / dry-run 可以展示续接意图及根据已知信息得到的判断，但不加载/重置 worker、不清理计划、不将预测写成实际动作。leader 为完成路由所需的执行保留原行为。
+- preview / dry-run 可以展示续接意图及根据已知信息得到的判断，但不加载/重置 worker、不清理计划、不将预测写成实际动作。协调者为完成路由所需的执行保留原行为。
 
 ## 生命周期与恢复记录
 
@@ -133,7 +142,7 @@ Session 元数据的事实来源归 runtime 与 manager；Orchestrator 负责绑
 使用假运行时和 ACP mock 作为主要验证手段：
 
 - 单 developer、无 architect 多 agent、architect 已配置但未选中、其他 ID 的 planner 都能正确绑定和续接 Session。
-- 新任务新建 worker；连续 continue 复用兼容句柄；中间问答不丢工作目标；leader 保留自己的对话。
+- 新任务新建 worker；连续 continue 复用兼容句柄；中间问答不丢工作目标；协调者保留自己的对话。
 - 失败时 Session 仍 idle，明确 retry 复用；失败导致进程关闭时按实际 load 能力处理。
 - created 后、结果返回前退出：落盘的 journal 能保留 ID 和归属，重启后尝试加载；未落盘的信息保持未知。
 - 协作取消后不自动继续；不协作取消等待清理；清理失败不启动替代 worker。

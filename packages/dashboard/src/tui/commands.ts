@@ -28,8 +28,7 @@ export interface CommandSpec {
 }
 
 export const COMMANDS: readonly CommandSpec[] = [
-  { name: "new", description: "Start an empty session", availability: "idle" },
-  { name: "sessions", description: "Switch or delete saved sessions", availability: "idle" },
+  { name: "new", description: "Start an empty chat", availability: "always" },
   {
     name: "focus",
     args: "[id]",
@@ -71,14 +70,14 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "export",
-    args: "[turn] [path]",
-    description: "Export a turn as Markdown",
+    args: "[path]",
+    description: "Export the chat as Markdown",
     availability: "always",
   },
   {
     name: "steer",
-    args: "[text]",
-    description: "Send a message to running agents",
+    args: "<agent> <text>",
+    description: "Supplement a specific agent",
     availability: "running",
   },
   { name: "pause", description: "Pause queued turns", availability: "always" },

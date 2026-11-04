@@ -1,5 +1,7 @@
 # dsh-superagent 与 multiclaw 深度对比 + 可借鉴点
 
+> 历史设计记录：主聊天重构已将 leader 改为内置协调者，移除 leader/useLeader/--no-leader；当前交互和生命周期以 README.zh-CN.md 与 dashboard README 为准。
+
 > 当前源码复核与建议修正见 [2026-11-02 编排对比](orchestration-comparison-2026-11-02.md)。本文保留为早期分析，其中 prompt 指纹、已读回执、权限解析、retry、TUI 续接与 dry-run 的建议以新文档为准。
 
 > 依据：`deepseek-ai/dsh-superagent-prototype`（v0.1.0，MIT，2026-10-31）的 `docs/000–007`、`prompts/*`，以及源码 `src/core/{model,engine,tickets,intake,assignments}.ts`、`src/app/sessions.ts`、`src/policy.ts`、`src/executor/{dsh,background}.ts`。multiclaw 侧依据 `packages/core/src/{orchestrator/Orchestrator,orchestrator/AgentRunner,orchestrator/AgentSessionManager,agents/leader,config/permissionMode}.ts` 与项目记忆。

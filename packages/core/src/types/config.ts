@@ -5,6 +5,7 @@ import type { RuntimePermissionHandler, RuntimeQuestionHandler } from "./runtime
 /** Caller-owned facts for the latest work in this console session. */
 export interface WorkContext {
   id: string
+  revision?: number
   originalRequirement: string
   requirement: string
   agents: Array<{
@@ -31,6 +32,9 @@ export interface TurnRecord {
   requirement: string
   /** How the turn ended in words, when it ended that way. */
   reply?: LeaderMessage
+  summary?: string
+  summaryError?: string
+  coordinatorSession?: import("./session").SessionRecord
   /** Observed execution and acceptance facts when agents ran. */
   outcome?: TurnOutcome
   work?: WorkContext
@@ -89,6 +93,7 @@ export interface ReviewVerdict {
 }
 
 export interface AcceptanceResult {
+  revision?: number
   status: "approved" | "changes_required" | "failed" | "cancelled"
   reviewer: string
   repairRounds: number
@@ -99,7 +104,6 @@ export interface AcceptanceResult {
 export interface MultiClawConfig {
   name: string
   workDir: string
-  leader?: AgentDefinition
   agents: AgentDefinition[]
   context?: Record<string, string>
   /**
@@ -139,7 +143,6 @@ export interface MultiClawConfig {
   logDir?: string
   continueOnError?: boolean
   maxConcurrency?: number
-  useLeader?: boolean
   /** Opt-in delivery gate. Execution success alone does not satisfy this policy. */
   review?: ReviewPolicy
   /** In-pipeline reviewers. dependsOn locates each gate; downstream waits for approval. */
@@ -181,6 +184,9 @@ export interface OrchestrationPreview {
   stages: import("./event").StageInfo[]
   /** Present when the leader answered or asked instead of choosing a pipeline. */
   reply?: LeaderMessage
+  summary?: string
+  summaryError?: string
+  coordinatorSession?: import("./session").SessionRecord
   /** The leader's explanation for the agent set, when it gave one. */
   selectionReason?: string
 }
@@ -194,6 +200,7 @@ export interface DeliverableSummary {
 }
 
 export interface OrchestratorResult {
+  supplements?: import("./coordination").WorkSupplement[]
   originalRequirement?: string
   routing?: RoutingInfo
   work?: WorkContext
@@ -225,6 +232,9 @@ export interface OrchestratorResult {
    * an empty `agentResults`.
    */
   reply?: LeaderMessage
+  summary?: string
+  summaryError?: string
+  coordinatorSession?: import("./session").SessionRecord
   /**
    * The leader's explanation for the agent set it selected, when it gave one.
    *

@@ -22,7 +22,7 @@ describe("availableCommands", () => {
 
   it("always offers the rest", () => {
     const idle = availableCommands(false).map((c) => c.name)
-    for (const name of ["sessions", "focus", "latest", "verbose", "mode", "verbose"]) {
+    for (const name of ["new", "focus", "latest", "verbose", "mode", "verbose"]) {
       expect(idle).toContain(name)
     }
   })
@@ -195,11 +195,9 @@ describe("COMMANDS", () => {
     expect(availableCommands(true).map((c) => c.name)).toContain("edit")
   })
 
-  it.each(["new", "sessions"])("offers /%s only while idle", (name) => {
-    expect(availableCommands(false).map((c) => c.name)).toContain(name)
-    expect(availableCommands(true).map((c) => c.name)).not.toContain(name)
-    expect(canRun(name, true)).toBe(false)
-    expect(unavailableReason(name, true)).toBe(`/${name} waits for the current turn to finish`)
+  it("offers new chat while running and removes the sessions command", () => {
+    expect(availableCommands(true).map((c) => c.name)).toContain("new")
+    expect(COMMANDS.some((c) => c.name === "sessions")).toBe(false)
   })
 
   it("offers /continue in both phases for checkpoints and queue resume", () => {
@@ -279,8 +277,8 @@ describe("paletteRows", () => {
   })
 
   it("keeps each command's description", () => {
-    expect(paletteRows(COMMANDS).find((row) => row.key === "sessions")?.description).toBe(
-      "Switch or delete saved sessions"
+    expect(paletteRows(COMMANDS).find((row) => row.key === "new")?.description).toBe(
+      "Start an empty chat"
     )
   })
 })

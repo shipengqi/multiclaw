@@ -1,5 +1,6 @@
 import {
   type AgentResult,
+  COORDINATOR_ID,
   describeSession,
   type EventBus,
   type MultiClawEvent,
@@ -52,7 +53,24 @@ export class ConsoleReporter {
   }
 
   private handle(e: MultiClawEvent): void {
+    const agentId =
+      (e.payload as { agentId?: string; record?: { agentId?: string } }).agentId ??
+      (e.payload as { record?: { agentId?: string } }).record?.agentId
+    if (agentId === COORDINATOR_ID) return
+
     switch (e.type) {
+      case "coordinator:phase":
+        if (e.payload.phase !== "idle") console.log("Coordinator: " + e.payload.phase)
+        break
+      case "work:supplement":
+        console.log(
+          "Requirement revision " +
+            e.payload.revision +
+            ": " +
+            e.payload.deliveries.map((d) => d.agentId + " " + d.status).join(", ")
+        )
+        break
+
       case "agent:session": {
         if (e.payload.action === "state_changed") break
         console.log(
@@ -159,6 +177,8 @@ export class ConsoleReporter {
         break
       }
       case "orchestration:complete": {
+        if (e.payload.summary) console.log("\n" + e.payload.summary)
+        if (e.payload.summaryError) console.log("Summary failed: " + e.payload.summaryError)
         const { success, totalDuration, agentResults, reply, acceptance, gateResults } = e.payload
         // A turn that ran no pipeline has no table worth printing — the leader's
         // words are the whole result, so they go above the summary box.

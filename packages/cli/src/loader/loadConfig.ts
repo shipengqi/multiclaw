@@ -98,6 +98,11 @@ export async function loadConfig(
     throw new Error(`Invalid config format — expected: export default defineConfig({...})`)
   }
 
+  if ("leader" in config || "useLeader" in config)
+    throw new Error(
+      "leader/useLeader are no longer supported. Remove these fields; the built-in coordinator uses defaults.provider/model."
+    )
+
   const configDir = path.dirname(absPath)
   config.workDir = path.resolve(configDir, config.workDir)
 

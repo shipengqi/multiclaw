@@ -5,7 +5,7 @@ const ALL = Object.entries(agents)
 
 describe("built-in agents", () => {
   it("exposes every preset through the `agents` namespace", () => {
-    expect(ALL).toHaveLength(12)
+    expect(ALL).toHaveLength(11)
   })
 
   // The console's first screen shows each agent's role. It falls back to
@@ -53,6 +53,6 @@ describe("built-in agents", () => {
   // The leader runs before any stage exists, so it has no upstream to be shown —
   // the placeholder there would only ever render as an empty section.
   it("keeps the upstream placeholder out of the leader's prompt", () => {
-    expect(agents.leader().taskPrompt).not.toContain("{{upstreamOutputs}}")
+    expect("leader" in agents).toBe(false)
   })
 })

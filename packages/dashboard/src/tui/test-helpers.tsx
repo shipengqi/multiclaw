@@ -34,14 +34,6 @@ export function removeWorkDir(workDir: string): void {
 export const DEMO: MultiClawConfig = {
   name: "dev-team",
   workDir: testWorkDir("demo"),
-  leader: {
-    id: "leader",
-    name: "Leader",
-    icon: "◆",
-    taskTitle: "plans the pipeline",
-    systemPrompt: "",
-    taskPrompt: "",
-  },
   agents: [
     {
       id: "architect",
@@ -74,7 +66,6 @@ export const DEMO: MultiClawConfig = {
 export const PRESET: MultiClawConfig = {
   name: "Dev Team Demo",
   workDir: testWorkDir("preset"),
-  leader: agents.leader({ model: "haiku" }),
   agents: [
     agents.architect({ model: "haiku" }),
     agents.backendDeveloper({ model: "haiku", dependsOn: ["architect"] }),

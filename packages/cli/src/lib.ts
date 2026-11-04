@@ -1,4 +1,5 @@
 import {
+  coordinatorAgent,
   detectProviders,
   type MultiClawConfig,
   presentProviders,
@@ -23,10 +24,7 @@ export async function assertRuntimesAvailable(config: MultiClawConfig): Promise<
   // both use `runtime: "acp"` while naming different binaries (`opencode` vs
   // `codex-acp`), and both must be checked.
   const checked = new Set<string>()
-  const agents = [
-    ...(config.leader && config.useLeader !== false ? [config.leader] : []),
-    ...config.agents,
-  ]
+  const agents = [...config.agents, coordinatorAgent()]
   for (const agent of agents) {
     const name = agent.runtime ?? "acp"
     if (!runtimeRegistry.has(name)) {

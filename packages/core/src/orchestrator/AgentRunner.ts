@@ -19,6 +19,7 @@ import { DEFAULT_AGENT_TIMEOUT_MS, withTimeout } from "../utils/timeout"
 import { summarizeToolInput, summarizeToolOutput } from "../utils/toolSummary"
 import { AgentSessionManager } from "./AgentSessionManager"
 import type { ContextManager } from "./ContextManager"
+import { COORDINATOR_ID } from "./coordinatorAgent"
 
 /** The `kind` a chunk of agent output carries on the `agent:output` event. */
 type OutputKind = "text" | "tool" | "tool-detail"
@@ -35,8 +36,10 @@ export class AgentRunner {
   private sessionTask(agent: AgentDefinition): AgentTask {
     return {
       agentId: agent.id,
-      workId: agent.id === this.config.leader?.id ? undefined : this.contextManager.get("workId"),
-      systemPrompt: agent.systemPrompt,
+      workId: agent.id === COORDINATOR_ID ? undefined : this.contextManager.get("workId"),
+      systemPrompt: this.config.context?.taskPlanPath
+        ? agent.systemPrompt.replaceAll("task-plan.json", this.config.context.taskPlanPath)
+        : agent.systemPrompt,
       prompt: "",
       workDir: agent.workDir ? path.resolve(this.globalWorkDir, agent.workDir) : this.globalWorkDir,
       timeout: agent.timeout ?? DEFAULT_AGENT_TIMEOUT_MS,
@@ -139,13 +142,19 @@ export class AgentRunner {
                   agent.agentPlan?.trim() ||
                   "No step-by-step plan was provided — use your judgement.",
               }
-              let prompt = await renderPrompt(agent.taskPrompt, agentContext, this.globalWorkDir)
+              let prompt = await renderPrompt(
+                this.config.context?.taskPlanPath
+                  ? agent.taskPrompt.replaceAll("task-plan.json", this.config.context.taskPlanPath)
+                  : agent.taskPrompt,
+                agentContext,
+                this.globalWorkDir
+              )
               const requirement =
                 this.contextManager.get("requirement") ?? this.config.context?.requirement
-              if (agent.id !== this.config.leader?.id && requirement !== undefined) {
+              if (agent.id !== COORDINATOR_ID && requirement !== undefined) {
                 prompt = `## Current task\n${requirement}\n\n${prompt}`
               }
-              if (agent.id !== this.config.leader?.id && agent.id !== this.config.review?.reviewer)
+              if (agent.id !== COORDINATOR_ID && agent.id !== this.config.review?.reviewer)
                 prompt =
                   "## Assigned responsibility\n" +
                   agentContext.agentScope +
@@ -153,7 +162,7 @@ export class AgentRunner {
                   agentContext.agentPlan +
                   "\n\n" +
                   prompt
-              if (agent.id !== this.config.leader?.id && agent.id !== this.config.review?.reviewer)
+              if (agent.id !== COORDINATOR_ID && agent.id !== this.config.review?.reviewer)
                 prompt += "\n\n" + HANDOFF_INSTRUCTION
               if (instruction) prompt += `\n\n${instruction}`
               // One row per tool call, printed once it can say what the tool was
@@ -272,7 +281,7 @@ export class AgentRunner {
       const handoff =
         completed.exitCode === 0 &&
         !incomplete &&
-        agent.id !== this.config.leader?.id &&
+        agent.id !== COORDINATOR_ID &&
         agent.id !== this.config.review?.reviewer
           ? parseHandoff(output)
           : undefined

@@ -28,7 +28,7 @@ function rightColumn(agent: AgentView, now: number): { text: string; color?: str
   return { text: "—" }
 }
 
-function TeamRow({
+export function TeamRow({
   agent,
   focused,
   now,

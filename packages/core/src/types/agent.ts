@@ -82,6 +82,7 @@ export type AgentStatus =
   | "skipped"
 
 export interface AgentResult {
+  revision?: number
   handoffReason?: string
   agentId: string
   agentName: string

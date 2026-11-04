@@ -9,6 +9,7 @@ import { assertRuntimesAvailable, type MultiClawConfig } from "./lib"
 function acpConfig(commands: (string | undefined)[]): MultiClawConfig {
   return {
     name: "t",
+    defaults: { command: commands[0] },
     workDir: "/tmp/work",
     agents: commands.map((command, i) => ({
       id: `a${i}`,
@@ -100,18 +101,13 @@ describe("assertRuntimesAvailable", () => {
     }
   })
 
-  it("checks the active leader, but ignores a disabled leader", async () => {
+  it("checks the permanent coordinator even when the team is empty", async () => {
     const exit = spyOnExit()
     vi.spyOn(console, "error").mockImplementation(() => {})
-    const config = acpConfig([])
-    config.leader = {
-      ...acpConfig([undefined]).agents[0],
-      runtime: "missing-leader-runtime",
-    }
-    await expect(assertRuntimesAvailable(config)).rejects.toThrow()
+    process.env.PATH = "/missing-coordinator"
+    await expect(assertRuntimesAvailable(acpConfig([]))).rejects.toThrow()
     expect(exit).toHaveBeenCalledWith(1)
-    expect(stderr()).toContain('Unknown runtime "missing-leader-runtime"')
-    await assertRuntimesAvailable({ ...config, useLeader: false })
+    expect(stderr()).toContain('Command "opencode"')
   })
 
   it("rejects an unknown runtime by name", async () => {
@@ -153,6 +149,7 @@ describe("assertRuntimesAvailable", () => {
     try {
       await assertRuntimesAvailable({
         name: "t",
+        defaults: { provider: "claude" },
         workDir: "/tmp/work",
         agents: [
           {
