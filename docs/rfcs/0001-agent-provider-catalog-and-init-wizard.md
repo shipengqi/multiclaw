@@ -1,5 +1,7 @@
 # RFC 0001 — Agent Provider 目录、本机探测与 init 向导重构
 
+> 历史设计记录：主聊天重构已将 leader 改为内置协调者，移除 leader/useLeader/--no-leader；当前交互和生命周期以 README.zh-CN.md 与 dashboard README 为准。
+
 > 状态：**待评审**（Draft）  
 > 日期：2026-10-11  
 > 覆盖需求：① Cursor/ACP ② 本机 agent 自动感知 ③ init 询问 model ④ runtime/agent 概念拆分 ⑤ `--no-leader` 重新定位

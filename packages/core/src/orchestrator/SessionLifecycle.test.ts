@@ -5,13 +5,16 @@ import { afterEach, expect, it, vi } from "vitest"
 import { EventBus } from "../event/EventBus"
 import { runtimeRegistry } from "../runtime"
 import { fakeRuntime, makeAgent, makeSessionRecord } from "../testing/helpers"
+import {
+  type TestConfig as MultiClawConfig,
+  TestOrchestrator as Orchestrator,
+} from "../testing/orchestration"
 import type { AgentTask, RuntimeSession, RuntimeSessionOptions } from "../types/runtime"
 import type { SessionEvent, SessionRecord } from "../types/session"
 import { sessionCompatibilityKey } from "../utils/session"
 import { AgentRunner } from "./AgentRunner"
 import { AgentSessionManager } from "./AgentSessionManager"
 import { ContextManager } from "./ContextManager"
-import { Orchestrator } from "./Orchestrator"
 
 const task = (changes: Partial<AgentTask> = {}): AgentTask => ({
   agentId: "dev",

@@ -15,7 +15,7 @@ function config(preset = "backend"): string {
 
 describe("generateConfig", () => {
   it("writes a leader with no per-agent overrides", () => {
-    expect(config()).toContain("leader: agents.leader(),")
+    expect(config()).not.toContain("leader:")
   })
 
   it("keeps PRESET_AGENT_IDS in step with the generated blocks", () => {

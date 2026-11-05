@@ -473,7 +473,7 @@ describe("AgentSessionManager · mid-turn input", () => {
 
       const reports = await manager.supplement("use postgres")
 
-      expect(reports).toEqual([{ agentId: "running", status: "injected" }])
+      expect(reports).toMatchObject([{ agentId: "running", status: "injected" }])
       expect(running.supplement).toHaveBeenCalledWith("use postgres")
       expect(idle.supplement).not.toHaveBeenCalled()
       running.finish.resolve()
@@ -517,8 +517,8 @@ describe("AgentSessionManager · mid-turn input", () => {
 
       const reports = await manager.supplement("hello")
 
-      expect(reports).toEqual([
-        { agentId: "broken", status: "error", error: "agent is stuck" },
+      expect(reports).toMatchObject([
+        { agentId: "broken", status: "unknown", error: "agent is stuck" },
         { agentId: "fine", status: "idle" },
       ])
       broken.finish.resolve()

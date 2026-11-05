@@ -158,7 +158,7 @@ describe("HintBar", () => {
 describe("PipelineRail", () => {
   it("draws the leader, then each stage in order, joined by a flow marker", async () => {
     const frame = stripAnsi(await renderFrame(<PipelineRail turn={midRun()} spinner="⠋" />))
-    expect(frame).toContain("Leader")
+    expect(frame).not.toContain("Leader")
     expect(frame).toContain("①")
     expect(frame).toContain("Architect")
     expect(frame).toContain("②")
@@ -235,7 +235,7 @@ describe("PipelineRail", () => {
   })
 
   it("renders nothing when there is no pipeline to draw", async () => {
-    const empty = createInitialState({ ...DEMO, leader: undefined, agents: [] })
+    const empty = createInitialState({ ...DEMO, agents: [] })
     expect(stripAnsi(await renderFrame(<PipelineRail turn={empty} spinner="⠋" />)).trim()).toBe("")
   })
 })
@@ -472,7 +472,6 @@ describe("WelcomePanel", () => {
   /** A team declared the way the built-in presets do: a role, but no task yet. */
   const withRoles: MultiClawConfig = {
     ...DEMO,
-    leader: undefined,
     agents: [
       {
         id: "a",
@@ -495,7 +494,7 @@ describe("WelcomePanel", () => {
     const frame = await view(DEMO)
     expect(frame).toContain("◆ multiclaw")
     expect(frame).toContain("A team of agents, one prompt away.")
-    expect(frame).toContain("plans the pipeline")
+    expect(frame).not.toContain("plans the pipeline")
     expect(frame).toContain("designs the solution")
     expect(frame).toContain("writes the code")
   })
@@ -513,7 +512,6 @@ describe("WelcomePanel", () => {
   it("copes with a team that has no task titles", async () => {
     const bare: MultiClawConfig = {
       ...DEMO,
-      leader: undefined,
       agents: [{ id: "a", name: "Alpha", systemPrompt: "", taskPrompt: "" }],
     }
     expect(await view(bare)).toContain("Alpha")
@@ -531,7 +529,6 @@ describe("WelcomePanel", () => {
   it("prefers the assigned task title over the static role", async () => {
     const frame = await view({
       ...DEMO,
-      leader: undefined,
       agents: [
         {
           id: "a",
@@ -552,13 +549,13 @@ describe("WelcomePanel", () => {
   it("points a caret at the focused agent, and only at that one", async () => {
     const frame = await view(DEMO)
     expect(frame.split("›").length - 1).toBe(1)
-    expect(frame).toContain("› ◆ Leader")
+    expect(frame).toContain("› ◇ Architect")
   })
 
   it("moves the caret when the focus moves", async () => {
     const state = tuiReducer(createInitialState(DEMO), { type: "focus:cycle", delta: 1 })
     const frame = stripAnsi(await renderFrame(<WelcomePanel turn={state} width={80} />))
-    expect(frame).toContain("› ◇ Architect")
+    expect(frame).toContain("› ◇ Developer")
     expect(frame).not.toContain("› ◆ Leader")
   })
 
@@ -566,7 +563,6 @@ describe("WelcomePanel", () => {
     const frame = await view(
       {
         ...DEMO,
-        leader: undefined,
         agents: [
           {
             id: "a",
@@ -724,7 +720,7 @@ describe("CommandMenu", () => {
       await renderFrame(<CommandMenu rows={paletteRows(COMMANDS)} selected={0} />)
     )
     expect(frame).toContain("/new")
-    expect(frame).toContain("Start an empty session")
+    expect(frame).toContain("Start an empty chat")
   })
 
   it("shows an argument hint where a command takes one", async () => {
@@ -745,7 +741,7 @@ describe("CommandMenu", () => {
 
   it("marks the highlighted row and only that row", async () => {
     const frame = stripAnsi(
-      await renderFrame(<CommandMenu rows={paletteRows(COMMANDS)} selected={2} />)
+      await renderFrame(<CommandMenu rows={paletteRows(COMMANDS)} selected={1} />)
     )
     expect(frame).toContain("› /focus")
     expect(frame).not.toContain("› /new")

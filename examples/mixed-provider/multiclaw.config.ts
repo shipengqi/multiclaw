@@ -17,7 +17,6 @@ export default defineConfig({
     provider: "opencode",
     model: "opencode/big-pickle",
   },
-  leader: agents.leader({ provider: "claude", model: "haiku" }),
   agents: [
     // Architecture on Claude Opus for higher-quality design.
     agents.architect({ provider: "claude", model: "opus" }),

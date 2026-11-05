@@ -22,7 +22,7 @@ describe("availableCommands", () => {
 
   it("always offers the rest", () => {
     const idle = availableCommands(false).map((c) => c.name)
-    for (const name of ["sessions", "focus", "latest", "verbose", "mode", "verbose"]) {
+    for (const name of ["new", "focus", "latest", "verbose", "mode", "verbose"]) {
       expect(idle).toContain(name)
     }
   })
@@ -126,6 +126,20 @@ describe("matchCommands", () => {
 })
 
 describe("isCommandLine", () => {
+  it.each([
+    "/Users/test/截图.png",
+    "/tmp/photo.png explain this",
+    "/image.png",
+    "/Users/test/Application\\ Support/image.png",
+  ])("does not treat a path as a command: %s", (input) => {
+    expect(isCommandLine(input)).toBe(false)
+    expect(parseCommand(input)).toBeUndefined()
+    expect(menuQuery(input)).toBeUndefined()
+  })
+  it("keeps unknown command errors and command path arguments", () => {
+    expect(parseCommand("/nope")).toEqual({ name: "nope", args: [] })
+    expect(parseCommand("/export /tmp/chat.md")).toEqual({ name: "export", args: ["/tmp/chat.md"] })
+  })
   it("is true only for a leading slash", () => {
     expect(isCommandLine("/sessions")).toBe(true)
     expect(isCommandLine(" /sessions")).toBe(false)
@@ -195,11 +209,9 @@ describe("COMMANDS", () => {
     expect(availableCommands(true).map((c) => c.name)).toContain("edit")
   })
 
-  it.each(["new", "sessions"])("offers /%s only while idle", (name) => {
-    expect(availableCommands(false).map((c) => c.name)).toContain(name)
-    expect(availableCommands(true).map((c) => c.name)).not.toContain(name)
-    expect(canRun(name, true)).toBe(false)
-    expect(unavailableReason(name, true)).toBe(`/${name} waits for the current turn to finish`)
+  it("offers new chat while running and removes the sessions command", () => {
+    expect(availableCommands(true).map((c) => c.name)).toContain("new")
+    expect(COMMANDS.some((c) => c.name === "sessions")).toBe(false)
   })
 
   it("offers /continue in both phases for checkpoints and queue resume", () => {
@@ -279,8 +291,8 @@ describe("paletteRows", () => {
   })
 
   it("keeps each command's description", () => {
-    expect(paletteRows(COMMANDS).find((row) => row.key === "sessions")?.description).toBe(
-      "Switch or delete saved sessions"
+    expect(paletteRows(COMMANDS).find((row) => row.key === "new")?.description).toBe(
+      "Start an empty chat"
     )
   })
 })

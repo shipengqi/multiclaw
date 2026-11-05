@@ -1,4 +1,5 @@
 import {
+  coordinatorAgent,
   type DetectedProvider,
   detectProviders,
   type ModelSelectionMode,
@@ -69,7 +70,7 @@ export function buildDoctorReport(
     const defaultsProviderOk = !defaultsProvider || present.includes(defaultsProvider)
 
     const agents = [...config.agents]
-    if (config.leader && config.useLeader !== false) agents.push(config.leader)
+    agents.push(coordinatorAgent())
     const agentsWithMissingProvider = agents
       .map((a) => ({ id: a.id, intended: resolveProvider(a, config) }))
       .filter((a) => !present.includes(a.intended))

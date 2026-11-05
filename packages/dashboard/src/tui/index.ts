@@ -1,4 +1,4 @@
-import { AgentSessionManager, type EventBus, type MultiClawConfig } from "@multiclawcli/core"
+import type { EventBus, MultiClawConfig } from "@multiclawcli/core"
 import { render } from "ink"
 import { createElement } from "react"
 import { App, type InitialSession } from "./App"
@@ -11,7 +11,7 @@ export interface TuiOptions {
   config: MultiClawConfig
   /** Attach per-turn reporters (e.g. a file log writer) here. */
   onTurnStart?: (eventBus: EventBus, logDir: string) => void | (() => void | Promise<void>)
-  /** How to choose the session on launch; defaults to continuing the latest. */
+  /** How to choose the session on launch; defaults to an unsaved blank chat. */
   initialSession?: InitialSession
 }
 
@@ -33,7 +33,6 @@ export async function startTui(options: TuiOptions): Promise<void> {
   process.stdout.write("\x1b[?1049h\x1b[?25l")
   process.on("exit", restore)
 
-  const sessions = new AgentSessionManager()
   let cleanup: (() => Promise<void>) | undefined
   const onCleanupReady = (callback: () => Promise<void>) => {
     cleanup = callback
@@ -44,7 +43,6 @@ export async function startTui(options: TuiOptions): Promise<void> {
         config: options.config,
         onTurnStart: options.onTurnStart,
         initialSession: options.initialSession,
-        sessions,
         onCleanupReady,
       }),
       { exitOnCtrlC: false }
@@ -53,10 +51,12 @@ export async function startTui(options: TuiOptions): Promise<void> {
   } finally {
     try {
       if (cleanup) await cleanup()
-      else await sessions.close()
     } finally {
       process.off("exit", restore)
       restore()
     }
   }
 }
+
+export type { ChatInteraction, ChatMessage, ChatSession } from "./chat-session"
+export { CHAT_VERSION, SessionRuntime } from "./chat-session"

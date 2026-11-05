@@ -13,7 +13,6 @@ export default defineConfig({
     provider: "claude",
     model: "sonnet",
   },
-  leader: agents.leader({ model: "haiku" }),
   agents: [
     agents.architect({ model: "haiku" }),
     agents.backendDeveloper({ model: "haiku", dependsOn: ["architect"] }),

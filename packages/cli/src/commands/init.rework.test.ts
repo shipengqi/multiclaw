@@ -11,7 +11,8 @@ import { resumeOptionsFromReport } from "./resume"
 describe("generated fullstack rework chain", () => {
   it("loads the generated config, repairs real workspace artifacts, executes retests and resumes gates", async () => {
     const dir = mkdtempSync(join(tmpdir(), "multiclaw-rework-"))
-    const name = "generated-rework-runtime"
+    const name = "acp"
+    const original = runtimeRegistry.get(name)
     const calls: string[] = []
     const counts = new Map<string, number>()
     let selected: string[] = []
@@ -33,10 +34,12 @@ describe("generated fullstack rework chain", () => {
         },
       }),
       execute: async (task) => {
+        if (task.agentId === "__coordinator" && task.prompt.includes("Phase: summary"))
+          return { exitCode: 0, output: "Verified delivery" }
         calls.push(task.agentId)
         const count = (counts.get(task.agentId) ?? 0) + 1
         counts.set(task.agentId, count)
-        if (task.agentId === "leader")
+        if (task.agentId === "__coordinator" && !task.prompt.includes("Phase: summary"))
           return { exitCode: 0, output: JSON.stringify({ mode: "run", run: selected }) }
         if (task.agentId === "backend-developer") {
           writeFileSync(join(dir, "backend.json"), JSON.stringify({ revision: count }))
@@ -99,9 +102,7 @@ describe("generated fullstack rework chain", () => {
       )
       const config = await loadConfig(configPath, "Deliver verified backend and frontend artifacts")
       config.defaults = undefined
-      const leader = config.leader
-      if (!leader) throw new Error("Generated config must include a leader")
-      for (const agent of [...config.agents, leader]) {
+      for (const agent of config.agents) {
         agent.runtime = name
         agent.models = undefined
         agent.modelTier = undefined
@@ -127,6 +128,7 @@ describe("generated fullstack rework chain", () => {
       for (const gate of config.reviewGates ?? [])
         expect(restored.resume.agents).toContain(gate.reviewer)
     } finally {
+      runtimeRegistry.register(original)
       rmSync(dir, { recursive: true, force: true })
     }
   })

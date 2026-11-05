@@ -51,7 +51,6 @@ function config(patch: Partial<MultiClawConfig> = {}): MultiClawConfig {
   return {
     name: "demo",
     workDir: "/tmp/demo",
-    leader: agent("leader"),
     agents: [agent("architect"), agent("dev")],
     ...patch,
   }
@@ -525,12 +524,12 @@ describe("tuiReducer", () => {
     expect(state.startedAt).toBe(T0)
     // The roster is present from the first render of the turn, not empty until
     // the orchestrator gets around to announcing it.
-    expect(Object.keys(state.agents)).toEqual(["leader", "architect", "dev"])
-    expect(state.agents.leader.status).toBe("pending")
+    expect(Object.keys(state.agents)).toEqual(["architect", "dev"])
+    expect(state.agents.architect.status).toBe("pending")
     expect(state.stages).toEqual([])
     expect(state.autoFollow).toBe(true)
     expect(state.name).toBe("demo")
-    expect(state.leaderIds).toEqual(["leader"])
+    expect(state.leaderIds).toEqual([])
   })
 
   it("cycles focus forward and turns off auto-follow", () => {
@@ -608,13 +607,13 @@ describe("turn history", () => {
     // Still live, so there is nothing to remember yet.
     expect(first.history).toEqual([])
 
-    const second = start(reduceEvent(first, output("leader", "work")), "second")
+    const second = start(reduceEvent(first, output("architect", "work")), "second")
 
     expect(second.history).toHaveLength(1)
     expect(second.history[0].turn).toBe(1)
     expect(second.history[0].requirement).toBe("first")
     // The logs go with it — a history entry you cannot read is not history.
-    expect(second.history[0].agents.leader.logs).toEqual([{ kind: "text", text: "work" }])
+    expect(second.history[0].agents.architect.logs).toEqual([{ kind: "text", text: "work" }])
   })
 
   it("does not record the seeded roster as a turn nobody asked for", () => {
@@ -804,7 +803,7 @@ describe("stageStatus", () => {
 describe("seedAgents", () => {
   it("lists the whole team before the first run, leader first", () => {
     const agents = seedAgents(config())
-    expect(Object.keys(agents)).toEqual(["leader", "architect", "dev"])
+    expect(Object.keys(agents)).toEqual(["architect", "dev"])
     expect(agents.architect.status).toBe("pending")
     expect(agents.architect.logs).toEqual([])
   })
@@ -820,11 +819,11 @@ describe("seedAgents", () => {
   })
 
   it("omits the leader when useLeader is false", () => {
-    expect(Object.keys(seedAgents(config({ useLeader: false })))).toEqual(["architect", "dev"])
+    expect(Object.keys(seedAgents(config({})))).toEqual(["architect", "dev"])
   })
 
   it("works without a leader", () => {
-    expect(Object.keys(seedAgents(config({ leader: undefined })))).toEqual(["architect", "dev"])
+    expect(Object.keys(seedAgents(config({})))).toEqual(["architect", "dev"])
   })
 
   it("returns a fresh roster each call so turns never share mutable state", () => {
@@ -895,12 +894,12 @@ describe("orchestration:stages", () => {
 
 describe("leaderAgentIds", () => {
   it("names the configured leader", () => {
-    expect(leaderAgentIds(config())).toEqual(["leader"])
+    expect(leaderAgentIds(config())).toEqual([])
   })
 
   it("is empty when the leader is disabled or absent", () => {
-    expect(leaderAgentIds(config({ useLeader: false }))).toEqual([])
-    expect(leaderAgentIds(config({ leader: undefined }))).toEqual([])
+    expect(leaderAgentIds(config({}))).toEqual([])
+    expect(leaderAgentIds(config({}))).toEqual([])
   })
 })
 
@@ -910,14 +909,14 @@ describe("createInitialState", () => {
     expect(state.phase).toBe("idle")
     expect(state.name).toBe("demo")
     expect(state.turn).toBe(0)
-    expect(Object.keys(state.agents)).toEqual(["leader", "architect", "dev"])
+    expect(Object.keys(state.agents)).toEqual(["architect", "dev"])
     // Focus starts on the first agent so the log pane is not blank on open.
-    expect(state.focusId).toBe("leader")
-    expect(state.leaderIds).toEqual(["leader"])
+    expect(state.focusId).toBe("architect")
+    expect(state.leaderIds).toEqual([])
   })
 
   it("leaves focus unset when there is no team at all", () => {
-    const state = createInitialState(config({ leader: undefined, agents: [] }))
+    const state = createInitialState(config({ agents: [] }))
     expect(state.agents).toEqual({})
     expect(state.focusId).toBeUndefined()
   })
@@ -1418,6 +1417,7 @@ describe("conversationTurns", () => {
   function completed(patch: Partial<TuiState> = {}): TuiState {
     return {
       ...createInitialState(config()),
+      leaderIds: ["leader"],
       phase: "complete",
       turn: 1,
       requirement: "build it",
@@ -2056,7 +2056,7 @@ describe("session:reset and session:load", () => {
     expect(next.history).toEqual([])
     expect(next.requirement).toBeUndefined()
     expect(next.verbose).toBe(true)
-    expect(Object.keys(next.agents)).toEqual(["leader", "architect", "dev"])
+    expect(Object.keys(next.agents)).toEqual(["architect", "dev"])
   })
 
   it("session:load seeds the history and continues the turn counter from it", () => {

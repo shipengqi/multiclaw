@@ -13,6 +13,17 @@ export interface StageInfo {
 }
 
 export type MultiClawEvent =
+  | {
+      type: "coordinator:phase"
+      timestamp: string
+      payload: { phase: "routing" | "chat" | "summary" | "idle" }
+    }
+  | {
+      type: "coordinator:message"
+      timestamp: string
+      payload: { message: string; mode: "reply" | "ask" | "summary" }
+    }
+  | { type: "work:supplement"; timestamp: string; payload: import("./coordination").WorkSupplement }
   | { type: "agent:session"; timestamp: string; payload: import("./session").SessionEvent }
   | {
       type: "orchestration:route"

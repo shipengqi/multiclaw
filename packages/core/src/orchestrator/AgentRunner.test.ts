@@ -464,7 +464,7 @@ describe("AgentRunner.run", () => {
     }
   )
 
-  it("preserves leader prompts identified by configured id", async () => {
+  it("preserves the fixed coordinator prompt", async () => {
     let seen: AgentTask | undefined
     handler = async (task) => {
       seen = task
@@ -476,7 +476,7 @@ describe("AgentRunner.run", () => {
       runtime: RUNTIME,
       taskPrompt: "Exact leader JSON prompt",
     })
-    await makeRunner({ leader: agent }).run(agent)
+    await makeRunner().run({ ...agent, id: "__coordinator" })
     expect(seen?.prompt).toBe("Exact leader JSON prompt")
   })
 

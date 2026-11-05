@@ -6,6 +6,8 @@ export function isWorkContext(value: unknown): value is WorkContext {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false
   const work = value as Record<string, unknown>
   if (
+    (work.revision !== undefined &&
+      (!Number.isInteger(work.revision) || Number(work.revision) < 1)) ||
     typeof work.id !== "string" ||
     !work.id.trim() ||
     typeof work.originalRequirement !== "string" ||

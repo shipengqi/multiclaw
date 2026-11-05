@@ -80,13 +80,12 @@ Runs the orchestration defined in your config file.
 | Option | Description |
 |--------|-------------|
 | `--config <path>` | Path to config file. Auto-discovers `multiclaw.config.ts` if omitted. |
-| `--no-leader` | (Batch mode only) Skip the leader and run the full configured team. Has no effect in the interactive console — the leader is always used there. |
 | `--dry-run` | Preview the routed plan without running the pipeline. |
 | `--resume [path]` | Resume a previous run, continuing agent sessions. Defaults to the latest run. |
 
 The `<requirement>` string is injected into every agent's prompt as `{{requirement}}`.
 
-Each run creates an isolated timestamped subdirectory inside `workDir` (e.g. `workspace/.multiclaw/runs/run-2026-10-08T12-00-00`), so a one-shot run can never collide with anything else on disk. The interactive console is deliberately different — see [Workspace](#workspace).
+Each run creates an isolated timestamped subdirectory inside `workDir` (e.g. `workspace/.multiclaw/runs/run-2026-10-08T12-00-00-<execution-id>`), so a one-shot run can never collide with anything else on disk. The interactive console uses the shared project directory — see [Interactive console](#interactive-console).
 
 ### `multiclaw upgrade`
 
@@ -104,14 +103,6 @@ Interactively clean up saved sessions and old run directories.
 | `--dry-run` | Show what would be deleted without deleting |
 | `--yes` | Skip the confirmation prompt |
 
-### `multiclaw sessions`
-
-Manage saved console sessions.
-
-```bash
-multiclaw sessions ls                 # List saved sessions, newest first
-multiclaw sessions rm <id>            # Delete a session by id (or unique prefix)
-```
 
 ## Providers, models & tiers
 
@@ -143,9 +134,6 @@ export default defineConfig({
     projectName: "My App",
   },
 
-  // Optional: runs before the main pipeline to decide which agents are needed.
-  // The leader reads the requirement and the codebase, then outputs the agent IDs to run.
-  leader: agents.leader(),
 
   logDir: "./logs",         // optional; default: workDir/.multiclaw/logs
   continueOnError: false,   // optional; keep running if an agent fails
@@ -193,8 +181,6 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
 | `name` | string | ✓ | Project name, shown in the console header. |
 | `workDir` | string | ✓ | Base directory where agents read and write files. Every console turn shares it. |
 | `agents` | AgentDefinition[] | ✓ | The agent pipeline (see Agent fields below). |
-| `leader` | AgentDefinition | | Optional routing agent (see [Leader](#leader)). |
-| `useLeader` | boolean | | Enable or disable the leader agent. Default: `true` when leader is configured. |
 | `defaults` | object | | Project-wide `{ provider?, model?, command?, permissions? }` applied to every agent that does not override them. Keeps generated configs short. |
 | `context` | Record<string, string> | | Variables available as `{{key}}` in every prompt. `requirement` is injected automatically. |
 | `logDir` | string | | Log output directory. Default: `workDir/.multiclaw/logs`. |
@@ -258,317 +244,60 @@ Stage 4:  code-reviewer      │  devops            ← parallel
 
 ## Interactive console
 
-`multiclaw` with no subcommand opens a full-screen terminal console. It is a **turn-based
-conductor loop**, not a chat: each turn you type is one complete orchestration run of the whole
-pipeline, and the console stays open so you can run the next one.
+Run multiclaw to open the Ink terminal UI. It opens a blank chat with sessions on the left; the first message creates the session. --resume <id> opens a specific chat, and --resume focuses the list. Missing IDs are errors.
 
-```
-◆ multiclaw · dev-team                                          turn 2 · 00:12
-────────────────────────────────────────────────────────────────────────────
-✓ ◆ Leader  ──▸ ① ⠹ ◇ Architect  ──▸ ② ○ ◇ Developer  ──▸ ③ ○ ◇ Reviewer
-
-TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s ▼
-  ✓ ◆ Leader       3.1s │ Read packages/core/src/orchestrator/…
-› ⠹ ◇ Architect    4.2s │ Grep "withTimeout" in packages/core/src
-  ○ ◇ Developer       — │ Edit utils/timeout.ts — abort-safe
-  ○ ◇ Reviewer        — │ Bash pnpm -r test
-
-» also add tests
-› type to queue a follow-up…
-⠹ running 4.2s · 1/4 agents · 1 queued          enter queues · ctrl+c cancel
-```
-
-| Region | Shows |
-|--------|-------|
-| Header | Project name, turn number, and the phase or elapsed time |
-| Pipeline rail | The leader, then each stage in order, joined by `──▸` |
-| Team panel | One row per agent: status glyph, name, live time, and progress (`1/4`) |
-| Stream panel | The focused agent's output across every turn of this session, with a `▼` live / `⏸` parked marker |
-| Reply panel | What the leader answered, when a turn needed no pipeline |
-| Queue strip | Follow-ups typed mid-run, in the order they will run |
-| Prompt | Where you type — live even while a turn is running |
-| Hint bar | Aggregate status on the left, the keys that work *right now* on the right |
-
-Status glyphs: `○` queued · `◐` running (a spinner while live) · `↻` retrying · `✓` done ·
-`✗` failed · `⊘` skipped.
-
-**First run.** Before the first turn the body shows the team from your config — each agent with the
-`description` of what it is for — rather than an empty pane. `tab` moves the `›` caret down the list;
-once a turn is running the caret follows whichever agent is speaking.
-
-**Not every turn needs the team.** The leader decides that first. Ask it a question, or say hello,
-and it answers in prose: the body swaps to the reply, the footer reads `✓ answered`, and no agent
-runs. When the request is a real task but too vague to plan, the leader asks instead — the footer
-reads `? needs your input` and your next line is the answer.
-
-Copy an image, then press `Ctrl+V` in the conversation prompt to attach it. You can send images
-with text or on their own; `Alt+Backspace` removes the last attachment and `Esc` clears the draft.
-Messages support up to five images, each up to 10 MiB (PNG, JPEG, GIF or WebP). Attachments are
-saved under `.multiclaw/attachments/` and survive queued messages and retries. The agent must
-advertise ACP image support. macOS and Windows use their system clipboard; Linux needs
-`wl-clipboard` (Wayland) or `xclip` (X11). Terminal paste shortcuts such as `Cmd+V` usually only
-forward text; use `Ctrl+V` for clipboard images.
-
-### Keys
-
-The prompt always holds focus, so exactly two keys are reserved: `?` and `/`, and only while the
-line is empty *and* the console is idle. Everything else is a named key or an ordinary character,
-which is what keeps typing a requirement from tripping over shortcuts.
+The central chat always talks to the permanent coordinator. The team panel is hidden by default; viewing an agent never changes the main input recipient. Narrow terminals use temporary session and team viewers.
 
 | Key | Action |
-|-----|--------|
-| `enter` | Run the typed requirement — or queue it while a turn is running |
-| `tab` | Cycle the focused agent |
-| `shift+tab` | Toggle the permission mode (`auto` ↔ `ask`) |
-| `↑` `↓` `pgup` `pgdn` | Scroll the focused agent's stream |
-| `←` `→` `home` `end` | Move the caret |
-| `esc` | Clear the line, or close an overlay |
-| `?` | Key map (idle, empty line only) |
-| `/` | Command menu (empty line only) |
-| `ctrl+l` | Clear the focused agent's output for the current turn |
-| `ctrl+v` | Paste an image or text from the system clipboard |
-| `alt+backspace` | Remove the last attached image |
-| `ctrl+c` | Cancel the running turn *and its queue*; again when idle to quit |
+| --- | --- |
+| Ctrl+B | Focus sessions; arrows select, Enter opens |
+| Ctrl+T | Open/focus team; arrows select an agent |
+| Ctrl+G | Focus the current permission, question or checkpoint |
+| Esc | Return to chat without answering a request |
+| Shift+Tab | Cycle this chat's permission mode |
+| Ctrl+C | Cancel the current chat's work |
+| Ctrl+D | Stop all work, save and exit |
+| Ctrl+V | Paste clipboard text or an image |
+| Alt+Backspace | Remove the last attached image |
+| Up/Down, PageUp/PageDown | Scroll focused output |
+| ? on an empty input | Help |
 
-Scrolling up parks the stream and scrolling back to the bottom resumes it, so there is no follow
-toggle to remember. While a turn runs the pane follows whichever agent starts next, until you cycle
-the focus by hand.
+Pasting or dropping an absolute PNG, JPEG, GIF or WebP path attaches the image, including quoted paths and escaped spaces. The prompt shows an attachment count; type your message and press Enter, or send the image alone. Image paths are never slash commands. Attachments stay with their chat draft when switching sessions.
 
-**Typing while the team works.** The prompt stays live. Anything you submit mid-run joins the queue
-strip above it and starts as the next turn the moment the console goes idle — so a thought you have
-while watching the output is never lost. Cancelling drops the queue with the turn, since "cancel"
-should mean stop.
+During execution the coordinator answers progress questions and directs additional requirements to individual agents. Independent new work is queued. Explicit replacement stops current work before dispatching its replacement; ambiguous instructions trigger clarification.
 
-**Steering the turn that is running.** A queued follow-up waits for the current turn to end.
-`/steer <text>` does the opposite: it delivers the message *into* the agents that are inside a turn
-right now, which is how you correct course without throwing the run away. The agents it reached get a
-`[steer] …` marker in their stream, so the log shows what you said and when.
+Dependencies still govern execution. Supplements update the requirement revision; affected implementation, downstream tests and reviews are reworked before completion. Providers without live injection receive supplements after the current call. Delivered does not mean implemented. Unknown delivery is retained and never automatically replayed.
 
-It is timing-dependent by nature — an agent that has not started yet will not see the message — and
-the console is explicit about the outcome instead of guessing:
-
-- Reached at least one running agent: the notice names them, and any agent that was between turns is
-  named as such.
-- Nobody was mid-turn, or the provider's bridge does not support mid-turn input: the text becomes a
-  queued follow-up and the notice says the timing changed. It is never silently dropped, and it never
-  makes an idle session start a turn of its own.
-- While no turn is running there is nothing to steer into, so `/steer` is refused and points at
-  ordinary input instead.
-
-Delivery is not the same as obedience, and response timing is not guaranteed. In our counting
-probes, Claude bridges 0.89.1 and 0.95.0 and Codex bridge 2.5.0 stopped counting before the original
-target and answered the new instruction; Codex bridge 2.2.2 reached the target first. These are
-version-specific observations, not a guarantee for other tasks or versions. The marker says the
-message landed, not that the agent has already acted on it.
-
-Cancelling aborts the in-flight agents and their child processes rather than leaving them running in
-the background.
-
-### Commands
-
-Type `/` on an empty line, select an operation and press Enter. Commands that need an
-agent, mode or turn open a selector; search and steering open an input field. `Esc`
-cancels the operation. The menu only offers actions relevant to the current state.
+Each chat owns its coordinator/worker bindings, queue, drafts and interactions. Switching keeps work running. Chats execute concurrently in the same workDir without file conflict arbitration; maxConcurrency applies per chat. Permissions and structured questions require explicit request controls, not ordinary replies. Background requests mark their original session as needing input.
 
 | Command | Action |
-|---------|--------|
-| `/new` | Open an empty new session; type the requirement afterwards (idle only) |
-| `/sessions` | Select, switch or delete a saved session (idle only) |
-| `/focus` | Select the agent to view |
-| `/mode` | Select `ask`, `auto` or `deny` |
-| `/verbose` | Toggle tool detail |
-| `/search` | Enter search text; `Ctrl+N` / `Ctrl+P` move between matches |
-| `/latest` | Return to the latest output |
-| `/retry` | Select one failed/repair agent or all of them (idle only) |
-| `/replay` | Select a finished turn to run again (idle only) |
-| `/edit` | Select a finished turn and edit its requirement in the prompt |
-| `/export` | Select a finished turn to export as Markdown |
-| `/steer` | Enter a message for agents running now |
-| `/pause` | Pause a non-empty follow-up queue |
-| `/continue` | Resume a paused queue, or continue at a checkpoint |
+| --- | --- |
+| /new | Open a blank chat; other chats continue |
+| /focus [agent] | Inspect an agent in the team panel |
+| /steer <agent> <text> | Supplement a specific agent |
+| /mode auto / ask / deny | Change this chat's live permission mode |
+| /retry [agent] | Retry known work with a fixed agent set |
+| /replay [turn] | Run a recorded requirement again while idle |
+| /edit | Copy the latest requirement into the draft |
+| /search [text], /latest | Search output or return to its tail |
+| /verbose | Toggle tool details |
+| /pause, /continue | Pause or resume queued work |
+| /export [path] | Export the chat as Markdown |
 
-For direct entry, `/focus <id>`, `/mode <mode>`, `/search <text>`,
-`/retry <id>`, `/replay <turn>`, `/edit <turn>`, `/export <turn> [path]`
-and `/steer <text>` are also supported. `/new` takes no arguments.
-Editing a previous requirement does not branch the session or restore files.
+Stop running work before deleting its chat; deletion requires confirmation. Exiting waits for cleanup and saving. After interruption, runtime continuity is unknown and queued work stays paused until explicit continuation. Provider RPCs do not survive restart.
 
-Approvals and agent questions are handled in their panels. Leader clarification and
-checkpoint feedback use ordinary input. `Ctrl+L` clears the current output, `?`
-opens help, `Ctrl+C` cancels a running turn and its queue or exits when idle with
-an empty prompt, and `Ctrl+D` exits with an empty prompt (also while running).
+Journals use version 2. Older or damaged journals are unsupported and retained without overwriting. No history migration is provided. /sessions and multiclaw sessions are removed; use the sidebar or multiclaw prune.
 
-The console renders on the alternate screen buffer, so your shell scrollback is preserved.
-
-On a narrow terminal (under 72 columns) the team panel is dropped and the stream takes the full
-width; on a short one (under 16 rows) the pipeline rail goes too. The header, prompt and hint bar are
-never dropped.
-
-> **No TTY?** The console needs an interactive terminal. In CI, in a pipe, or over a non-TTY SSH
-> session it exits with a message pointing at `multiclaw run`, which runs the same pipeline headless.
-
-### Tool approvals and agent questions
-
-multiclaw has three permission modes, configured via `permissions: { mode: ... }`. The
-agent's own `permissions.mode` wins, then the project's, then `defaults.permissions`:
-
-| Mode | Behaviour |
-|------|-----------|
-| `"auto"` **(default)** | Every tool request is approved. No prompts. |
-| `"ask"` | Every tool request is escalated to a human — `permissions.onRequest`, or the console's permission bar. With nobody to answer, it is refused. |
-| `"deny"` | Every tool request is refused. |
-
-```typescript
-// multiclaw.config.ts — override the default if needed
-export default defineConfig({
-  permissions: { mode: "ask" }, // ask a person before any tool runs
-})
-```
-
-`multiclaw run` has nobody to ask, so `"ask"` without an `onRequest` handler refuses
-every tool call; it warns about this before the team starts. The console starts in
-**ask** unless the config says otherwise, and shows the active mode in the header.
-`shift+tab` toggles between `auto` and `ask` at runtime and `/mode auto|ask|deny` sets
-any of the three — a runtime choice outranks a per-agent mode, so the header always
-describes what the agents are actually doing.
-
-Switching to `auto` during a turn immediately approves pending tool permissions and
-automatically approves subsequent tools, including MCP tools. Switching back to
-`ask` restores prompts for subsequent tools; `deny` cancels pending permissions.
-Business questions and checkpoints still require their own answers.
-
-The console's permission bar shows the requesting agent, the tool input, and the
-provider's offered choices. Requests from concurrent agents are queued with unique
-aliases; normal input still queues a follow-up and never grants approval.
-
-- Use arrows or digits in the approval bar to select a provider's approve/reject option,
-  then Enter to confirm. Esc returns to typing; Esc again returns to the choices.
-- Concurrent requests are shown in order, advancing after each decision.
-- Waiting counts toward the agent's existing timeout. Cancel, quit, and session
-  cleanup release outstanding decisions; they do not leave agents waiting forever.
-- A refusal is reported on the stream as a `permission_rejected` event naming the
-  tool, with `source` saying whether the mode, a missing handler, or a person said no.
-
-Permission handlers are turn-local, not saved in reusable provider sessions.
-
-**This handles requests the provider actually sends, not every tool invocation.**
-Claude may allow reads or safe commands without asking; its permission settings
-still apply. This is neither a sandbox nor fine-grained path/command enforcement.
-An `allow_always` choice has the scope shown by the provider, not a multiclaw-wide
-approval cache and may change provider settings. `auto` selects one-time approval
-only; it never silently grants a durable permission. Denying a tool
-does not itself mean the agent turn failed: use the
-optional delivery review gate when completion must satisfy acceptance criteria.
-
-**Structured live questions** use ACP form elicitation, which the installed Claude
-bridge maps to `AskUserQuestion`. The console queues these alongside approvals:
-
-- Use Tab to move between fields, arrows/digits to select choices, Space for multi-select,
-  and the prompt to enter text. Input preserves whitespace and is validated before submission.
-- After the last field, choose **Submit answers**, **Skip question** or **Cancel request**
-  and press Enter. Skip and cancel are distinct provider actions.
-- Incomplete or invalid answers keep the form pending and identify fields needing correction.
-  Cancellation and timeout release pending questions.
-
-Core callers supply `questions.onRequest` (or `AgentTask.onQuestion`); live-session
-callers open with `questionForms: true` and provide `onQuestion` on each prompt.
-Form support is negotiated only when the caller supports it. The provider must also
-offer the tool, e.g. `"AskUserQuestion"` for Claude.
-URL elicitation, custom schema types, and arbitrary prose questions are not
-supported. Supported forms include strings, numbers, integers, booleans, and enum
-multi-selects; this is not a general JSON Schema implementation. No question
-handler means unexpected form requests are cancelled, not automatically answered.
-
-Leader clarification uses ordinary input after a completed leader ask turn; previously
-queued text is not used as the answer. At a checkpoint, type feedback directly or use
-`/continue` to proceed; Ctrl+C cancels the run. Queue pause/resume does not pause
-an active agent. `/new` closes the current agents and opens an empty session.
-
-### Workspace
-
-The console is iterative, so every turn runs against the **same** `workDir`. A follow-up like "now
-add tests for that" sees the files the previous turn wrote — and `task-plan.json` is cleared at the
-start of each turn so a plan left over from an earlier requirement can never be re-applied.
-
-Only the logs are per-run: each turn writes `workDir/.multiclaw/runs/run-<timestamp>/logs/`, the same
-shape `multiclaw run` produces. The run directory is a record of what happened, not where the work
-happens.
-
-Runtime storage automatically gets a `.multiclaw/.gitignore` containing `*`, so Git
-ignores generated runtime files. Missing ignore files in existing directories are
-added on startup; existing rules are preserved.
-
-### History
-
-Finished turns are written to `workDir/.multiclaw/sessions/<id>/turns.jsonl`, one line per turn, so
-closing the console and reopening it restores the session — and the turn numbering carries on from
-where it left off rather than restarting at one.
-
-Switching to a session via `/sessions` restores its history into the stream. The stream panel
-shows the focused agent's whole session — every turn it took part in, oldest first, separated by
-dim `──── turn N · <requirement> ────` rows — and scrolling up walks back through it. There is no
-separate "open a past turn" mode: the team panel and pipeline rail stay on the live turn, so the
-orchestration context does not move while you read.
-
-The console keeps the last 20 finished turns per session.
-
-The next leader turn also receives compact execution facts from completed pipeline
-turns: completed agents, failures and their reasons, and acceptance status separately.
-Successful execution is not the same as approved delivery. Interrupted turns remain
-interrupted; cancelled turns are excluded from dialogue context. Older records without
-enough facts are not relabeled as successful. This uses no additional model call and
-stays within the existing six-turn / 4,000-character conversation budget. A follow-up
-such as “continue” does not implicitly approve tools or automatically retry failures.
-
-### Sessions
-
-A **session** is one continuous line of work — a sequence of turns sharing the same team. It is the
-unit the console saves, resumes and deletes, the way Claude Code and Codex do. Each session lives in
-its own `workDir/.multiclaw/sessions/<id>/` directory, and a small `index.json` holds the summaries
-the picker shows.
-
-- **Launch.** `multiclaw` always starts a **new** session. `multiclaw --new` is equivalent.
-  `multiclaw -r [id]` resumes a given session — or opens the picker when no id is passed, the way
-  `claude -r` does.
-- **`/sessions`** opens the picker: every session newest-first with its title (the first
-  requirement), turn count and age, the current one marked. `↑` `↓` select, `enter` switches to the
-  highlighted session — its last turn opens automatically so you can see the context, and your next
-  instruction continues its agents where they left off — `d` deletes one, and `esc` closes.
-- **`/new`** closes the current agents and opens an empty session; type the next requirement afterwards.
-
-Sessions are kept until you remove them: `d` in the picker, `multiclaw sessions rm <id>` (a full id
-or a unique prefix), or `multiclaw prune` (which also lists old run directories). `multiclaw sessions
-ls` prints them.
-
-### Restarting
-
-Closing the console politely and reopening it is the easy case: the turns are on disk, so they come
-back. A console that was killed — a crashed terminal, a reboot, `kill -9` — leaves more behind than
-that, and it is written to `workDir/.multiclaw/sessions/<id>/session.json` while the turn runs:
-
-- **The turn in flight.** Agent processes die with the console and a pending approval is an RPC to
-  one of them, so the turn cannot be continued. Instead it is restored as a turn that ended
-  **interrupted**: its requirement, its roster, its pipeline and the tail of each agent's log, with
-  every agent that never reported back marked stopped. Nothing claims it succeeded.
-- **The queue.** Follow-ups you typed but never ran come back — **paused**, because running them the
-  instant the console reopens would do work you are not watching. `/continue` starts them.
-- **The session.** A restart reopens the session you were in and restores its turns; the leader is
-  handed that session's conversation, not every turn ever run in the workspace.
-- **Pending decisions.** An approval or question that was waiting is gone — the agent that asked no
-  longer exists. The console says how many were discarded instead of silently dropping them.
-
-The notice bar names all of this on the first frame, and the interrupted turn is accessible via
-`/sessions` (switching back to that session auto-opens it), so `/export` and `/replay` work on it. The one thing a restart does not do is pretend: no
-decision is answered on your behalf, and no agent is resumed from a session this process never held.
 
 ## Logs
 
-After each run, all generated files are written under `workDir/.multiclaw/runs/run-<timestamp>/` (or `logDir` if set):
+After each run, all generated files are written under `workDir/.multiclaw/runs/run-<timestamp>-<execution-id>/` (or `logDir` if set):
 
 ```
 workDir/
 └── .multiclaw/
     └── runs/
-        └── run-2026-10-08T12-00-00/
+        └── run-2026-10-08T12-00-00-<execution-id>/
             ├── <agent output files>   ← files agents write (e.g. architecture.md)
             └── logs/
                 ├── <agentId>.log      ← raw stdout per agent
@@ -592,90 +321,12 @@ Presets are pipeline templates you can pick during `multiclaw init`:
 | `frontend` | Architect → UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer | 6 |
 | `fullstack` | Product Manager → Architect → Arch Design Reviewer → Backend Developer + UI Designer → UI Design Reviewer → Frontend Developer → Tester → Code Reviewer → DevOps | 10 |
 
-## Leader
+## Built-in coordinator
 
-The `leader` field adds a routing agent that runs **before** the main pipeline. It reads the requirement and inspects the codebase, then decides what the turn actually needs:
+The coordinator permanently owns conversation, clarification, routing and summaries, outside the team. It cannot be disabled or customized. Provider, command and model come from project defaults, with normal fallback when absent.
 
-| Decision | Meaning |
-|----------|---------|
-| `run` | New work — name the minimum set of agents needed |
-| `continue` | Follow up on the supplied latest work ID — select the agents needed now |
-| `reply` | A greeting or a question it can answer on the spot; no agent runs |
-| `ask` | A real task, but too vague to plan; it asks the one question that unblocks it |
+Remove legacy leader and useLeader configuration. agents.leader() and --no-leader are no longer supported. Fixed-agent retry/resume preserves its execution set and still produces a summary. Summary failure never overwrites execution or acceptance facts.
 
-```typescript
-export default defineConfig({
-  leader: agents.leader(),
-  agents: [
-    agents.architect(),
-    agents.archDesignReviewer({ dependsOn: ["architect"] }),
-    agents.backendDeveloper({ dependsOn: ["arch-design-reviewer"] }),
-    agents.codeReviewer({ dependsOn: ["backend-developer"] }),
-  ],
-})
-```
-
-For a minor bug fix the leader might decide only `backend-developer` and `code-reviewer` are needed, skipping the design stages. For a greenfield feature it runs the full pipeline. For `hello` it answers, and nobody is spent on it.
-
-The leader is asked for a single JSON object:
-
-```json
-{"mode": "run", "run": ["backend-developer", "code-reviewer"]}
-{"mode": "continue", "workId": "latest-work-id", "run": ["backend-developer"]}
-{"mode": "reply", "message": "Hi — ask me for a change to this project."}
-{"mode": "ask", "message": "Which database should I target?"}
-```
-
-A bare `{"run": [...]}` with no mode remains compatible, as do ordinary prose replies. Unknown agents, duplicate or empty selections, malformed decisions and empty output trigger one correction retry. If routing still fails, the result reports "Routing incomplete" and no worker starts.
-
-Optional responsibility assignments use `{"agentId":"selected-id","scope":"responsibility"}`. The leader supplies the complete goal and confirmed constraints, while workers choose implementation steps. A planner is optional, including when configured but not selected. Without one, workers follow configured dependencies and investigate, plan and verify within their scope; design files are optional context for built-in prompts. Custom task prompts remain user-defined.
-
-The console offers only the latest work in its current session as a continuation target, skipping intervening replies and questions. Continuations keep that work ID and reuse compatible executor Sessions or load recorded Session IDs after restart. Failed/interrupted work requires an explicit continuation request; cancelled work is not an automatic continuation target. Work metadata establishes Session ownership. Ambiguous references ask for clarification; similar topics alone are new work.
-
-New work starts fresh executor conversations and clears the previous task plan after routing; the leader conversation and shared workspace persist. Continuations use scopes and plans bound to their recorded work. If a Session cannot be loaded, the failure is reported; a newly created Session is explicitly identified and receives recovery context. Dry-run uses the same routing validation and shows Session intent (create, reuse, attempt load or unavailable) without starting workers, resetting worker Sessions or deleting plans. Explicit /retry and CLI --resume keep their fixed agent roster.
-
-Executor results, work history and resume configuration use a single structured Session record: work/agent ownership, binding ID, provider ID, immutable-settings hash, negotiated capabilities and last observed state. Failed or cancelled turns retain reliable Session facts independently of their execution outcome. Development builds use this format directly without old-field aliases or report migration.
-
-Lifecycle events distinguish creation, reuse, requested loading, successful loading and cleanup failure. Opened IDs reach the journal before a worker finishes; restart marks process continuity unknown and verifies ownership and settings before loading. Automatic continuation starts a new Session with recovery context when settings differ or loading is unsupported; explicit resume reports the mismatch. Actual load failures stop execution. Cleanup must be acknowledged before replacing a worker Session. CLI-owned Sessions close before the final report; the interactive console keeps reusable Sessions across turns.
-
-A non-reviewer worker can end its successful final output with this standalone control marker:
-
-```text
-<multiclaw-handoff>{"reason":"specific reason and remaining work"}</multiclaw-handoff>
-```
-
-A handoff waits for the current stage to settle and stops downstream stages. With a leader, multiclaw reroutes once, excluding the agents that handed work back. A second handoff, a fixed retry/resume roster, or no leader stops with the reason. Malformed terminal markers fail the protocol; quoted examples and progress output are not handoffs. Real failure or cancellation in the same stage takes precedence. Repair handoffs share the original repair budget, and rerouted changes require fresh checkpoints and acceptance. Reports retain all attempts and costs separately from the effective final results.
-
-### Disabling the leader
-
-The leader is what lets a single typed line become "run these three agents, in this order" — or
-"just answer". In the interactive console it is indispensable, so `--no-leader` is a **batch-mode
-only** switch: it applies to `multiclaw run` and is ignored by the console (which shows a small
-`⚠ leader off` hint if you disable it in config).
-
-You can skip the leader and use the default pipeline directly in three ways:
-
-1. **CLI option** (for a single headless run):
-   ```bash
-   multiclaw run "your requirement" --no-leader
-   ```
-
-2. **Config file**:
-   ```typescript
-   export default defineConfig({
-     leader: agents.leader(),
-     useLeader: false, // disable leader (batch runs only; console still uses it)
-     agents: [...],
-   })
-   ```
-
-3. **Remove the leader from config** (always use the default pipeline):
-   ```typescript
-   export default defineConfig({
-     // leader field omitted
-     agents: [...],
-   })
-   ```
 
 ## Architect and Task Decomposition
 

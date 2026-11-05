@@ -75,13 +75,12 @@ multiclaw doctor --config ./multiclaw.config.ts       # 同时校验配置
 | 选项 | 说明 |
 |------|------|
 | `--config <path>` | 配置文件路径。省略时自动查找 `multiclaw.config.ts`。 |
-| `--no-leader` | （仅批量模式）跳过 leader，直接运行完整的已配置团队。在交互式控制台中无效——控制台始终会使用 leader。 |
 | `--dry-run` | 预览路由计划，不实际运行流水线。 |
 | `--resume [path]` | 续跑上一次运行（继续 Agent 会话），可指定具体运行目录，默认为最新一次运行。 |
 
 `<requirement>` 字符串会以 `{{requirement}}` 的形式注入到每个 Agent 的 prompt 中。
 
-每次运行都会在 `workDir` 下创建带时间戳的隔离子目录（如 `workspace/.multiclaw/runs/run-2026-10-08T12-00-00`），因此单次运行永远不会和磁盘上的其他内容互相干扰。交互式控制台则刻意不同——见 [工作区](#工作区)。
+每次运行都会在 `workDir` 下创建带时间戳的隔离子目录（如 `workspace/.multiclaw/runs/run-2026-10-08T12-00-00-<execution-id>`），因此单次运行永远不会和磁盘上的其他内容互相干扰。交互式控制台则刻意不同——见 [交互式控制台](#交互式控制台)。
 
 ### `multiclaw upgrade`
 
@@ -99,14 +98,6 @@ multiclaw doctor --config ./multiclaw.config.ts       # 同时校验配置
 | `--dry-run` | 仅展示将被删除的内容，不实际删除 |
 | `--yes` | 跳过确认提示 |
 
-### `multiclaw sessions`
-
-管理已保存的控制台会话。
-
-```bash
-multiclaw sessions ls                       # 列出已保存的会话（最新的在最前）
-multiclaw sessions rm <id>                  # 按 id（或唯一前缀）删除某个会话
-```
 
 ## Provider、模型与层级
 
@@ -138,9 +129,6 @@ export default defineConfig({
     projectName: "我的应用",
   },
 
-  // 可选：在主流水线执行前，由 leader 决定需要运行哪些 agent。
-  // leader 会读取需求并检查代码库，然后输出要运行的 agent ID 列表。
-  leader: agents.leader(),
 
   logDir: "./logs",         // 可选；默认：workDir/.multiclaw/logs
   continueOnError: false,   // 可选；某个 Agent 失败后是否继续
@@ -188,8 +176,6 @@ export default defineConfig({
 | `name` | string | ✓ | 项目名称，在控制台标题栏展示。 |
 | `workDir` | string | ✓ | Agent 读写文件的基础目录；控制台的每一轮共用它。 |
 | `agents` | AgentDefinition[] | ✓ | Agent 流水线（见下方 Agent 字段说明）。 |
-| `leader` | AgentDefinition | | 可选的路由 Agent（见 [Leader](#leader)）。 |
-| `useLeader` | boolean | | 是否启用 leader agent。默认当配置了 leader 时为 `true`。 |
 | `defaults` | object | | 项目级 `{ provider?, model?, command?, permissions? }` 默认值，应用到所有未单独覆盖的 Agent，使生成的配置更简洁。 |
 | `context` | Record<string, string> | | 可在每个 prompt 中通过 `{{key}}` 引用的变量，`requirement` 由 CLI 自动注入。 |
 | `logDir` | string | | 日志输出目录，默认 `workDir/.multiclaw/logs`。 |
@@ -253,196 +239,50 @@ Stage 4:  code-reviewer      │  devops            ← 并行
 
 ## 交互式控制台
 
-不带子命令执行 `multiclaw` 会打开全屏终端控制台。它是**轮次式的指挥循环**，而不是聊天：你输入的每一轮就是整条流水线的一次完整编排，跑完后控制台保持打开，可以直接开始下一轮。
+运行 multiclaw 打开 Ink 终端 UI。启动显示空白主聊天和左侧 sessions，首次发送才保存 session。--resume <id> 打开指定聊天，无 ID 时聚焦列表；不存在的 ID 明确报错。
 
-**启动选项：**
-- `multiclaw` — 始终开始新会话（等同于 `multiclaw --new`）
-- `multiclaw -r [id]` — 按 id 续接某个会话，或不传 id 时打开会话选择器
+中央输入框始终与当前 session 的内置协调者对话。右侧 team 默认隐藏，选择 agent 只改变查看内容。窄终端使用临时查看器。
 
-```
-◆ multiclaw · dev-team                                          turn 2 · 00:12
-────────────────────────────────────────────────────────────────────────────
-✓ ◆ Leader  ──▸ ① ⠹ ◇ Architect  ──▸ ② ○ ◇ Developer  ──▸ ③ ○ ◇ Reviewer
+| 按键 | 操作 |
+| --- | --- |
+| Ctrl+B | 聚焦 sessions，方向键选择，Enter 打开 |
+| Ctrl+T | 打开或聚焦 team，方向键选择 agent |
+| Ctrl+G | 进入当前权限请求、提问或 checkpoint |
+| Esc | 返回主聊天，不回答请求 |
+| Shift+Tab | 切换当前聊天的权限模式 |
+| Ctrl+C | 停止当前聊天的工作 |
+| Ctrl+D | 停止全部执行，保存后退出 |
+| Ctrl+V | 粘贴文本或图片 |
+| Alt+Backspace | 移除最后一张附件图片 |
+| 方向键、PageUp/PageDown | 滚动当前输出 |
+| 空输入时 ? | 帮助 |
 
-TEAM                1/4 │ Architect · sonnet-4 · ⠹ running          4.2s ▼
-  ✓ ◆ Leader       3.1s │ 读取 packages/core/src/orchestrator/…
-› ⠹ ◇ Architect    4.2s │ 搜索 "withTimeout" in packages/core/src
-  ○ ◇ Developer       — │ 编辑 utils/timeout.ts — 支持取消
-  ○ ◇ Reviewer        — │ 执行 pnpm -r test
+粘贴或拖入 PNG、JPEG、GIF、WebP 的绝对路径会识别为图片附件，支持引号及转义空格。输入框显示附件数量，可以继续输入文字后按 Enter，也可以只发送图片。图片路径不会被当成 `/` 命令。切换聊天时，附件随各自的草稿保留。
 
-» 再补一下测试
-› 输入以加入队列…
-⠹ running 4.2s · 1/4 agents · 1 queued          enter queues · ctrl+c cancel
-```
+team 执行期间，协调者继续回答进度、澄清需求并定向传达补充。独立新任务进入执行队列；明确替换先停止旧任务，含义不明确时追问。
 
-| 区域 | 内容 |
-|------|------|
-| 页眉 | 项目名、轮次编号，以及当前阶段或已用时 |
-| 管线栏 | leader，随后按顺序排列各 Stage，用 `──▸` 连接 |
-| 团队面板 | 每个 Agent 一行：状态符号、名称、实时耗时、进度（`1/4`） |
-| 日志面板 | 当前聚焦 Agent 在整个会话里的输出，`▼` 表示跟随中、`⏸` 表示已定格 |
-| 回复面板 | 这一轮无需流水线时，leader 给出的回答 |
-| 队列条 | 运行期间输入的后继需求，按将要执行的顺序排列 |
-| 输入行 | 输入位置——运行期间同样可输入 |
-| 提示栏 | 左侧是汇总状态，右侧是**此刻可用**的按键 |
+依赖关系继续约束执行。追加要求更新需求版本，受影响的实现、下游测试和评审重新执行后才能完成。不支持运行中追加的 provider 在当前调用结束后处理补充；已投递不代表已实现，结果未知的投递不会自动重发。
 
-状态符号：`○` 排队 · `◐` 运行中（实时显示 spinner）· `↻` 重试中 · `✓` 完成 · `✗` 失败 · `⊘` 已跳过。
+每个 session 独立拥有运行时、草稿、队列与交互。切换不停止工作；不同聊天共享 workDir 并行执行，不提供文件冲突仲裁，maxConcurrency 按每个聊天生效。后台提问在原 session 标记“需要输入”，普通聊天回复不会批准权限或回答结构化请求。
 
-**首次启动**：第一轮开始之前，主体区域展示配置里的团队——每个 Agent 连同它的 `description`（这个 Agent 是做什么的）——而不是一片空白。`tab` 会让 `›` 光标在列表中下移；一旦某一轮开始运行，光标会自动跟随当前正在输出的 Agent。
+| 命令 | 操作 |
+| --- | --- |
+| /new | 新建空白聊天，其他工作继续 |
+| /focus [agent] | 在右侧查看 agent |
+| /steer <agent> <text> | 显式补充指定 agent |
+| /mode auto / ask / deny | 切换实时权限模式 |
+| /retry [agent] | 固定 agent 集合续跑已知工作 |
+| /replay [turn] | 空闲时重跑历史需求 |
+| /edit | 将最近需求复制到输入框 |
+| /search [text]、/latest | 搜索或回到最新输出 |
+| /verbose | 切换工具详细输出 |
+| /pause、/continue | 暂停或恢复队列 |
+| /export [path] | 导出聊天 Markdown |
 
-**不是每一轮都需要动用团队。** 这由 leader 先做判断。你问它一个问题、或者只是打个招呼，它会直接用文字回答：主体区域切换为回复面板，页脚显示 `✓ answered`，没有任何 Agent 被启动。当需求确实是任务、但含糊到无法规划时，它会反过来提问——页脚显示 `? needs your input`，你接下来输入的那行就是回答。
+运行中的 session 先停止再删除，删除前确认。退出停止全部执行并等待清理和保存。重启恢复中断事实与暂停队列，明确继续后才执行；旧 RPC 不恢复为可回答状态。
 
-复制图片后，在对话输入框按 `Ctrl+V` 添加附件。可以附带文字，也可以直接发送图片；
-`Alt+Backspace` 移除最后一张附件，`Esc` 清空草稿。每条消息最多五张图片，每张不超过
-10 MiB，支持 PNG、JPEG、GIF 和 WebP。附件保存在 `.multiclaw/attachments/`，排队和重试
-时会保留。Agent 需要通过 ACP 声明支持图片。macOS 和 Windows 使用系统剪贴板，Linux
-需要安装 `wl-clipboard`（Wayland）或 `xclip`（X11）。终端的 `Cmd+V` 等粘贴快捷键通常
-只传入文字，粘贴剪贴板图片请使用 `Ctrl+V`。
+journal 使用版本 2。旧历史或损坏数据标记为不支持，保留原文件且不覆盖，不提供迁移。/sessions 与 multiclaw sessions 已移除，通过侧栏管理或 multiclaw prune 批量清理。
 
-### 按键
-
-输入行始终持有焦点，因此只有两个键被保留：`?` 和 `/`，且仅在输入行为空**且控制台空闲**时生效。其余要么是具名按键，要么是普通字符——这正是"输入需求时不会误触快捷键"的原因。
-
-| 按键 | 作用 |
-|------|------|
-| `enter` | 执行输入的需求；若当前有轮次在跑，则改为加入队列 |
-| `tab` | 切换聚焦的 Agent |
-| `shift+tab` | 切换权限模式（`auto` ↔ `ask`） |
-| `↑` `↓` `pgup` `pgdn` | 滚动当前 Agent 的输出 |
-| `←` `→` `home` `end` | 移动光标 |
-| `esc` | 清空输入行，或关闭浮层 |
-| `?` | 快捷键帮助（空闲、且输入行为空时） |
-| `/` | 命令面板（仅输入行为空时） |
-| `ctrl+l` | 清空当前 Agent 本轮的输出 |
-| `ctrl+v` | 粘贴系统剪贴板中的图片或文本 |
-| `alt+backspace` | 移除最后一张待发送图片 |
-| `ctrl+c` | 取消当前轮次**及其队列**；空闲时再按一次退出 |
-
-向上滚动即定格日志，滚回底部自动恢复跟随——所以不需要记"跟随开关"。轮次运行期间，日志面板会自动跟随下一个启动的 Agent，直到你手动切换聚焦项为止。
-
-**运行中输入**：输入行保持可用。运行期间提交的内容会进入输入行上方的队列条，并在控制台空闲的那一刻作为下一轮启动——所以看日志时冒出的想法不会被丢掉。取消会连同队列一起丢弃，因为"取消"就该意味着停下来。
-
-**中途纠偏**：排队的后续需求要等当前轮次结束。`/steer <文本>` 正相反——它把消息**送进**此刻正在轮次中的 Agent，让你不必推翻整轮就能纠正方向。收到消息的 Agent 会在自己的输出里留下 `[steer] …` 标记，日志因此能看出你说了什么、什么时候说的。
-
-它本质上依赖时机：还没开始的 Agent 不会收到这条消息。控制台会明确说明结果，而不是替你猜：
-
-- 至少送达一个正在运行的 Agent：提示里点名它们；处在两轮之间的 Agent 也会被点名。
-- 当时没有任何 Agent 在轮次中，或该 provider 的 bridge 不支持中途输入：文本转为排队的后续需求，提示会说明时机变了。它绝不会被静默丢弃，也绝不会让空闲会话自行开始一个轮次。
-- 没有轮次在跑时无处可送，`/steer` 会被拒绝，并指向普通输入。
-
-送达不等于照做，生效时机也没有保证。取消会中止正在执行的 Agent 及其子进程，而不是把它们留在后台继续跑。
-
-### 命令
-
-在空输入行输入 `/`，选择操作后按 Enter。需要 Agent、权限模式或轮次的操作会打开选择器；
-搜索和即时纠正会进入内容输入。`Esc` 取消当前操作，菜单只展示当前状态下有可操作对象的命令。
-
-| 命令 | 作用 |
-|------|------|
-| `/new` | 新建空白会话，随后输入需求（仅空闲时） |
-| `/sessions` | 选择、切换或删除已保存会话（仅空闲时） |
-| `/focus` | 选择要查看的 Agent |
-| `/mode` | 选择 `ask`、`auto` 或 `deny` 权限模式 |
-| `/verbose` | 切换工具详情显示 |
-| `/search` | 输入搜索文字；`Ctrl+N` / `Ctrl+P` 在匹配结果之间跳转 |
-| `/latest` | 回到最新输出 |
-| `/retry` | 选择重试某个失败／需返工的 Agent，或全部（仅空闲时） |
-| `/replay` | 选择已结束轮次重新执行（仅空闲时） |
-| `/edit` | 选择已结束轮次，将需求填回输入框编辑 |
-| `/export` | 选择已结束轮次导出为 Markdown |
-| `/steer` | 输入消息，即时发送给正在执行的 Agent |
-| `/pause` | 暂停非空的后续需求队列 |
-| `/continue` | 恢复暂停的队列，或在检查点继续 |
-
-也支持直接输入 `/focus <id>`、`/mode <mode>`、`/search <text>`、`/retry <id>`、
-`/replay <turn>`、`/edit <turn>`、`/export <turn> [path]` 和 `/steer <text>`。
-`/new` 不接收参数。编辑旧需求不会分支会话，也不会恢复工作区文件。
-
-审批和 Agent 提问通过对应面板处理；leader 澄清和检查点反馈直接输入。
-`Ctrl+L` 清空当前输出，`?` 打开帮助，`Ctrl+C` 取消执行及其队列，空闲且输入为空时退出；
-`Ctrl+D` 在输入为空时退出，运行中也可使用。
-
-控制台在备用屏幕缓冲区（alternate screen buffer）中渲染，因此终端的 scrollback 不会被破坏。
-
-终端较窄（不足 72 列）时会收起团队面板，让日志占满宽度；终端较矮（不足 16 行）时连管线栏也一并收起。页眉、输入行和提示栏永不收起。
-
-> **没有 TTY？** 控制台需要交互式终端。在 CI、管道或非 TTY 的 SSH 会话中，它会直接退出并提示改用 `multiclaw run`——后者以无头方式运行同一条流水线。
-
-### 工具审批与 Agent 提问
-
-multiclaw 通过 `permissions: { mode: ... }` 提供三种权限模式。优先级：Agent 自身的 `permissions.mode` > 项目级 `permissions` > `defaults.permissions`：
-
-| 模式 | 行为 |
-|------|------|
-| `"auto"` **（默认）** | 所有工具请求直接批准，不弹任何提示。 |
-| `"ask"` | 每个工具请求都交给人工——`permissions.onRequest` 或控制台的权限栏。没有处理函数时一律拒绝。 |
-| `"deny"` | 拒绝所有工具请求。 |
-
-```typescript
-// multiclaw.config.ts — 如需修改默认行为
-export default defineConfig({
-  permissions: { mode: "ask" }, // 每次工具调用都先问人
-})
-```
-
-`multiclaw run` 没有人可问，因此 `"ask"` 且未提供 `onRequest` 时会拒绝所有工具调用——它在开跑前就会警告一次。控制台除非配置另有指定，否则以 **ask** 启动，并在头部显示当前模式。`shift+tab` 在 `auto` 与 `ask` 之间即时切换，`/mode auto|ask|deny` 可设为任意一种；运行时选择优先于逐 Agent 的配置，所以头部显示的永远是 Agent 实际执行的模式。
-
-运行中切到 `auto` 会立即批准当前等待的工具授权，后续工具（包括 MCP 工具）也自动批准；切回 `ask` 后，后续工具恢复询问。切到 `deny` 会取消等待中的授权。业务问题和检查点仍需单独回答。
-
-控制台展示请求的 Agent、工具输入和 provider 提供的选项。并发请求按顺序排队，各自有唯一别名；普通输入仍只会加入后续需求队列，绝不会自动授权。
-
-- 在审批栏用方向键或数字选择 provider 提供的批准／拒绝选项，Enter 确认。
-- Esc 切回普通输入；再次按 Esc 返回审批选项。处理完当前请求后展示下一条。
-- 等待人工操作计入 Agent 原有超时。取消、退出和会话清理都会解除未决请求，不让 Agent 永久等待。
-- 每次拒绝都会以 `permission_rejected` 事件出现在日志流里，带上工具名，`source` 区分是模式拒绝、缺少处理函数，还是人工点了拒绝。
-
-权限处理函数是轮次局部的，不会存进可复用的 provider 会话。
-
-**运行中的结构化问题** 使用 ACP form elicitation；已安装的 Claude bridge 会将其回传到 `AskUserQuestion`。控制台将问题与审批放进同一个决策队列：
-
-- 表单内用 Tab 切换字段，方向键或数字选择选项，空格切换多选项，文字直接输入。
-- 最后一个字段之后选择“Submit answers”、“Skip question”或“Cancel request”，Enter 确认。
-- 跳过和取消是不同的 provider 动作；无效或不完整的答案会保留表单并提示需要修改的字段。
-
-leader 澄清直接输入回答，之前排队的文字不会被当作回答。检查点处直接输入反馈，
-或使用 `/continue` 继续；Ctrl+C 取消当前执行。队列的暂停／恢复不会暂停正在执行的 Agent。
-
-### 工作区
-
-控制台是迭代式的，因此每一轮都跑在**同一个** `workDir` 上。像"给这个再补上测试"这样的后继需求，能看到上一轮写下的文件；同时 `task-plan.json` 会在每轮开始时清除，所以上一轮遗留的任务计划绝不会被重新套用到新需求上。
-
-只有日志是按轮次隔离的：每一轮写入 `workDir/.multiclaw/runs/run-<时间戳>/logs/`，与 `multiclaw run` 的形状一致。运行目录是"发生过什么"的记录，而不是干活的地方。
-
-创建运行数据目录时，会自动写入内容为 `*` 的 `.multiclaw/.gitignore`，使运行产物被 Git 忽略。已有目录会补齐缺失的文件，已有的忽略规则不会被覆盖。
-
-### 历史
-
-已完成的轮次会写入 `workDir/.multiclaw/sessions/<id>/turns.jsonl`，每行一条，因此关掉控制台再打开，轮次记录会原样恢复，编号也从上次继续，而不是从 1 重新开始。
-
-通过 `/sessions` 切换到某个会话时，历史会恢复进日志面板。日志面板展示当前 Agent 的**整个会话**——它参与过的每一轮，从旧到新，用暗色的 `──── turn N · <需求> ────` 分隔行隔开——向上滚动即可一路回看。不再有单独的"打开历史轮次"模式：团队面板和管线栏始终跟着当前轮次，所以你在回看时编排上下文不会移动。
-
-控制台每个会话最多保留最近 20 个已完成的轮次。
-
-### 会话
-
-**会话（session）** 是一段连续的工作线——一系列共享同一团队的轮次。它是控制台保存、续接和删除的基本单位，与 Claude Code 和 Codex 的做法相同。每个会话存储在独立的 `workDir/.multiclaw/sessions/<id>/` 目录中，一个小型 `index.json` 保存选择器所需的摘要信息。
-
-- **启动。** `multiclaw` 始终开始**新会话**，与 `multiclaw --new` 等效。`multiclaw -r [id]` 续接指定会话——不传 id 时打开选择器，与 `claude -r` 的方式相同。
-- **`/sessions`** 打开选择器：所有会话按最新排序，显示标题（首次需求原文）、轮次数量和时间，当前会话有标记。`↑` `↓` 选择，`enter` 切换到高亮的会话——历史会填进日志面板，下一条指令将在它的 Agent 上继续——`d` 删除某个会话，`esc` 关闭选择器。
-- **`/new`** 关闭当前 Agent 并就地开始空白新会话，随后输入需求。
-
-会话会一直保留，直到你主动删除：选择器里按 `d`、执行 `multiclaw sessions rm <id>`（完整 id 或唯一前缀），或运行 `multiclaw prune`（同时列出旧运行目录）。`multiclaw sessions ls` 打印会话列表。
-
-### 重启之后
-
-正常退出再打开是最简单的情况：轮次都在磁盘上，原样回来。而被"杀掉"的控制台——终端崩溃、重启、`kill -9`——留下的东西不止这些，所以运行期间还会写 `workDir/.multiclaw/sessions/<id>/session.json`：
-
-- **正在跑的那一轮。** Agent 进程随控制台一起消失，待审批的请求也只是发给它的一个 RPC，所以这一轮无法继续。它会被恢复成一个以 **interrupted** 结束的轮次：需求原文、团队、管线，以及每个 Agent 日志的末尾；始终没有回音的 Agent 标记为已停止。没有任何地方声称它成功了。
-- **队列。** 你打了但还没执行的后继需求会回来——但处于**暂停**状态：一打开就自动跑，等于在你没看着的时候干活。`/continue` 才会开始执行。
-- **会话。** 重启后打开的是你上次所在的会话，leader 拿到的是该会话的对话记录，而不是这个工作区跑过的所有轮次。
-- **待处理的决策。** 正在等待的审批或提问已经不存在了——提问的 Agent 没了。控制台会说明丢弃了几个，而不是悄悄丢掉。
-
-首帧的提示行会把这些都讲清楚，那一轮也可以通过 `/sessions`（切换回该会话后自动打开）访问，`/export`、`/replay` 都能用。重启唯一不做的事就是假装：不会替你做任何决定，也不会去续接一个本进程从未持有过的会话。
 
 ## 日志
 
@@ -452,7 +292,7 @@ leader 澄清直接输入回答，之前排队的文字不会被当作回答。�
 workDir/
 └── .multiclaw/
     └── runs/
-        └── run-2026-10-08T12-00-00/
+        └── run-2026-10-08T12-00-00-<execution-id>/
             ├── <agent 产出文件>        ← agent 写的文件（如 architecture.md）
             └── logs/
                 ├── <agentId>.log      ← 该 agent 进程的原始标准输出
@@ -477,85 +317,12 @@ workDir/
 | `frontend` | 架构师 → UI 设计师 → UI 评审 → 前端开发 → 测试 → 代码评审 | 6 |
 | `fullstack` | 产品经理 → 架构师 → 架构评审 → 后端开发 + UI 设计师 → UI 评审 → 前端开发 → 测试 → 代码评审 → DevOps | 10 |
 
-## Leader
+## 内置协调者
 
-`leader` 字段用于在主流水线执行前，加入一个路由 Agent。它会读取需求并检查代码库，然后决定这一轮究竟需要什么：
+协调者负责对话、澄清、派工和结果汇总，始终存在且不属于 team。协调者采用项目 defaults 的 provider、command 和 model，缺省沿用 provider 解析规则。
 
-| 决策 | 含义 |
-|------|------|
-| `run` | 新任务——列出最少需要哪些 Agent |
-| `continue` | 延续提供给 leader 的最近工作 ID，选择本轮执行者 |
-| `reply` | 一句问候、或一个它能当场回答的问题；不运行任何 Agent |
-| `ask` | 确实是任务，但含糊到无法规划——它只问那个能解锁的问题 |
+移除旧 leader 和 useLeader 配置；agents.leader() 和 --no-leader 不再支持。固定 agent 的 retry/resume 保留执行集合，完成后仍汇总。汇总失败不覆盖执行或验收结果。
 
-```typescript
-export default defineConfig({
-  leader: agents.leader(),
-  agents: [
-    agents.architect(),
-    agents.archDesignReviewer({ dependsOn: ["architect"] }),
-    agents.backendDeveloper({ dependsOn: ["arch-design-reviewer"] }),
-    agents.codeReviewer({ dependsOn: ["backend-developer"] }),
-  ],
-})
-```
-
-对于简单的 bug 修复，leader 可能只选择 `backend-developer` 和 `code-reviewer`，跳过设计阶段；对于全新功能，则运行完整流水线；而对于一句 `hello`，它直接回答，不为此花费任何 Agent。
-
-leader 被要求输出单个 JSON 对象：
-
-```json
-{"mode": "run", "run": ["backend-developer", "code-reviewer"]}
-{"mode": "continue", "workId": "latest-work-id", "run": ["backend-developer"]}
-{"mode": "reply", "message": "你好——告诉我你想改这个项目的哪一部分。"}
-{"mode": "ask", "message": "目标数据库用哪个？"}
-```
-
-不带 mode 的 `{"run": [...]}` 和普通文字回复仍兼容。未知、重复或空的执行者选择、畸形决策和空输出最多纠正重试一次；仍失败时返回“路由未完成”，不会自动运行完整团队。
-
-leader 可通过 `{"agentId":"已选中的 ID","scope":"职责范围"}` 分配工作，并传递完整目标与确认的约束，不指定技术步骤。planner 可选，配置了 architect 也可以不选择；没有 planner 时按配置依赖执行，各执行者自行调查、规划和验证。内置提示词将设计文件作为存在时可参考的上下文，缺失不阻塞工作；自定义任务提示词仍由用户定义。
-
-控制台仅提供当前会话最近工作作为延续目标，跳过中间的问答。延续沿用工作 ID，复用兼容执行者 Session，或重启后加载记录中的 Session ID。失败或中断需要明确继续请求；取消的工作不自动延续。Session 归属依据工作元数据。目标含糊时询问用户，仅主题相似视为新任务。
-
-新任务在路由确定后关闭旧执行者 Session 并清理旧任务计划，leader 对话和共享工作区保留。延续使用绑定到工作记录的范围和计划。Session 加载失败会明确报告；新建 Session 会明确记录并携带恢复上下文。dry-run 使用相同路由校验，展示预计新建、复用、尝试加载或无法续接；不启动 worker、重置执行者 Session 或删除计划。显式 /retry 和 CLI --resume 保持固定执行集合。
-
-执行结果、工作历史和 resume 配置统一使用结构化 SessionRecord，记录工作与 agent 归属、binding ID、provider ID、固定配置摘要、协商能力及最后观察状态。执行失败或取消仍保留可靠 Session 事实。开发阶段直接采用新格式，不保留旧字段别名或报告迁移代码。
-
-生命周期事件区分新建、复用、请求加载、加载成功和清理失败。Session 打开后即进入 journal，无需等待 worker 完成；重启后将进程连续性标记为未知，核对归属和固定配置后尝试加载。自动延续遇到配置变化或不支持加载时，新建并携带恢复上下文；显式 resume 则报告无法续接。实际加载失败停止执行。替换 Session 必须等清理确认；CLI 在最终报告前关闭自有 Session，控制台跨轮保留可复用 Session。
-
-非 reviewer 执行者可以在成功结束的最终输出末尾单独输出交回标记：
-
-```text
-<multiclaw-handoff>{"reason":"具体原因及未完成工作"}</multiclaw-handoff>
-```
-
-交回等待当前 stage 结束后停止后续阶段。有 leader 时自动重新路由一次，本轮排除已交回的执行者；再次交回、固定 retry/resume 或没有 leader 时停止并展示原因。错误末尾标记属于协议失败，引用示例和进度输出不触发交回。同阶段真实失败或取消优先。repair 交回沿用原修复预算，重新路由后的修改重新经过 checkpoint 和验收；历史保留全部尝试，费用包含实际执行成本，最终有效结果单独统计。
-
-leader 的作用，是把一句输入变成"按此顺序运行这三个 Agent"——或者"直接回答就好"。在交互式控制台里它不可或缺，因此 `--no-leader` 是**仅批量模式的开关**：仅作用于 `multiclaw run`，在控制台中被忽略（若你在配置中关闭了它，控制台会显示一行 `⚠ leader off` 的小提示）。
-
-可以通过以下三种方式跳过 leader 并直接使用默认流水线：
-
-1. **CLI 选项**（针对单次无头运行）：
-   ```bash
-   multiclaw run "你的需求" --no-leader
-   ```
-
-2. **配置文件**：
-   ```typescript
-   export default defineConfig({
-     leader: agents.leader(),
-     useLeader: false, // 禁用 leader（仅批量运行生效；控制台仍会使用它）
-     agents: [...],
-   })
-   ```
-
-3. **从配置文件移除 leader**（始终使用默认流水线）：
-   ```typescript
-   export default defineConfig({
-     // 不配置 leader 字段
-     agents: [...],
-   })
-   ```
 
 ## 架构师与任务分解
 

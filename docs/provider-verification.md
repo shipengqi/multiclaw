@@ -84,7 +84,7 @@ diffPatch/subagent 等未映射格式），只发这一个 key。
 
 | # | 步骤 | 预期 | 代码落点 |
 | --- | --- | --- | --- |
-| 4.1 | 给 leader 或某 agent 一个**可观测**的系统提示，例如「每次回答必须以 `CODEX-OK` 开头」；用 codex provider 跑一轮 | 指令被真实遵从（输出带 `CODEX-OK`），而不是被忽略或只体现在思考段 | `providers/catalog.ts` codex `meta` + `runtime/AcpRuntime.ts` session 创建处 |
+| 4.1 | 给某个 team agent 一个**可观测**的系统提示，例如「每次回答必须以 `CODEX-OK` 开头」；用 codex provider 跑一轮 | 指令被真实遵从（输出带 `CODEX-OK`），而不是被忽略或只体现在思考段 | `providers/catalog.ts` codex `meta` + `runtime/AcpRuntime.ts` session 创建处 |
 | 4.2 | 对比：同一配置改用 claude provider（走 `_meta.systemPrompt`） | 两者遵从度应同档；若 codex 明显更弱，记录现象——这决定 codex 的角色提示词策略 | 同上 |
 
 ## 6. Session 续接：`/retry` 与 `multiclaw run --resume`

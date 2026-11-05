@@ -287,26 +287,14 @@ function agentModel(agent: AgentDefinition): string | undefined {
   return agent.model ?? agent.models?.[agent.runtime ?? "acp"]
 }
 
-/**
- * The leader that will actually run, if any.
- *
- * `useLeader: false` keeps `config.leader` around but never runs it, so the
- * console must not list it either — showing a teammate that never takes part in
- * a turn is worse than showing nothing.
- */
-function activeLeader(config: MultiClawConfig): AgentDefinition | undefined {
-  return config.useLeader === false ? undefined : config.leader
-}
-
-/** Every agent that takes part in a run, in declaration order: leader first. */
+/** The team excludes the permanent host coordinator. */
 export function plannedAgents(config: MultiClawConfig): AgentDefinition[] {
-  const leader = activeLeader(config)
-  return leader ? [leader, ...config.agents] : config.agents
+  return config.agents
 }
 
-export function leaderAgentIds(config: MultiClawConfig): string[] {
-  const leader = activeLeader(config)
-  return leader ? [leader.id] : []
+/** Retained by the turn-view renderer; host messages use the chat timeline. */
+export function leaderAgentIds(_config: MultiClawConfig): string[] {
+  return []
 }
 
 /**

@@ -71,7 +71,7 @@ describe("buildDoctorReport", () => {
     const report = buildDoctorReport(detected(["opencode"], ["claude", "codex", "cursor"]), config)
     expect(report.config?.defaultsProvider).toBe("cursor")
     expect(report.config?.defaultsProviderOk).toBe(false)
-    expect(report.config?.agentsWithMissingProvider.sort()).toEqual(["x", "y"])
+    expect(report.config?.agentsWithMissingProvider.sort()).toEqual(["__coordinator", "x", "y"])
   })
 
   it("reports all-ok when the default provider is installed", () => {

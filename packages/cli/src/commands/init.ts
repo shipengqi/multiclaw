@@ -116,7 +116,6 @@ export function generateConfig(opts: {
 export default defineConfig({
   name: ${name},
   workDir: ${workDir},
-  leader: agents.leader(),
   context: {
     projectName: ${name},
   },
