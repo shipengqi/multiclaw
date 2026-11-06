@@ -25,6 +25,8 @@ export type LeaderDecision =
        * run itself rather than from a re-run of the leader.
        */
       reason?: string
+      /** Feedback message to the user explaining the dispatch plan in the user's language. */
+      message?: string
     }
   | { mode: "reply" | "ask"; message: string }
 

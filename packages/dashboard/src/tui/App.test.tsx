@@ -199,6 +199,40 @@ describe("chat-centered terminal UI", () => {
       fs.rmSync(workDir, { recursive: true, force: true })
     }
   })
+  it("shows active running agents in the chat header when running", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "running-chat-"))
+    const config = { ...DEMO, workDir }
+    const meta = createSession(workDir)
+    const dir = sessionDir(workDir, meta.id)
+    fs.mkdirSync(dir, { recursive: true })
+    const view = createInitialState(config)
+    view.agents.architect.status = "running"
+    fs.writeFileSync(
+      path.join(dir, "session.json"),
+      JSON.stringify({
+        version: 2,
+        queue: [],
+        supplements: [],
+        inFlight: true,
+        view,
+        messages: [{ id: "m1", role: "user", text: "Design app" }],
+      })
+    )
+    const runtime = new SessionRuntime(config)
+    try {
+      runtime.open(meta.id)
+      if (runtime.current) {
+        runtime.current.running = true
+        runtime.current.view.agents.architect.status = "running"
+      }
+      const raw = await renderFrame(<App config={config} runtime={runtime} />, 145, 30)
+      const output = stripAnsi(raw)
+      expect(output).toContain("running: Architect")
+    } finally {
+      await runtime.close()
+      fs.rmSync(workDir, { recursive: true, force: true })
+    }
+  })
   it("opens team separately and returns to the main input", async () => {
     const output = await frame(["\x14", "\x1b"])
     expect(output).toContain("Main chat")

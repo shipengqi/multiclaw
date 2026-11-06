@@ -330,6 +330,40 @@ describe("work routing", () => {
     expect(seen.map((item) => item.agentId)).toEqual(["leader"])
     await sessions.close()
   })
+
+  it("emits coordinator dispatch message with plan and agent assignments", async () => {
+    handler = async (task) =>
+      task.agentId === "leader"
+        ? route(["dev"], {
+            message: "I will coordinate dev to add pagination.",
+            tasks: [{ agentId: "dev", scope: "Implement page query" }],
+          })
+        : ok()
+    const { events } = await run()
+    const msg = events.find((e) => e.type === "coordinator:message" && e.payload.mode === "route")
+    expect(msg).toBeDefined()
+    if (msg?.type !== "coordinator:message") throw new Error("Missing dispatch message")
+    expect(msg?.payload.message).toContain("I will coordinate dev to add pagination.")
+    expect(msg?.payload.message).toContain("dev")
+    expect(msg?.payload.message).toContain("Implement page query")
+    expect(msg?.payload.message).toContain("Ctrl+T")
+    expect(events.indexOf(msg!)).toBeLessThan(events.findIndex((e) => e.type === "stage:start"))
+  })
+
+  it("formats default coordinator dispatch message when leader message is omitted", async () => {
+    handler = async (task) =>
+      task.agentId === "leader"
+        ? route(["dev"], {
+            reason: "Only developer is needed",
+          })
+        : ok()
+    const { events } = await run()
+    const msg = events.find((e) => e.type === "coordinator:message" && e.payload.mode === "route")
+    expect(msg).toBeDefined()
+    if (msg?.type !== "coordinator:message") throw new Error("Missing dispatch message")
+    expect(msg?.payload.message).toContain("Only developer is needed")
+    expect(msg?.payload.message).toContain("dev")
+  })
 })
 
 describe("worker handoff", () => {

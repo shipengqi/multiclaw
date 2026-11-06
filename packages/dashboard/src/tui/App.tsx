@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import {
+  COORDINATOR_ID,
   type EventBus,
   imageReference,
   MAX_PROMPT_IMAGES,
@@ -793,6 +794,16 @@ export function App({
         : focus === "interaction"
           ? "↑↓ choose · enter confirm · esc chat"
           : "ctrl+b sessions · ctrl+t team · ctrl+g requests · ctrl+c stop · ctrl+d exit · / commands"
+  const runningAgents = Object.values(current?.view.agents ?? {}).filter(
+    (a) => a.status === "running" && a.id !== COORDINATOR_ID
+  )
+  const runningStatus =
+    current?.phase === "routing"
+      ? "routing…"
+      : runningAgents.length > 0
+        ? `running: ${runningAgents.map((a) => a.name).join(", ")}`
+        : "team running"
+
   return (
     <Box flexDirection="column" height={rows}>
       {columns >= 70 ? (
@@ -849,7 +860,10 @@ export function App({
               <Text bold color={focus === "chat" ? COLOR.accent : undefined} wrap="truncate-end">
                 {clean(current?.title || "Main chat")}
                 {current?.running ? (
-                  <Text color={COLOR.accent}> · {spinner} team running</Text>
+                  <Text color={COLOR.accent}>
+                    {" "}
+                    · {spinner} {runningStatus}
+                  </Text>
                 ) : null}
                 {current?.queue.length ? (
                   <Text color={COLOR.warn}>

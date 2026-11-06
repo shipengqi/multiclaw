@@ -107,4 +107,24 @@ describe("parseLeaderDecision", () => {
       run: ["a"],
     })
   })
+
+  it("carries the leader's message explaining the dispatch", () => {
+    expect(
+      parseLeaderDecision('{"mode":"run","message":"  dispatching team  ","run":["a"]}')
+    ).toEqual({
+      mode: "run",
+      run: ["a"],
+      message: "dispatching team",
+    })
+    expect(
+      parseLeaderDecision(
+        '{"mode":"continue","workId":"w1","message":"continuing work","run":["a"]}'
+      )
+    ).toEqual({
+      mode: "continue",
+      workId: "w1",
+      run: ["a"],
+      message: "continuing work",
+    })
+  })
 })

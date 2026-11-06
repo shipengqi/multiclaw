@@ -21,7 +21,7 @@ export type MultiClawEvent =
   | {
       type: "coordinator:message"
       timestamp: string
-      payload: { message: string; mode: "reply" | "ask" | "summary" }
+      payload: { message: string; mode: "reply" | "ask" | "summary" | "route" }
     }
   | { type: "work:supplement"; timestamp: string; payload: import("./coordination").WorkSupplement }
   | { type: "agent:session"; timestamp: string; payload: import("./session").SessionEvent }

@@ -41,7 +41,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system"
   text: string
   workId?: string
-  kind?: "ask" | "summary" | "error"
+  kind?: "ask" | "summary" | "error" | "route"
   status?: "pending" | "handled"
 }
 export type ChatInteraction =
@@ -667,9 +667,36 @@ export class SessionRuntime {
           ? "ask"
           : event.payload.mode === "summary"
             ? "summary"
-            : undefined
+            : event.payload.mode === "route"
+              ? "route"
+              : undefined
       )
-    else if (event.type === "work:supplement") {
+    else if (event.type === "agent:complete") {
+      const payload = event.payload
+      if (payload.agentId !== COORDINATOR_ID) {
+        const d = (payload.duration / 1000).toFixed(1)
+        this.message(s, "system", `✓ ${payload.agentName} (${payload.agentId}) done (${d}s)`)
+      }
+    } else if (event.type === "agent:failed") {
+      const payload = event.payload
+      if (payload.agentId !== COORDINATOR_ID) {
+        this.message(
+          s,
+          "system",
+          `✗ ${payload.agentName} (${payload.agentId}) failed: ${payload.error ?? "unknown error"}`,
+          "error"
+        )
+      }
+    } else if (event.type === "agent:handed-back") {
+      const payload = event.payload
+      if (payload.agentId !== COORDINATOR_ID) {
+        this.message(
+          s,
+          "system",
+          `⎌ ${payload.agentName} (${payload.agentId}) handed back: ${payload.handoffReason}`
+        )
+      }
+    } else if (event.type === "work:supplement") {
       const source = s.messages.find((m) => m.id === event.payload.messageId)
       if (source) {
         source.workId = event.payload.workId

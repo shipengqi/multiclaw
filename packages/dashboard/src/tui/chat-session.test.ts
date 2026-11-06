@@ -9,9 +9,13 @@ import {
   type RuntimeSession,
   runtimeRegistry,
 } from "@multiclawcli/core"
+import { createElement } from "react"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { App } from "./App"
 import { SessionRuntime } from "./chat-session"
 import { createSession, listSessions } from "./sessions"
+import { stripAnsi } from "./state"
+import { renderFrame } from "./test-helpers"
 
 function deferred() {
   let resolve!: () => void
@@ -200,7 +204,64 @@ describe("session-owned live conversation", () => {
     await until(r, () => !r.current?.running)
     expect(calls).toEqual([])
     expect(r.current?.messages.map((m) => m.text)).toContain("Hello!")
+    expect(r.current?.messages.some((m) => m.kind === "route")).toBe(false)
     expect(listSessions(dir)).toHaveLength(1)
+  })
+  it("shows coordinator dispatch feedback and agent completion in the chat timeline", async () => {
+    install(async () => "done")
+    const r = create()
+    await r.submit("Build API")
+    await until(r, () => !r.current?.running)
+    const texts = r.current?.messages.map((m) => m.text) ?? []
+    expect(texts[0]).toBe("Build API")
+    const dispatch = r.current?.messages.find((m) => m.kind === "route")
+    expect(dispatch?.role).toBe("assistant")
+    expect(dispatch?.text).toContain("Assigned team members")
+    expect(dispatch?.text).toContain("Developer (dev)")
+    expect(dispatch?.text).toContain("Tester (tester)")
+    // Agent completion milestones
+    expect(texts.some((t) => t.includes("✓") && t.includes("dev"))).toBe(true)
+    expect(texts.some((t) => t.includes("✓") && t.includes("tester"))).toBe(true)
+  })
+  it.each([65, 145])("shows live dispatch with team hidden at %s columns", async (columns) => {
+    const finish = deferred()
+    install(async () => {
+      await finish.promise
+      return "done"
+    })
+    const r = create()
+    try {
+      await r.submit("Build API")
+      await until(r, () => r.current?.view.agents.dev.status === "running")
+      expect(r.current?.running).toBe(true)
+      expect(r.current?.messages.filter((m) => m.kind === "route")).toHaveLength(1)
+      expect(r.current?.messages.some((m) => m.kind === "summary")).toBe(false)
+      const output = stripAnsi(
+        await renderFrame(createElement(App, { config: config(), runtime: r }), columns, 30)
+      )
+      expect(output).toContain("assistant:")
+      expect(output).toContain("Assigned team members")
+      expect(output).toContain("Developer (dev)")
+      expect(output).toContain("Tester (tester)")
+      expect(output).toContain("Ctrl+T")
+      expect(output).toContain("running: Developer")
+      expect(output).not.toContain("Team ·")
+    } finally {
+      finish.resolve()
+      await until(r, () => !r.current?.running)
+    }
+  })
+  it("reports worker failure in the main chat without a completion milestone", async () => {
+    install(async () => {
+      throw new Error("Authentication required")
+    })
+    const r = create()
+    await r.submit("Build API")
+    await until(r, () => !r.current?.running)
+    const failure = r.current?.messages.find((m) => m.kind === "error")
+    expect(failure?.text).toContain("Developer (dev) failed")
+    expect(failure?.text).toContain("Authentication required")
+    expect(r.current?.messages.some((m) => m.text.startsWith("✓"))).toBe(false)
   })
   it("keeps responding while a developer is blocked and preserves the main input target", async () => {
     const finish = deferred()

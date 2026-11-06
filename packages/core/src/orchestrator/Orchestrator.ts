@@ -40,7 +40,7 @@ import { buildStages } from "./StageBuilder"
  * leader answered in words, so the turn ends there.
  */
 type Resolution =
-  | { kind: "run"; agents: AgentDefinition[]; reason?: string }
+  | { kind: "run"; agents: AgentDefinition[]; reason?: string; message?: string }
   | { kind: "message"; mode: LeaderMessage["mode"]; message: string }
   | { kind: "cancelled" }
   | { kind: "error"; message: string }
@@ -504,6 +504,16 @@ export class Orchestrator {
         totalAgents: agents.length,
         stages: toStageInfos(stages),
         ...this.reasonField(resolution.reason),
+      },
+    })
+
+    const dispatchMessage = this.formatDispatchMessage(resolution, agents)
+    this.eventBus.emit({
+      type: "coordinator:message",
+      timestamp: new Date().toISOString(),
+      payload: {
+        mode: "route",
+        message: dispatchMessage,
       },
     })
 
@@ -1230,7 +1240,12 @@ export class Orchestrator {
             agent.agentScope = this.assignments.get(agent.id) ?? task.scope ?? agent.agentScope
         }
         this.captureWork(agents, [])
-        return { kind: "run", agents, reason: decision.reason }
+        return {
+          kind: "run",
+          agents,
+          reason: decision.reason,
+          message: decision.message,
+        }
       }
       if (decision && (decision.mode === "reply" || decision.mode === "ask"))
         return { kind: "message", mode: decision.mode, message: decision.message }
@@ -1914,6 +1929,55 @@ export class Orchestrator {
    */
   private reasonField(reason: string | undefined): { selectionReason?: string } {
     return reason ? { selectionReason: reason } : {}
+  }
+
+  private formatDispatchMessage(
+    resolution: { reason?: string; message?: string },
+    agents: AgentDefinition[]
+  ): string {
+    const isChinese = /[\u4e00-\u9fa5]/.test(this.originalRequirement || "")
+    const intro = resolution.message?.trim() || resolution.reason?.trim()
+
+    const lines: string[] = []
+    if (intro) {
+      lines.push(intro)
+      lines.push("")
+    } else {
+      const defaultIntro = this.rerouting
+        ? isChinese
+          ? "工作已移交，重新安排团队成员执行任务："
+          : "Work handed back; rerouting team:"
+        : this.routing?.mode === "continue"
+          ? isChinese
+            ? "已为您安排团队成员继续执行任务："
+            : "Continuing work with the team:"
+          : isChinese
+            ? "已为您指派团队成员执行任务："
+            : "Assigned team members to execute the task:"
+      lines.push(defaultIntro)
+      lines.push("")
+    }
+
+    if (agents.length > 0) {
+      if (intro) {
+        lines.push(isChinese ? "任务分工：" : "Team assignment:")
+      }
+      for (const agent of agents) {
+        const scope = agent.agentScope || agent.taskTitle || agent.description
+        lines.push(
+          `• ${agent.name} (${agent.id})${scope ? (isChinese ? `：${scope}` : `: ${scope}`) : ""}`
+        )
+      }
+      lines.push("")
+    }
+
+    lines.push(
+      isChinese
+        ? "团队已开始执行。按 Ctrl+T 可打开右侧面板查看实时工作日志。"
+        : "The team is now working. Press Ctrl+T to view real-time logs."
+    )
+
+    return lines.join("\n")
   }
 
   /**

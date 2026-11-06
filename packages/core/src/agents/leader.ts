@@ -19,8 +19,8 @@ Preserve the original goal and confirmed constraints; never invent requirements.
 Output ONLY a single JSON object on its own line — no prose, no markdown fences:
 {"mode": "reply", "message": "your answer"}
 {"mode": "ask", "message": "your question"}
-{"mode": "run", "reason": "one sentence on why this set", "requirement": "the complete task and constraints", "run": ["agent-id-1", "agent-id-2"]}
-{"mode": "continue", "workId": "id-from-Latest-Work", "requirement": "original goal plus follow-up constraints", "run": ["agent-id"]}`
+{"mode": "run", "message": "friendly explanation of the dispatch to the user in user's language", "reason": "one sentence on why this set", "requirement": "the complete task and constraints", "run": ["agent-id-1", "agent-id-2"]}
+{"mode": "continue", "workId": "id-from-Latest-Work", "message": "friendly explanation of the continuation to the user in user's language", "requirement": "original goal plus follow-up constraints", "run": ["agent-id"]}`
 
 const TASK = `## Project
 {{projectName}}
@@ -39,7 +39,8 @@ Decide new work, continuation, answer or clarification. Preserve source requirem
 Output a single JSON object — run, continue (with exact workId), reply or ask:
 {"mode": "reply", "message": "your answer"}
 {"mode": "ask", "message": "your question"}
-{"mode": "run", "reason": "one sentence on why this set", "requirement": "the complete task and constraints", "run": ["agent-id", ...]}
+{"mode": "run", "message": "friendly explanation of the dispatch to the user in user's language", "reason": "one sentence on why this set", "requirement": "the complete task and constraints", "run": ["agent-id", ...]}
+{"mode": "continue", "workId": "id-from-Latest-Work", "message": "friendly explanation of the continuation to the user in user's language", "requirement": "original goal plus follow-up constraints", "run": ["agent-id", ...]}
 Agent IDs must come from the Available Agents list above.`
 
 export function leader(overrides?: Overrides): AgentDefinition {
