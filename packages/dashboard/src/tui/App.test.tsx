@@ -199,6 +199,56 @@ describe("chat-centered terminal UI", () => {
       fs.rmSync(workDir, { recursive: true, force: true })
     }
   })
+  it.each([65, 145])("renders Markdown with team hidden at %s columns", async (columns) => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "markdown-chat-"))
+    const config = { ...DEMO, workDir }
+    const meta = createSession(workDir)
+    const dir = sessionDir(workDir, meta.id)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(
+      path.join(dir, "session.json"),
+      JSON.stringify({
+        version: 2,
+        queue: [],
+        supplements: [],
+        view: createInitialState(config),
+        messages: [
+          { id: "user", role: "user", text: "**literal input**" },
+          {
+            id: "reply",
+            role: "assistant",
+            kind: "summary",
+            text: "### 执行结果\n\n**尚未完成**，检查 `api_keys`。\n\n> 请检查凭证\n\n```ts\nconst ready = false\n```",
+          },
+        ],
+      })
+    )
+    const runtime = new SessionRuntime(config)
+    try {
+      runtime.open(meta.id)
+      const raw = await renderFrame(<App config={config} runtime={runtime} />, columns, 40)
+      const output = stripAnsi(raw)
+      expect(output).toContain("执行结果")
+      expect(output).toContain("尚未完成")
+      expect(output).toContain("api_keys")
+      expect(output).toContain("const ready = false")
+      expect(output).not.toContain("###")
+      expect(output).not.toContain("**尚未完成**")
+      expect(output).not.toContain("`api_keys`")
+      expect(output).not.toContain("```")
+      expect(output).toContain("user: **literal input**")
+      expect(output).not.toContain("Team ·")
+      expect(
+        output
+          .trimEnd()
+          .split("\n")
+          .every((line) => displayWidth(line) <= columns)
+      ).toBe(true)
+    } finally {
+      await runtime.close()
+      fs.rmSync(workDir, { recursive: true, force: true })
+    }
+  })
   it("shows active running agents in the chat header when running", async () => {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "running-chat-"))
     const config = { ...DEMO, workDir }

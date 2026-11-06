@@ -10,14 +10,14 @@ import {
 } from "@multiclawcli/core"
 import { Box, Text, useApp, useInput, useWindowSize } from "ink"
 import { useEffect, useRef, useState } from "react"
-import { SessionRuntime } from "./chat-session"
+import { type ChatMessage, SessionRuntime } from "./chat-session"
 import { readClipboard, saveClipboardImage } from "./clipboard"
 import { COMMANDS, parseCommand, resolveAgentId } from "./commands"
 import { Header, HintBar, Rule } from "./components/chrome"
 import { PermissionBar, QuestionForm } from "./components/interaction"
 import { StreamPanel, TeamRow } from "./components/panels"
 import { Prompt, promptRowCount } from "./components/prompt"
-import { truncate, wrapLine } from "./format"
+import { renderSegments, truncate, wrapLine } from "./format"
 import { splitInputImages } from "./input-images"
 import {
   clean,
@@ -48,6 +48,19 @@ export interface AppProps {
 }
 
 type Focus = "chat" | "sessions" | "team" | "interaction"
+
+/** Render whole assistant messages before wrapping, preserving Markdown block structure. */
+function chatMessageRows(message: ChatMessage, width: number): string[] {
+  const cleanText = stripAnsi(message.text).replace(/\p{Cc}/gu, (c) =>
+    c === "\n" || c === "\t" ? c : ""
+  )
+  const content =
+    message.role === "assistant"
+      ? renderSegments([{ kind: "text", text: cleanText }], width).trimEnd()
+      : cleanText
+  return `${message.role}: ${content}`.split("\n").flatMap((line) => wrapLine(line, width))
+}
+
 export function App({
   config,
   onTurnStart,
@@ -468,7 +481,7 @@ export function App({
           })
         else {
           const lines = (current?.messages ?? []).flatMap((m) =>
-            wrapLine(m.role + ": " + m.text, chatWidth - 2)
+            chatMessageRows(m, Math.max(1, chatWidth - 2)).map(stripAnsi)
           )
           const reverseIndex = [...lines]
             .reverse()
@@ -742,27 +755,22 @@ export function App({
     ) : null
   const textLines = current?.messages.flatMap((m) => {
     const label = m.role + ": "
-    const text =
-      label + stripAnsi(m.text).replace(/\p{Cc}/gu, (c) => (c === "\n" || c === "\t" ? c : ""))
-    return text
-      .split("\n")
-      .flatMap((line) => wrapLine(line, Math.max(1, chatWidth - 2)))
-      .map((line, index) => ({
-        text: line,
-        label: index === 0 ? label.slice(0, line.length) : "",
-        labelColor:
-          m.kind === "error"
-            ? COLOR.error
-            : m.kind === "ask"
-              ? COLOR.warn
-              : m.role === "user"
-                ? COLOR.accent
-                : m.role === "assistant"
-                  ? COLOR.ok
-                  : COLOR.muted,
-        color: m.kind === "error" ? COLOR.error : undefined,
-        dim: m.role === "system" && m.kind !== "error",
-      }))
+    return chatMessageRows(m, Math.max(1, chatWidth - 2)).map((line, index) => ({
+      text: line,
+      label: index === 0 ? label.slice(0, line.length) : "",
+      labelColor:
+        m.kind === "error"
+          ? COLOR.error
+          : m.kind === "ask"
+            ? COLOR.warn
+            : m.role === "user"
+              ? COLOR.accent
+              : m.role === "assistant"
+                ? COLOR.ok
+                : COLOR.muted,
+      color: m.kind === "error" ? COLOR.error : undefined,
+      dim: m.role === "system" && m.kind !== "error",
+    }))
   }) ?? [
     { text: "New chat", label: "", labelColor: COLOR.accent, color: undefined, dim: true },
     {
