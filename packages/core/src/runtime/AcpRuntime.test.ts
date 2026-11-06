@@ -2052,14 +2052,22 @@ describe("AcpRuntime · agent context delivery", () => {
   })
 
   it("appends a login hint to an authentication-required error", async () => {
-    const child = new FakeChild()
-    attachAgent(child, {
-      prompt: () => {
-        throw acp.RequestError.authRequired()
-      },
-    })
+    const makeChild = () => {
+      const child = new FakeChild()
+      attachAgent(child, {
+        prompt: () => {
+          throw acp.RequestError.authRequired()
+        },
+      })
+      return child
+    }
 
-    await expect(runWith(child)).rejects.toThrow(/run `claude` to log in/)
+    await expect(runWith(makeChild(), { command: "claude-agent-acp" })).rejects.toThrow(
+      /run `claude` to log in/
+    )
+    await expect(runWith(makeChild(), { command: "opencode" })).rejects.toThrow(
+      /run `opencode auth login`/
+    )
   })
 })
 

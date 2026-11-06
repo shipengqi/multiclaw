@@ -97,7 +97,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     ],
     defaultModel: "opencode/big-pickle",
     install: { hint: "npm install -g opencode" },
-    auth: { kind: "none", hint: "" },
+    auth: { kind: "login", hint: "run `opencode auth login`" },
   },
   {
     id: "claude",
