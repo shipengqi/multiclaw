@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { Readable, Writable } from "node:stream"
 import { StringDecoder } from "node:string_decoder"
 import { resolveExecutable } from "../providers/bridge"
-import { type ProviderSpec, specForCommand } from "../providers/catalog"
+import { specForCommand } from "../providers/catalog"
 import type {
   AgentOutput,
   AgentTask,
@@ -295,11 +295,12 @@ export function validateRuntimeQuestionContent(
   })
 }
 
-function withAuthHint(acp: AcpModule, err: unknown, spec?: ProviderSpec): Error {
+function withAuthHint(acp: AcpModule, err: unknown): Error {
   const error = err instanceof Error ? err : new Error(String(err))
   if (error instanceof acp.RequestError && error.code === acp.RequestError.authRequired().code) {
-    const hint = spec?.auth?.hint
-    return new Error(hint ? `${error.message} — ${hint}` : error.message)
+    return new Error(
+      `${error.message} (check your API key, gateway token, or provider credentials)`
+    )
   }
   return error
 }
@@ -824,7 +825,7 @@ export class AcpRuntime extends RuntimeBase {
             if (active === turn) return ctx.notify(acp.methods.agent.session.cancel, { sessionId })
           })
           .catch((error: unknown) => {
-            if (active === turn) fail(withAuthHint(acp, error, spec))
+            if (active === turn) fail(withAuthHint(acp, error))
           })
         return turn.cancellation
       }
@@ -988,7 +989,7 @@ export class AcpRuntime extends RuntimeBase {
           emitForTurn(turn, { type: "run_finished", stopReason })
         }
         void run().catch((error: unknown) => {
-          if (active === turn) fail(withAuthHint(acp, error, spec))
+          if (active === turn) fail(withAuthHint(acp, error))
         })
         return promise
       }
@@ -1087,7 +1088,7 @@ export class AcpRuntime extends RuntimeBase {
       }
       await Promise.race([
         initialize().catch((error: unknown) => {
-          throw withAuthHint(acp, error, spec)
+          throw withAuthHint(acp, error)
         }),
         startupFailure,
       ])

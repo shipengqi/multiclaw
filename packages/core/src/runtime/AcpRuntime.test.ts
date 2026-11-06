@@ -2051,22 +2051,16 @@ describe("AcpRuntime · agent context delivery", () => {
     expect(loadParams?._meta).toMatchObject({ systemPrompt: "sys" })
   })
 
-  it("appends a login hint to an authentication-required error", async () => {
-    const makeChild = () => {
-      const child = new FakeChild()
-      attachAgent(child, {
-        prompt: () => {
-          throw acp.RequestError.authRequired()
-        },
-      })
-      return child
-    }
+  it("appends an authentication check hint to an authentication-required error", async () => {
+    const child = new FakeChild()
+    attachAgent(child, {
+      prompt: () => {
+        throw acp.RequestError.authRequired()
+      },
+    })
 
-    await expect(runWith(makeChild(), { command: "claude-agent-acp" })).rejects.toThrow(
-      /run `claude` to log in/
-    )
-    await expect(runWith(makeChild(), { command: "opencode" })).rejects.toThrow(
-      /run `opencode auth login`/
+    await expect(runWith(child)).rejects.toThrow(
+      /check your API key, gateway token, or provider credentials/
     )
   })
 })
