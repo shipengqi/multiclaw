@@ -1,14 +1,15 @@
-import type {
-  AcceptanceResult,
-  AgentDefinition,
-  AgentOutput,
-  AgentStatus,
-  LeaderMessage,
-  MultiClawConfig,
-  MultiClawEvent,
-  StageInfo,
-  TurnOutcome,
-  TurnRecord,
+import {
+  type AcceptanceResult,
+  type AgentDefinition,
+  type AgentOutput,
+  type AgentStatus,
+  type LeaderMessage,
+  type MultiClawConfig,
+  type MultiClawEvent,
+  resolveModel,
+  type StageInfo,
+  type TurnOutcome,
+  type TurnRecord,
 } from "@multiclawcli/core"
 import { displayWidth, renderSegments, wrapLine } from "./format"
 
@@ -283,8 +284,8 @@ function epoch(iso: string): number | undefined {
 }
 
 /** The model an agent will actually run with, mirroring the orchestrator's lookup. */
-function agentModel(agent: AgentDefinition): string | undefined {
-  return agent.model ?? agent.models?.[agent.runtime ?? "acp"]
+function agentModel(agent: AgentDefinition, config: MultiClawConfig): string | undefined {
+  return resolveModel(agent, config)
 }
 
 /** The team excludes the permanent host coordinator. */
@@ -311,7 +312,7 @@ export function seedAgents(config: MultiClawConfig): Record<string, AgentView> {
   for (const agent of plannedAgents(config)) {
     agents[agent.id] = blankAgent(agent.id, agent.name, {
       icon: agent.icon,
-      model: agentModel(agent),
+      model: agentModel(agent, config),
       description: agent.description,
       taskTitle: agent.taskTitle,
     })

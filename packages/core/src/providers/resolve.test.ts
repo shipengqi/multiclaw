@@ -111,14 +111,44 @@ describe("resolveModel", () => {
     ).toBe("opus")
   })
 
-  it("falls back to legacy acp alias", () => {
-    expect(resolveModel(baseAgent({ models: { acp: "sonnet" } }), baseConfig())).toBe("sonnet")
+  it("prioritizes agent.models[provider] over config.defaults.model", () => {
+    expect(
+      resolveModel(
+        baseAgent({ models: { claude: "opus" } }),
+        baseConfig({ defaults: { provider: "claude", model: "global-default" } })
+      )
+    ).toBe("opus")
+  })
+
+  it("uses config.defaults.model over modelTier and legacy acp alias", () => {
+    expect(
+      resolveModel(
+        baseAgent({ modelTier: "strong", models: { acp: "opus" } }),
+        baseConfig({ defaults: { model: "global-model" } })
+      )
+    ).toBe("global-model")
+  })
+
+  it("allows agent.model to override config.defaults.model", () => {
+    expect(
+      resolveModel(
+        baseAgent({ model: "specific-model" }),
+        baseConfig({ defaults: { model: "global-model" } })
+      )
+    ).toBe("specific-model")
   })
 
   it("uses modelTier when no explicit model is set", () => {
     expect(resolveModel(baseAgent({ provider: "claude", modelTier: "fast" }), baseConfig())).toBe(
       "haiku"
     )
+    expect(
+      resolveModel(baseAgent({ provider: "opencode", modelTier: "strong" }), baseConfig())
+    ).toBe("opencode/exo-free")
+  })
+
+  it("falls back to legacy acp alias when modelTier and defaults.model are unset", () => {
+    expect(resolveModel(baseAgent({ models: { acp: "sonnet" } }), baseConfig())).toBe("sonnet")
   })
 
   it("uses config.defaults.model", () => {

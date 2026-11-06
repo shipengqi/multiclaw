@@ -53,16 +53,22 @@ export function resolveModel(agent: AgentDefinition, config: MultiClawConfig): s
   const provider = resolveProvider(agent, config)
   const spec = specForProvider(provider)
 
-  // Prefer provider-id key, then legacy "acp" alias for backward compatibility.
-  const fromModels = agent.models?.[provider] ?? agent.models?.acp
-  if (fromModels) return fromModels
+  // 1. Explicit per-agent model configured for the active provider.
+  if (agent.models?.[provider]) return agent.models[provider]
 
+  // 2. Project-level default model overrides agent tiers and legacy fallbacks.
+  if (config.defaults?.model) return config.defaults.model
+
+  // 3. Agent model tier resolved via the provider catalog (e.g. strong -> opus / exo-free).
   if (agent.modelTier && spec) {
     const fromTier = tierModel(spec, agent.modelTier)
     if (fromTier) return fromTier
   }
 
-  if (config.defaults?.model) return config.defaults.model
+  // 4. Legacy "acp" alias for backward compatibility.
+  if (agent.models?.acp) return agent.models.acp
+
+  // 5. Provider catalog default model as final fallback.
   if (spec) return spec.defaultModel
   return undefined
 }

@@ -111,12 +111,21 @@ Two ideas keep configs short and provider-agnostic:
 - **`runtime` vs `provider`.** The *runtime* is the protocol multiclaw uses to talk to an agent — today that is always `acp` (the [Agent Client Protocol](https://agentclientprotocol.com)). The *provider* is the agent product (`claude`, `opencode`, `codex`, `cursor`). So `runtime` is a constant; `provider` is the thing you pick.
 - **Model tiers.** Instead of hard-coding a model that only exists on one provider, an agent declares a **tier** — `strong`, `balanced`, or `fast`. The built-in catalog maps each tier to a concrete model id *per provider* (e.g. `strong` → `opus` on Claude, `opencode/exo-free` on OpenCode). That way the same preset runs unchanged on any provider; switching providers just changes the resolved model.
 
-Resolution order for an agent's model:
+Resolution order for an agent's model (highest to lowest):
 
-1. `agent.model` (explicit id) → 2. `agent.models[provider]` → 3. legacy `agent.models["acp"]` →
-4. `agent.modelTier` (catalog-resolved) → 5. `config.defaults.model` → 6. the provider's default model.
+1. **`agent.model`** (explicit model ID, highest precedence)
+2. **`agent.models[provider]`** (model map entry for the active provider)
+3. **`config.defaults.model`** (project-level default model for all agents and Coordinator)
+4. **`agent.modelTier`** (catalog-resolved `strong` / `balanced` / `fast` mapped to the active provider)
+5. **`agent.models["acp"]`** (legacy model map entry fallback)
+6. **The provider's default model** in the catalog (e.g. `opencode/big-pickle` for OpenCode, `sonnet` for Claude)
 
-A single `defaults: { provider, model }` block at the top of the config supplies steps 2/5 for every agent, so you rarely repeat yourself.
+A single `defaults: { provider, model }` block at the top of the config supplies the default for every agent and the Coordinator, so you rarely repeat yourself.
+
+> **💡 Notes**:
+> - **Global default overrides**: Setting `config.defaults.model` automatically applies to all built-in agents and the background Coordinator; only use `{ model: "..." }` on an agent when you want a specific agent to use a different model.
+> - **Automatic cross-provider adaptation**: When `config.defaults.model` is omitted, built-in agents adapt across providers using their `modelTier` (e.g. Architect resolves to `opus` on Claude, and `opencode/exo-free` on OpenCode).
+> - **Full model IDs**: When using providers like OpenCode, specify full qualified model IDs (e.g. `hai-google/gemini-3.8-flash`).
 
 ## Config file
 

@@ -106,12 +106,21 @@ multiclaw doctor --config ./multiclaw.config.ts       # 同时校验配置
 - **`runtime` 与 `provider`**。*runtime* 是 multiclaw 与 Agent 通信所用的协议——目前始终是 `acp`（[Agent Client Protocol](https://agentclientprotocol.com)）。*provider* 是具体的 Agent 产品（`claude`、`opencode`、`codex`、`cursor`）。因此 `runtime` 是常量；`provider` 是你需要选择的那个。
 - **模型层级（Model Tiers）**。Agent 无需硬编码某个仅存在于特定 Provider 的模型 id，而是声明一个**层级**——`strong`、`balanced` 或 `fast`。内置目录会将每个层级映射到*各 Provider* 对应的具体模型 id（例如 Claude 上的 `strong` → `opus`，OpenCode 上的 `strong` → `opencode/exo-free`）。这样同一份预设配置可在任意 Provider 上直接运行，切换 Provider 只会改变解析出的模型。
 
-Agent 模型的解析优先级：
+Agent 模型的解析优先级（从高到低）：
 
-1. `agent.model`（显式 id）→ 2. `agent.models[provider]` → 3. 旧版 `agent.models["acp"]` →
-4. `agent.modelTier`（通过目录解析）→ 5. `config.defaults.model` → 6. Provider 的默认模型。
+1. **`agent.model`**（显式指定的具体模型 ID，最高优先级）
+2. **`agent.models[provider]`**（当前 Provider 对应的模型映射）
+3. **`config.defaults.model`**（项目全局默认模型，适用于所有未显式覆盖模型的 Agent 和 Coordinator）
+4. **`agent.modelTier`**（通过当前 Provider Catalog 将 `strong` / `balanced` / `fast` 自动映射为该 Provider 的对应模型）
+5. **`agent.models["acp"]`**（兼容旧版配置的历史全局别名兜底）
+6. **Provider Catalog 的默认模型**（例如 OpenCode 为 `opencode/big-pickle`，Claude 为 `sonnet`）
 
-在配置顶部写一行 `defaults: { provider, model }` 即可为所有 Agent 提供步骤 2/5 的兜底值，几乎无需重复。
+在配置顶部写一行 `defaults: { provider, model }` 即可为项目内所有 Agent（包括 Coordinator）提供统一默认模型，极少需要重复配置。
+
+> **💡 说明**：
+> - **全局默认覆盖**：设置 `defaults.model` 后，所有内置 Agent 和后台协调器（Coordinator）均会自动采用该模型；仅当某个特定 Agent 需要使用不同模型时，才需在该 Agent 参数中传入 `model` 覆盖。
+> - **自动跨平台适配**：当未设置 `defaults.model` 时，内置 Agent 会根据自身的 `modelTier` 自动匹配各 Provider 的最佳模型（例如 Claude 上架构师自动选用 `opus`，OpenCode 上自动选用 `opencode/exo-free`）。
+> - **Provider 模型 ID 格式**：使用 OpenCode 时，模型 ID 需遵循 `<provider>/<model>` 完整格式（如 `hai-google/gemini-3.8-flash`）。
 
 ## 配置文件
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { resolveModel } from "../providers/resolve"
 import { agents } from "."
 
 const ALL = Object.entries(agents)
@@ -34,13 +35,39 @@ describe("built-in agents", () => {
     expect(factory({ description: "custom" }).description).toBe("custom")
   })
 
-  // `AgentRunner` looks a preset's model up by runtime name. A `models` key that
-  // does not match the runtime resolves to undefined, and the agent then runs
-  // with no model at all — silently, since nothing in the path rejects it.
-  it.each(ALL)("%s resolves a model for its own runtime", (_name, factory) => {
+  it.each(ALL)("%s declares a valid modelTier", (_name, factory) => {
     const agent = factory()
-    expect(agent.models?.[agent.runtime ?? "acp"]).toBeTruthy()
+    expect(["strong", "balanced", "fast"]).toContain(agent.modelTier)
   })
+
+  it.each(ALL)("%s resolves config.defaults.model when configured", (_name, factory) => {
+    const agent = factory()
+    const resolved = resolveModel(agent, {
+      name: "test",
+      workDir: ".",
+      agents: [],
+      defaults: { model: "hai-google/gemini-3.8-flash" },
+    })
+    expect(resolved).toBe("hai-google/gemini-3.8-flash")
+  })
+
+  it.each(ALL)(
+    "%s resolves provider-appropriate model when defaults.model is unset",
+    (_name, factory) => {
+      const agent = factory()
+      const opencodeModel = resolveModel(agent, {
+        name: "test",
+        workDir: ".",
+        agents: [],
+        defaults: { provider: "opencode" },
+      })
+      expect(opencodeModel).toBeTruthy()
+      // Must NOT fall back to Claude-specific models on opencode
+      expect(opencodeModel).not.toBe("opus")
+      expect(opencodeModel).not.toBe("sonnet")
+      expect(opencodeModel).not.toBe("haiku")
+    }
+  )
 
   // Every preset but the leader runs inside the pipeline, so every one of them
   // carries the placeholder that shows it what upstream produced. Without it the

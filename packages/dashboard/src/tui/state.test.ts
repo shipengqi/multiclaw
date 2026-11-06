@@ -818,6 +818,17 @@ describe("seedAgents", () => {
     expect(agents.qa.model).toBe("haiku")
   })
 
+  it("reflects config.defaults.model across the roster", () => {
+    const agents = seedAgents(
+      config({
+        defaults: { model: "default-model" },
+        agents: [agent("dev"), agent("qa", { model: "custom-model" })],
+      })
+    )
+    expect(agents.dev.model).toBe("default-model")
+    expect(agents.qa.model).toBe("custom-model")
+  })
+
   it("omits the leader when useLeader is false", () => {
     expect(Object.keys(seedAgents(config({})))).toEqual(["architect", "dev"])
   })
