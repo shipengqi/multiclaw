@@ -76,9 +76,9 @@ AgentResult.attempts 是次数，repair 也会追加结果；它们不等同于�
 - **按依赖就绪调度。** runStage 内及时补槽，但 run 等整个 stage 结束才启动下一层。例如 A→C、B→D，A 快而 B 慢，C 仍等 B。可评估 ready queue，这是我们的 DAG 优化，不是 dsh 的现成方案。必须兼顾失败传播、planner 重建、checkpoint 与共享工作区写入约束。
 - **摘要与按需展开。** 借主会话接收短摘要、按需读详情的方式，避免所有日志反复注入每个 agent。现有 upstreamOutputs 与历史预算是自然落点。
 
-## 对已有对比文档的修正
+## 对早期对比结论的修正
 
-以下结论替代 dsh-superagent-vs-multiclaw.md 中对应建议：
+以下结论修正早期 dsh-superagent 对比分析中的对应建议（该文已移除）：
 
 1. **不直接删除 systemPrompt fingerprint。** systemPrompt 是 openSession 创建选项，RuntimeSession 无热更新 interface。dsh 动态 prompt section 不能直接移植；删除指纹可能沿用旧指令。
 2. **不新增 resume 权限解析。** AgentRunner.run 已调用 resolvePermissionMode，当前模式与回调每次传入 session.prompt。Mandate revalidate 是授权范围校验，和工具权限模式不是同一层含义。

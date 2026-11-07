@@ -5,7 +5,7 @@
 - **仓库**：`/Users/C5406922/code/multiclaw`（HEAD `5df4c5e`，Batch 1/2/3 改动均未提交）
 - **被验证对象**：工程师寇豆码的 Batch 3 交付（core / cli / dashboard）
 - **验证立场**：证伪优先。工程师自称「全绿、IS_PASS: YES」，本报告独立复现，不盖章。
-- **设计依据**：`deliverables/software-company/multiclaw-batch3-plan-2026-10-13.md`
+- **设计依据**：`docs/archive/software-company/multiclaw-batch3-plan-2026-10-13.md`
 
 ---
 

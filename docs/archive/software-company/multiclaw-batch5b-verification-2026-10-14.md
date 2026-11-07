@@ -2,7 +2,7 @@
 
 > 复核人：严过关（QA）｜日期：2026-10-14｜HEAD：`9a17bff`（工作树干净，未 commit）
 > 方法：**对抗式**——独立测量、自写探针用例、亲手回退复现，不复述工程师结论。
-> 计划书：`deliverables/software-company/multiclaw-batch5b-plan-2026-10-14.md`
+> 计划书：`docs/archive/software-company/multiclaw-batch5b-plan-2026-10-14.md`
 > 约束遵守：未改源码（回退探针改动均**逐字还原**，`git status --porcelain` 为空）；未与其他 vitest 并发（`App.run.test.tsx` 用固定 `/tmp/multiclaw-tui-*` 工作区，两次并发会互相污染）；未重开已接受事项（三处 `state.test.ts` fixture 适配、persist effect 的 `biome-ignore`、`App.run.test.tsx` 的 `beforeEach` 清理、`resolveAgentId` 规格笔误）。
 
 ## 判定

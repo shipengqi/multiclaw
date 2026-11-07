@@ -2,7 +2,7 @@
 
 > 复核人：严过关（QA）｜日期：2026-10-14｜HEAD：`af25692`（未 commit）
 > 方法：**对抗式**——独立测量、自写用例、自行回退复现，不复述工程师结论。
-> 计划书：`deliverables/software-company/multiclaw-batch5a-plan-2026-10-14.md`
+> 计划书：`docs/archive/software-company/multiclaw-batch5a-plan-2026-10-14.md`
 
 ## 判定
 

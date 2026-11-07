@@ -3,7 +3,7 @@
 > 验证人：严过关（Yan）· QA 工程师
 > 日期：2026-10-13
 > 仓库：`/Users/C5406922/code/multiclaw`（HEAD `e8b45f8`，Batch 4 改动为工作区未提交改动）
-> 设计说明：`deliverables/software-company/multiclaw-batch4-plan-2026-10-13.md`
+> 设计说明：`docs/archive/software-company/multiclaw-batch4-plan-2026-10-13.md`
 > 立场：独立证伪，不盖章。所有断言均为自写，未复用工程师用例。
 
 ---

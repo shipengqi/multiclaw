@@ -153,11 +153,12 @@ graft
 # Claude Code local settings (machine-specific)
 .claude/settings.local.json
 
-# Ad-hoc local scripts (not shared; deliverables/ is tracked)
+# Ad-hoc local scripts (not shared)
 scripts/
 
 # Runtime state written by `multiclaw run` and the console under `workDir`
 .multiclaw/
 
-# WorkBuddy AI local memory
+# WorkBuddy AI local memory (agent-local, not shared)
 .workbuddy-ai/
+.workbuddy/memory/
