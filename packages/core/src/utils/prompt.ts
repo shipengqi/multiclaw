@@ -16,15 +16,34 @@ function resolveInWorkspace(workDir: string, reference: string): string | undefi
   return resolved
 }
 
+export function renderArtifactPaths(
+  template: string,
+  resolve?: (reference: string) => string
+): string {
+  return resolve
+    ? template.replace(/\{\{artifact:([^}]+)\}\}/g, (_, reference: string) =>
+        resolve(reference.trim())
+      )
+    : template
+}
+
 export async function renderPrompt(
   template: string,
   context: Record<string, string>,
-  workDir: string
+  workDir: string,
+  artifacts?: { resolve(reference: string): string; readPath(reference: string): string }
 ): Promise<string> {
-  let result = template
+  let result = renderArtifactPaths(
+    template,
+    artifacts && ((reference) => artifacts.resolve(reference))
+  )
   const fileMatches = [...template.matchAll(/\{\{file:([^}]+)\}\}/g)]
   for (const match of fileMatches) {
-    const filePath = resolveInWorkspace(workDir, match[1].trim())
+    const reference = match[1].trim()
+    const filePath =
+      reference.startsWith("artifact:") && artifacts
+        ? artifacts.readPath(reference.slice("artifact:".length))
+        : resolveInWorkspace(workDir, reference)
     if (!filePath) {
       result = result.replace(match[0], () => `[file outside workspace: ${match[1].trim()}]`)
       continue

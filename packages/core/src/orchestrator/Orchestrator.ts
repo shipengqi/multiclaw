@@ -28,6 +28,7 @@ import { renderUpstreamOutputs } from "../utils/upstream"
 import { isWorkContext } from "../utils/work"
 import { AgentRunner } from "./AgentRunner"
 import { AgentSessionManager } from "./AgentSessionManager"
+import { ArtifactStore } from "./ArtifactStore"
 import { ContextManager } from "./ContextManager"
 import { Coordinator } from "./Coordinator"
 import { COORDINATOR_ID } from "./coordinatorAgent"
@@ -48,6 +49,8 @@ type Resolution =
 export class Orchestrator {
   readonly eventBus = new EventBus()
   private contextManager: ContextManager
+  private artifacts?: ArtifactStore
+  private previewing = false
   private runner: AgentRunner
   private workDir: string
   /** Which configured checkpoints have already been triggered this run. */
@@ -156,11 +159,13 @@ export class Orchestrator {
       this.contextManager,
       this.workDir,
       config,
-      this.sessions
+      this.sessions,
+      () => this.artifacts
     )
   }
 
   async preview(options: { signal?: AbortSignal } = {}): Promise<OrchestrationPreview> {
+    this.previewing = true
     try {
       return await this.previewManaged(options)
     } finally {
@@ -461,10 +466,7 @@ export class Orchestrator {
       agents.some((agent) => this.isPlanner(agent))
     ) {
       try {
-        fs.rmSync(
-          path.resolve(this.workDir, this.config.context?.taskPlanPath ?? "task-plan.json"),
-          { force: true }
-        )
+        this.artifacts?.clearTaskPlan()
       } catch (error) {
         this.routeError =
           "Routing incomplete: could not clear the previous plan: " + errorMessage(error)
@@ -1126,9 +1128,7 @@ export class Orchestrator {
     if (this.config.resume?.agents) return
     // `force` makes the normal case — a workspace with no plan in it — a no-op
     // rather than a stat followed by a delete.
-    fs.rmSync(path.resolve(this.workDir, this.config.context?.taskPlanPath ?? "task-plan.json"), {
-      force: true,
-    })
+    this.artifacts?.clearTaskPlan()
   }
 
   /**
@@ -1274,6 +1274,7 @@ export class Orchestrator {
         ? structuredClone(previous)
         : {
             id: randomUUID(),
+            ...(continuing ? {} : { artifactVersion: 1 as const }),
             originalRequirement: this.originalRequirement,
             requirement: this.contextManager.get("requirement") ?? this.originalRequirement,
             agents: [],
@@ -1285,6 +1286,15 @@ export class Orchestrator {
     }
     this.work.revision ??= 1
     this.contextManager.set("workId", this.work.id)
+    this.artifacts = new ArtifactStore(
+      this.config.projectDir ?? this.workDir,
+      this.work.id,
+      this.config.context?.taskPlanPath
+        ? path.resolve(this.workDir, this.config.context.taskPlanPath)
+        : undefined,
+      continuing && !previous?.artifactVersion ? this.workDir : undefined
+    )
+    this.work.artifactDirectory = this.artifacts.directory
     if (continuing) {
       const sessions: Record<string, SessionRecord> = {
         ...(this.config.resume?.agents ? this.config.resume.sessions : {}),
@@ -1334,6 +1344,7 @@ export class Orchestrator {
       this.work.agents = this.work.agents.filter((item) => item.agentId !== agent.id)
       this.work.agents.push(entry)
     }
+    if (!this.previewing) this.artifacts?.record(this.work)
     this.eventBus.emit({
       type: "orchestration:route",
       timestamp: new Date().toISOString(),
@@ -1784,10 +1795,8 @@ export class Orchestrator {
    * it deliberately left out.
    */
   private readTaskPlan(): Map<string, Partial<TaskPlan["tasks"][number]>> | undefined {
-    const taskPlanPath = path.resolve(
-      this.workDir,
-      this.config.context?.taskPlanPath ?? "task-plan.json"
-    )
+    const taskPlanPath = this.artifacts?.readPath("task-plan.json", "architect")
+    if (!taskPlanPath) return undefined
     if (!fs.existsSync(taskPlanPath)) return undefined
 
     let taskPlan: unknown

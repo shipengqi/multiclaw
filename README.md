@@ -165,7 +165,7 @@ export default defineConfig({
       model: "opus",          // optional; overrides tier/default for this agent
       systemPrompt: "You are a software architect.", // optional
       taskPrompt: `Design the system for {{requirement}}.
-Read the brief at {{file:brief.md}} and write architecture.md.`,
+Read the brief at {{file:brief.md}} and write {{artifact:architecture.md}}.`,
       permissions: { mode: "ask" }, // optional; overrides the project mode here
       dependsOn: [],          // optional; list of agent ids this agent waits for
       timeout: 1_800_000,     // optional; ms, default: 1 800 000 (30 min)
@@ -176,7 +176,7 @@ Read the brief at {{file:brief.md}} and write architecture.md.`,
       id: "developer",
       name: "Developer",
       model: "sonnet",        // override model for this agent
-      taskPrompt: "Read architecture.md and implement the code.",
+      taskPrompt: "Use this design to implement the code: {{file:artifact:architecture.md}}",
       dependsOn: ["architect"],
     },
   ],
@@ -232,12 +232,16 @@ agents.backendDeveloper({ timeout: 60 * 60 * 1000 })
 
 ### Template variables
 
-Two syntaxes are supported in `taskPrompt` and `systemPrompt`:
+Task templates support context, workspace files and collaboration artifacts. Artifact path placeholders also work in `systemPrompt`:
 
 | Syntax | Replaced with |
 |--------|--------------|
 | `{{key}}` | The value of `context.key` (or `requirement` from the CLI). |
 | `{{file:path/to/file}}` | The contents of that file, resolved relative to `workDir`. |
+| `{{artifact:architecture.md}}` | Absolute output path for a shared design in the current work's `planning/` directory. |
+| `{{artifact:implementation-notes.md}}` | Absolute output path for the current agent's own report. |
+| `{{file:artifact:architecture.md}}` | Contents of the current work's shared design, independent of the agent's CWD. |
+| `{{file:artifact:agents/backend-developer/implementation-notes.md}}` | Contents of another agent's report in the same work. |
 | `{{pipelineAgents}}` | List of all agents running in this pipeline (id: name). Auto-injected; useful for the architect to decompose tasks per agent. |
 
 ## Parallelism
@@ -300,14 +304,14 @@ Journals use version 2. Older or damaged journals are unsupported and retained w
 
 ## Logs
 
-After each run, all generated files are written under `workDir/.multiclaw/runs/run-<timestamp>-<execution-id>/` (or `logDir` if set):
+Batch execution workspaces and logs remain under `workDir/.multiclaw/runs/run-<timestamp>-<execution-id>/` (or `logDir` for logs if set):
 
 ```
 workDir/
 └── .multiclaw/
     └── runs/
         └── run-2026-10-08T12-00-00-<execution-id>/
-            ├── <agent output files>   ← files agents write (e.g. architecture.md)
+            ├── <project files>        ← source code, tests, README.md, etc.
             └── logs/
                 ├── <agentId>.log      ← raw stdout per agent
                 └── report.json        ← full orchestration result
@@ -319,6 +323,36 @@ workDir/
 | `report.json` | Full orchestration result (status, duration, output per agent) |
 
 The log path is printed to the terminal at the start of every run.
+
+### Collaboration artifacts
+
+Both batch runs and the interactive console keep collaboration documents under the project's `.multiclaw/works/<work-id>/`, separate from source code and formal project documentation:
+
+```text
+.multiclaw/
+├── sessions/                       # console history and recovery
+├── runs/                           # batch execution workspaces and logs
+└── works/
+    └── <work-id>/
+        ├── manifest.json           # current artifact index
+        ├── planning/
+        │   ├── requirements.md
+        │   ├── architecture.md
+        │   ├── api-spec.md
+        │   ├── ui-design.md
+        │   └── task-plan.json
+        └── agents/
+            ├── backend-developer/implementation-notes.md
+            ├── frontend-developer/implementation-notes.md
+            ├── tester/test-report.md
+            └── code-reviewer/code-review.md
+```
+
+Shared requirements/designs have one path for every agent; reports are owned by their producer, so parallel developers cannot overwrite each other's notes. Each agent receives an up-to-date list of files in the current work, and built-in design references inline those files into downstream prompts. Use `dependsOn` to ensure a producer finishes before its consumers run. File existence does not prove successful execution or review approval.
+
+New tasks receive new work IDs. Continuation, retry and review repair reuse the same work directory and read the latest artifacts. `manifest.json` indexes current files, not immutable per-review snapshots. The result's `work.artifactDirectory` records the display location, and batch completion prints it. Storage is Git-ignored by default.
+
+Existing root Markdown files are not moved or deleted. Legacy continuation may read shared designs from its original execution directory when no isolated copy exists; new tasks never use this fallback. An explicit `context.taskPlanPath` still overrides the task-plan location. Custom templates should use the artifact placeholders above; ordinary `{{file:...}}` references retain their workspace-relative meaning. Artifact paths are a collaboration contract, not a filesystem sandbox.
 
 ## Presets
 

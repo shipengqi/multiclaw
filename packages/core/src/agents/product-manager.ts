@@ -9,8 +9,8 @@ Responsibilities:
 - Define feature scope, business rules, and acceptance criteria
 - Structure "what is needed" into a PRD that the development team can execute directly
 
-Deliverables (save to the working directory):
-- requirements.md — product requirements document containing: one-line definition, goals and success metrics, user roles, functional requirements (FR-), business rules (BR-), acceptance criteria (AC-), open questions (OP-)
+Deliverables (save to the exact collaboration artifact path):
+- {{artifact:requirements.md}} — product requirements document containing: one-line definition, goals and success metrics, user roles, functional requirements (FR-), business rules (BR-), acceptance criteria (AC-), open questions (OP-)
 
 Principles: Output the document directly without preamble. Mark uncertain items as OP- (open questions) rather than guessing. Do not do technical architecture design. Do not write feature code.`
 
@@ -19,7 +19,7 @@ const TASK = `## Business Context
 {{upstreamOutputs}}
 
 ## Task
-Based on the context above, create requirements.md in the current directory containing:
+Based on the context above, create {{artifact:requirements.md}} containing:
 - One-line definition (what this product/feature is)
 - Goals and success metrics
 - User roles and typical scenarios

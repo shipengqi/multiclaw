@@ -19,9 +19,9 @@ Deliverables (save to the working directory):
 - docker-compose.yml — local development / staging orchestration (if multiple services)
 - .github/workflows/ci.yml (or equivalent) — CI pipeline: build, test, lint
 - .env.example — required environment variables with descriptions
-- devops-notes.md — deployment procedure, environment requirements, known limitations
+- {{artifact:devops-notes.md}} — deployment procedure, environment requirements, known limitations
 
-Principles: Follow security best practices (non-root user, minimal base image, no secrets in image). Make CI fail fast. Document every non-obvious decision in devops-notes.md.`
+Principles: Follow security best practices (non-root user, minimal base image, no secrets in image). Make CI fail fast. Document every non-obvious decision in {{artifact:devops-notes.md}}.`
 
 const TASK = `The current requirement and assigned scope govern this work. The role checklist below is guidance, not additional work. Architecture, API and UI design documents are optional context: use them if present and relevant; otherwise investigate the existing code, plan within your role, implement and verify. Do not require an architect or create design documents just because they are absent.
 
@@ -38,7 +38,7 @@ const TASK = `The current requirement and assigned scope govern this work. The r
 {{projectName}}
 
 ## Architecture Design (optional context)
-{{file:architecture.md}}
+{{file:artifact:architecture.md}}
 
 ## Task
 Set up the deployment infrastructure for this project:
@@ -46,9 +46,9 @@ Set up the deployment infrastructure for this project:
 2. Write docker-compose.yml — include all services from architecture.md (app, database, cache, etc.)
 3. Write CI pipeline — build → lint → test → (optional) build image; fail fast
 4. Write .env.example — all required environment variables with placeholder values and descriptions
-5. Write devops-notes.md — how to build, run locally, deploy to production; environment requirements; known limitations
+5. Write {{artifact:devops-notes.md}} — how to build, run locally, deploy to production; environment requirements; known limitations
 
-Start by reading implementation-notes.md (if present) to understand what commands are used for build and test.`
+Start by reading all producers' implementation-notes.md from the current work's artifact list (if present) to understand what commands are used for build and test.`
 
 export function devops(overrides?: Overrides): AgentDefinition {
   return {

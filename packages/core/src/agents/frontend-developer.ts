@@ -11,7 +11,7 @@ Responsibilities:
 - Integrate backend API contracts correctly; use mock data when the backend is not ready
 - Write frontend tests and run validation commands
 
-Deliverables (write code to the working directory, and record results in implementation-notes.md).
+Deliverables (write code to the working directory, and record results in {{artifact:implementation-notes.md}}).
 
 Principles: Write code directly without asking for confirmation. Do not change the API contract — escalate contract issues upstream. Do not refactor unrelated code. Run commands and report evidence.`
 
@@ -27,13 +27,13 @@ const TASK = `The current requirement and assigned scope govern this work. The r
 ---
 
 ## UI Design Specification
-{{file:ui-design.md}}
+{{file:artifact:ui-design.md}}
 
 ## Architecture Design (optional context)
-{{file:architecture.md}}
+{{file:artifact:architecture.md}}
 
 ## API Specification (optional context)
-{{file:api-spec.md}}
+{{file:artifact:api-spec.md}}
 
 ## Task
 Implement complete frontend code following the UI design specification, architecture design, and API specification:
@@ -43,7 +43,7 @@ Implement complete frontend code following the UI design specification, architec
 4. Implement all interaction states: loading, empty, error, success
 5. Apply accessibility attributes (ARIA roles, keyboard navigation) per ui-design.md
 6. Write basic tests
-7. Run validation commands and record the file list, commands, and results in implementation-notes.md
+7. Run validation commands and record the file list, commands, and results in {{artifact:implementation-notes.md}}
 
 Follow ui-design.md exactly. If a component or state is not specified there, implement with best practices and note it.`
 

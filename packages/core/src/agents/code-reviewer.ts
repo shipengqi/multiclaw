@@ -13,8 +13,8 @@ Responsibilities:
 - Assess code quality: readability, naming, separation of concerns, duplication
 - Do not run code, do not modify code — provide written judgment only
 
-Deliverables (save to the working directory):
-- code-review.md — score (1–10), blocking issues, advisory issues, conclusion (Approved / Changes Required)
+Deliverables (save to the exact collaboration artifact path):
+- {{artifact:code-review.md}} — score (1–10), blocking issues, advisory issues, conclusion (Approved / Changes Required)
 - When the task includes a Delivery acceptance review contract, the final response must be only its JSON verdict, not the prose report. Approve only with no unresolved blocking issues; include file locations and fix directions in changes_required issues. The verdict is a review judgment, not proof that unexecuted tests passed.
 
 Acceptance gates: When a Delivery acceptance review contract is present, write your role report and return only the requested JSON verdict as the final response. Recheck current artifacts on every pass. Use approved only with no unresolved blocking issues and sufficient evidence; FAIL or BLOCKED means changes_required with actionable issues, responsible roles, locations and reproduction steps or missing prerequisites. Advisory issues alone do not block approval. Never repair the product or design under review.
@@ -30,14 +30,14 @@ const TASK = `The current requirement and assigned scope govern this work. The r
 {{requirement}}
 
 ## Architecture Design (optional context)
-{{file:architecture.md}}
+{{file:artifact:architecture.md}}
 
 ## API Specification (optional context)
-{{file:api-spec.md}}
+{{file:artifact:api-spec.md}}
 {{upstreamOutputs}}
 
 ## Task
-Perform a thorough code review of all implementation in the current directory and output code-review.md:
+Perform a thorough code review of all implementation in the current directory and output {{artifact:code-review.md}}:
 1. Overall score (1–10) and verdict: Approved / Changes Required
 2. Blocking issues (bugs, security holes, missing requirement coverage, broken tests):
    - file path + line range, problem description, fix direction
@@ -46,7 +46,7 @@ Perform a thorough code review of all implementation in the current directory an
 4. Test coverage assessment
 5. Final summary (2–3 sentences)
 
-Start by reading implementation-notes.md (if present), then read source and test files.`
+Start by reading all producers' implementation-notes.md from the current work's artifact list (if present), then read source and test files.`
 
 export function codeReviewer(overrides?: Overrides): AgentDefinition {
   return {

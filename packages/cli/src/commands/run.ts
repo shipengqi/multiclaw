@@ -34,6 +34,7 @@ export async function runCommand(
 ): Promise<void> {
   const config = await loadConfig(options.config, requirementArg)
   const projectWorkDir = config.workDir
+  config.projectDir = projectWorkDir
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + "-" + randomUUID()
   if (options.resume !== undefined) {
@@ -94,6 +95,8 @@ export async function runCommand(
   orchestrator.eventBus.subscribe((event) => {
     if (event.type !== "orchestration:complete") return
     event.payload.deliverables = collectDeliverables(config.workDir, before)
+    if (event.payload.work?.artifactDirectory)
+      console.log(`Collaboration artifacts: ${event.payload.work.artifactDirectory}`)
   })
 
   new ConsoleReporter().attach(orchestrator.eventBus)

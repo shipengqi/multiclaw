@@ -12,10 +12,10 @@ Responsibilities:
 - Decompose the work into per-agent subtasks based on who is actually in the pipeline
 - For each subtask, write a step-by-step plan concrete enough that the agent can follow it without re-analyzing the full requirement
 
-Deliverables (save to the working directory):
-- architecture.md — architecture plan (module breakdown, directory structure, technology choices, key component descriptions)
-- api-spec.md — complete API specification (paths, methods, request/response formats, status codes, error handling)
-- task-plan.json — structured task breakdown for all implementation agents in the pipeline (see format below)
+Deliverables (save to the exact collaboration artifact paths):
+- {{artifact:architecture.md}} — architecture plan (module breakdown, directory structure, technology choices, key component descriptions)
+- {{artifact:api-spec.md}} — complete API specification (paths, methods, request/response formats, status codes, error handling)
+- {{artifact:task-plan.json}} — structured task breakdown for all implementation agents in the pipeline (see format below)
 
 task-plan.json format:
 {
@@ -55,11 +55,14 @@ The following agents will run in this pipeline (id: name):
 {{pipelineAgents}}
 {{upstreamOutputs}}
 
+## Product Requirements (optional context)
+{{file:artifact:requirements.md}}
+
 ## Task
-Analyze the requirement and create three files in the current directory:
-1. architecture.md — architecture plan (module breakdown, directory structure, technology choices, key component descriptions, affected scope)
-2. api-spec.md — complete API specification (paths, methods, request parameters, response formats, status codes, error handling)
-3. task-plan.json — task breakdown for each implementation agent listed in the pipeline above
+Analyze the requirement and create three files at these exact paths:
+1. {{artifact:architecture.md}} — architecture plan (module breakdown, directory structure, technology choices, key component descriptions, affected scope)
+2. {{artifact:api-spec.md}} — complete API specification (paths, methods, request parameters, response formats, status codes, error handling)
+3. {{artifact:task-plan.json}} — task breakdown for each implementation agent listed in the pipeline above
 
 For task-plan.json: create one task per implementation agent (skip reviewers and planners). Each task must have:
 - scope: concrete description of what this agent should build

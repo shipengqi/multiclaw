@@ -255,7 +255,7 @@ describe("work routing", () => {
       expect(seen.map((task) => task.agentId)).toEqual(["leader", "backend-developer"])
       expect(seen[1].prompt).toContain("optional context")
       expect(seen[1].prompt).toContain("Implement pagination only")
-      expect(seen[1].prompt).toContain("[file not found: architecture.md]")
+      expect(seen[1].prompt).toContain("[file not found: artifact:architecture.md]")
       expect(seen[1].prompt).not.toContain("{{agentScope}}")
     }
   )
@@ -265,7 +265,7 @@ describe("work routing", () => {
       if (task.agentId === "leader") return route(["planner", "dev"])
       if (task.agentId === "planner")
         fs.writeFileSync(
-          path.join(dir, "task-plan.json"),
+          task.prompt.match(/^Task plan: (.+)$/m)![1],
           JSON.stringify({ tasks: [{ id: "dev", scope: "Scoped by planner", plan: ["Verify"] }] })
         )
       return ok()
@@ -284,7 +284,7 @@ describe("work routing", () => {
         return route(["planner", "dev"], { tasks: [{ agentId: "dev", scope: "Pagination only" }] })
       if (task.agentId === "planner")
         fs.writeFileSync(
-          path.join(dir, "task-plan.json"),
+          task.prompt.match(/^Task plan: (.+)$/m)![1],
           JSON.stringify({
             tasks: [{ id: "dev", scope: "Rewrite API", plan: ["Verify pagination"] }],
           })

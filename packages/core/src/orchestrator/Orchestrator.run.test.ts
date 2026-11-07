@@ -16,6 +16,13 @@ import { AgentSessionManager } from "./AgentSessionManager"
 
 const RUNTIME = "test-orchestrator-run"
 
+/** Fake producers follow the same explicit output path that real agents receive. */
+function planPath(task: AgentTask): string {
+  const match = task.prompt.match(/^Task plan: (.+)$/m)
+  if (!match) throw new Error("Missing collaboration task-plan path")
+  return match[1]
+}
+
 let handler: (task: AgentTask) => Promise<AgentOutput> = async (task) => ({
   output: `out:${task.agentId}`,
   exitCode: 0,
@@ -374,7 +381,7 @@ describe("pipeline review gates", () => {
       seen.push(task)
       if (task.agentId === "architect") {
         fs.writeFileSync(
-          path.join(workDir, "task-plan.json"),
+          planPath(task),
           JSON.stringify({
             tasks: [
               {
@@ -906,7 +913,7 @@ describe("Orchestrator.run", () => {
     // which is also why a plan left over from a previous turn has to be cleared.
     handler = async (task) => {
       if (task.agentId === "architect") {
-        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+        fs.writeFileSync(planPath(task), JSON.stringify(plan))
       }
       return { output: `out:${task.agentId}`, exitCode: 0 }
     }
@@ -954,7 +961,7 @@ describe("Orchestrator.run", () => {
     }
     handler = async (task) => {
       if (task.agentId === "architect") {
-        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+        fs.writeFileSync(planPath(task), JSON.stringify(plan))
       }
       return { output: `out:${task.agentId}`, exitCode: 0 }
     }
@@ -995,7 +1002,7 @@ describe("Orchestrator.run", () => {
     }
     handler = async (task) => {
       if (task.agentId === "lead-designer") {
-        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+        fs.writeFileSync(planPath(task), JSON.stringify(plan))
       }
       return { output: `out:${task.agentId}`, exitCode: 0 }
     }
@@ -1032,7 +1039,7 @@ describe("Orchestrator.run", () => {
     }
     handler = async (task) => {
       if (task.agentId === "designer") {
-        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+        fs.writeFileSync(planPath(task), JSON.stringify(plan))
       }
       return { output: `out:${task.agentId}`, exitCode: 0 }
     }
@@ -1069,7 +1076,7 @@ describe("Orchestrator.run", () => {
       if (task.agentId === "architect") {
         // Writes a plan, then fails — so a wrongly-applied plan shows up as a
         // task title on dev rather than as an absent file.
-        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+        fs.writeFileSync(planPath(task), JSON.stringify(plan))
         throw new Error("architect exploded")
       }
       return { output: `out:${task.agentId}`, exitCode: 0 }
@@ -1116,7 +1123,7 @@ describe("Orchestrator.run", () => {
     }
     handler = async (task) => {
       if (task.agentId === "planner-a") {
-        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+        fs.writeFileSync(planPath(task), JSON.stringify(plan))
       }
       return { output: `out:${task.agentId}`, exitCode: 0 }
     }
@@ -1150,7 +1157,7 @@ describe("Orchestrator.run", () => {
   it("warns instead of failing silently when task-plan.json is malformed", async () => {
     handler = async (task) => {
       if (task.agentId === "architect") {
-        fs.writeFileSync(path.join(workDir, "task-plan.json"), "{ not valid json")
+        fs.writeFileSync(planPath(task), "{ not valid json")
       }
       return { output: `out:${task.agentId}`, exitCode: 0 }
     }
@@ -1176,7 +1183,7 @@ describe("Orchestrator.run", () => {
   it("warns when task-plan.json has no tasks array", async () => {
     handler = async (task) => {
       if (task.agentId === "architect") {
-        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify({ projectName: "x" }))
+        fs.writeFileSync(planPath(task), JSON.stringify({ projectName: "x" }))
       }
       return { output: `out:${task.agentId}`, exitCode: 0 }
     }
@@ -1208,8 +1215,7 @@ describe("Orchestrator.run", () => {
     { tasks: [{ id: "dev", title: {}, scope: 42 }] },
   ])("ignores malformed model task-plan shapes without crashing: %j", async (plan) => {
     handler = async (task) => {
-      if (task.agentId === "architect")
-        fs.writeFileSync(path.join(workDir, "task-plan.json"), JSON.stringify(plan))
+      if (task.agentId === "architect") fs.writeFileSync(planPath(task), JSON.stringify(plan))
       return { output: "done", exitCode: 0 }
     }
     const { result, events } = await runOrch([
@@ -1229,7 +1235,7 @@ describe("Orchestrator.run", () => {
     handler = async (task) => {
       if (task.agentId === "architect")
         fs.writeFileSync(
-          path.join(workDir, "task-plan.json"),
+          planPath(task),
           JSON.stringify({
             tasks: [
               null,
@@ -1303,7 +1309,7 @@ describe("Orchestrator.run", () => {
   // The console runs every turn in the same workspace, so the plan file outlives
   // the turn that wrote it. Re-applying it would hand this turn's agents the last
   // turn's titles and dependencies.
-  it("drops a task plan left behind by an earlier turn", async () => {
+  it("ignores but preserves a root task plan left behind by an earlier turn", async () => {
     const stale = {
       projectName: "old",
       requirement: "old",
@@ -1326,7 +1332,9 @@ describe("Orchestrator.run", () => {
 
     await orch.run()
 
-    expect(fs.existsSync(path.join(workDir, "task-plan.json"))).toBe(false)
+    expect(fs.readFileSync(path.join(workDir, "task-plan.json"), "utf8")).toBe(
+      JSON.stringify(stale)
+    )
     expect(starts.find((p) => p.agentId === "dev")?.taskTitle).toBeUndefined()
   })
 })
@@ -1747,7 +1755,7 @@ describe("Orchestrator.run · regression boundaries", () => {
     handler = async (task) => {
       if (task.agentId === "architect")
         fs.writeFileSync(
-          path.join(workDir, "task-plan.json"),
+          planPath(task),
           JSON.stringify({
             tasks: [
               { id: "architect", dependsOn: [] },
@@ -1782,7 +1790,7 @@ describe("Orchestrator.run · regression boundaries", () => {
     handler = async (task) => {
       if (task.agentId === "architect")
         fs.writeFileSync(
-          path.join(workDir, "task-plan.json"),
+          planPath(task),
           JSON.stringify({
             tasks: [
               { id: "pm", dependsOn: ["dev"] },
@@ -1806,7 +1814,7 @@ describe("Orchestrator.run · regression boundaries", () => {
     handler = async (task) => {
       if (task.agentId === "architect")
         fs.writeFileSync(
-          path.join(workDir, "task-plan.json"),
+          planPath(task),
           JSON.stringify({
             tasks: [
               { id: "pm", title: "Changed completed title", dependsOn: ["x"] },
@@ -1900,7 +1908,7 @@ describe("Orchestrator.run · a broken agent graph", () => {
       }
       if (task.agentId === "architect") {
         fs.writeFileSync(
-          path.join(workDir, "task-plan.json"),
+          planPath(task),
           JSON.stringify({
             tasks: [{ id: "dev", title: "Build it", dependsOn: ["unused"], scope: "s" }],
           })
@@ -1928,7 +1936,7 @@ describe("Orchestrator.run · config isolation", () => {
     handler = async (task) => {
       if (task.agentId === "dev") {
         fs.writeFileSync(
-          path.join(workDir, "task-plan.json"),
+          planPath(task),
           JSON.stringify({ tasks: [{ id: "dev", title: "Turn 1 title", scope: "Turn 1 scope" }] })
         )
       }

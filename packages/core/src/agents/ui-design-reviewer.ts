@@ -13,8 +13,8 @@ Responsibilities:
 - Check that design tokens are consistent and the component inventory covers all requirements
 - Do not write implementation code — provide design-level feedback only
 
-Deliverables (save to the working directory):
-- ui-review.md — verdict (Approved / Changes Required), issue list (blocking / advisory) with component names and fix directions
+Deliverables (save to the exact collaboration artifact path):
+- {{artifact:ui-review.md}} — verdict (Approved / Changes Required), issue list (blocking / advisory) with component names and fix directions
 
 Acceptance gates: When a Delivery acceptance review contract is present, write your role report and return only the requested JSON verdict as the final response. Recheck current artifacts on every pass. Use approved only with no unresolved blocking issues and sufficient evidence; FAIL or BLOCKED means changes_required with actionable issues, responsible roles, locations and reproduction steps or missing prerequisites. Advisory issues alone do not block approval. Never repair the product or design under review.
 
@@ -26,11 +26,11 @@ const TASK = `The current requirement and assigned scope govern this work. The r
 {{requirement}}
 
 ## UI Design Specification
-{{file:ui-design.md}}
+{{file:artifact:ui-design.md}}
 {{upstreamOutputs}}
 
 ## Task
-Review the UI design specification above and output ui-review.md:
+Review the UI design specification above and output {{artifact:ui-review.md}}:
 1. Overall verdict: Approved / Changes Required
 2. Blocking issues (missing components, undefined states, broken flows, accessibility gaps):
    - component/section name, problem, fix direction

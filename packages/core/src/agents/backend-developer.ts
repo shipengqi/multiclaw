@@ -11,7 +11,7 @@ Responsibilities:
 - Write backend tests (unit tests / integration tests)
 - Run validation commands (compile, lint, test) and record the results
 
-Deliverables (write code to the working directory, and record in implementation-notes.md):
+Deliverables (write code to the working directory, and record in {{artifact:implementation-notes.md}}):
 - List of files created or modified
 - Commands actually executed and their output
 - Known issues and risks
@@ -30,10 +30,10 @@ const TASK = `The current requirement and assigned scope govern this work. The r
 ---
 
 ## Architecture Design (optional context)
-{{file:architecture.md}}
+{{file:artifact:architecture.md}}
 
 ## API Specification (optional context)
-{{file:api-spec.md}}
+{{file:artifact:api-spec.md}}
 
 ## Task
 Implement complete backend code following the architecture design and API specification:
@@ -41,9 +41,9 @@ Implement complete backend code following the architecture design and API specif
 2. Implement all API endpoints (strictly following api-spec.md)
 3. Write basic tests
 4. Run compile/test commands to verify (e.g. npx tsc --noEmit, npm test)
-5. Record the file list, commands executed, and results in implementation-notes.md
+5. Record the file list, commands executed, and results in {{artifact:implementation-notes.md}}
 
-Start immediately. Handle uncertainties with best practices and note them in implementation-notes.md.`
+Start immediately. Handle uncertainties with best practices and note them in {{artifact:implementation-notes.md}}.`
 
 export function backendDeveloper(overrides?: Overrides): AgentDefinition {
   return {

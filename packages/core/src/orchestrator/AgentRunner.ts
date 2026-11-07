@@ -13,11 +13,12 @@ import { abortError, isAbortError } from "../utils/abort"
 import { isPermanent } from "../utils/errors"
 import { HANDOFF_INSTRUCTION, parseHandoff } from "../utils/handoff"
 import { loadPromptImages } from "../utils/images"
-import { renderPrompt } from "../utils/prompt"
+import { renderArtifactPaths, renderPrompt } from "../utils/prompt"
 import { DEFAULT_RETRY_DELAY_MS, retryBudgetMs, withRetry } from "../utils/retry"
 import { DEFAULT_AGENT_TIMEOUT_MS, withTimeout } from "../utils/timeout"
 import { summarizeToolInput, summarizeToolOutput } from "../utils/toolSummary"
 import { AgentSessionManager } from "./AgentSessionManager"
+import type { ArtifactStore } from "./ArtifactStore"
 import type { ContextManager } from "./ContextManager"
 import { COORDINATOR_ID } from "./coordinatorAgent"
 
@@ -30,16 +31,28 @@ export class AgentRunner {
     private contextManager: ContextManager,
     private globalWorkDir: string,
     private config: MultiClawConfig,
-    private sessionManager?: AgentSessionManager
+    private sessionManager?: AgentSessionManager,
+    private getArtifacts?: () => ArtifactStore | undefined
   ) {}
 
+  private taskPlanTemplate(template: string): string {
+    const configured = this.config.context?.taskPlanPath
+    if (!configured) return template
+    // Preserve artifact tokens for the store; retain legacy custom-template overrides.
+    return template.replace(/\{\{(?:file:)?artifact:[^}]+\}\}|task-plan\.json/g, (match) =>
+      match.startsWith("{{") ? match : configured
+    )
+  }
+
   private sessionTask(agent: AgentDefinition): AgentTask {
+    const artifacts = agent.id === COORDINATOR_ID ? undefined : this.getArtifacts?.()
     return {
       agentId: agent.id,
       workId: agent.id === COORDINATOR_ID ? undefined : this.contextManager.get("workId"),
-      systemPrompt: this.config.context?.taskPlanPath
-        ? agent.systemPrompt.replaceAll("task-plan.json", this.config.context.taskPlanPath)
-        : agent.systemPrompt,
+      systemPrompt: renderArtifactPaths(
+        this.taskPlanTemplate(agent.systemPrompt),
+        artifacts && ((reference) => artifacts.resolve(reference, agent.id))
+      ),
       prompt: "",
       workDir: agent.workDir ? path.resolve(this.globalWorkDir, agent.workDir) : this.globalWorkDir,
       timeout: agent.timeout ?? DEFAULT_AGENT_TIMEOUT_MS,
@@ -110,6 +123,12 @@ export class AgentRunner {
         ? path.resolve(this.globalWorkDir, agent.workDir)
         : this.globalWorkDir
       fs.mkdirSync(workDir, { recursive: true })
+      const artifacts = agent.id === COORDINATOR_ID ? undefined : this.getArtifacts?.()
+      artifacts?.prepare(agent.id)
+      const artifactPaths = artifacts && {
+        resolve: (reference: string) => artifacts.resolve(reference, agent.id),
+        readPath: (reference: string) => artifacts.readPath(reference, agent.id),
+      }
 
       const runtime = runtimeRegistry.get(agent.runtime ?? "acp")
       const retries = agent.retries ?? 0
@@ -143,12 +162,12 @@ export class AgentRunner {
                   "No step-by-step plan was provided — use your judgement.",
               }
               let prompt = await renderPrompt(
-                this.config.context?.taskPlanPath
-                  ? agent.taskPrompt.replaceAll("task-plan.json", this.config.context.taskPlanPath)
-                  : agent.taskPrompt,
+                this.taskPlanTemplate(agent.taskPrompt),
                 agentContext,
-                this.globalWorkDir
+                this.globalWorkDir,
+                artifactPaths
               )
+              if (artifacts) prompt = `${artifacts.instruction(agent.id)}\n\n${prompt}`
               const requirement =
                 this.contextManager.get("requirement") ?? this.config.context?.requirement
               if (agent.id !== COORDINATOR_ID && requirement !== undefined) {

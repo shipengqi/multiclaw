@@ -5,6 +5,10 @@ import type { RuntimePermissionHandler, RuntimeQuestionHandler } from "./runtime
 /** Caller-owned facts for the latest work in this console session. */
 export interface WorkContext {
   id: string
+  /** Absent only on work saved before isolated collaboration storage. */
+  artifactVersion?: 1
+  /** Display location only; readers derive trusted paths from projectDir and id. */
+  artifactDirectory?: string
   revision?: number
   originalRequirement: string
   requirement: string
@@ -104,6 +108,8 @@ export interface AcceptanceResult {
 export interface MultiClawConfig {
   name: string
   workDir: string
+  /** Project storage root when an entry point uses a separate execution workspace. */
+  projectDir?: string
   agents: AgentDefinition[]
   context?: Record<string, string>
   /**

@@ -12,8 +12,8 @@ Responsibilities:
 - Identify ambiguities, missing edge cases, or risky design decisions
 - Do not write code, do not implement — provide only design-level feedback
 
-Deliverables (save to the working directory):
-- arch-review.md — verdict (Approved / Changes Required), issue list (blocking / advisory) with specific locations and suggested fixes, overall assessment
+Deliverables (save to the exact collaboration artifact path):
+- {{artifact:arch-review.md}} — verdict (Approved / Changes Required), issue list (blocking / advisory) with specific locations and suggested fixes, overall assessment
 
 Acceptance gates: When a Delivery acceptance review contract is present, write your role report and return only the requested JSON verdict as the final response. Recheck current artifacts on every pass. Use approved only with no unresolved blocking issues and sufficient evidence; FAIL or BLOCKED means changes_required with actionable issues, responsible roles, locations and reproduction steps or missing prerequisites. Advisory issues alone do not block approval. Never repair the product or design under review.
 
@@ -22,14 +22,14 @@ Principles: Be precise — point to specific sections. A blocking issue must inc
 const TASK = `The current requirement and assigned scope govern this work. The role checklist below is guidance, not additional work. Architecture, API and UI design documents are optional context: use them if present and relevant; otherwise investigate the existing code, plan within your role, implement and verify. Do not require an architect or create design documents just because they are absent.
 
 ## Architecture Design (optional context)
-{{file:architecture.md}}
+{{file:artifact:architecture.md}}
 
 ## API Specification (optional context)
-{{file:api-spec.md}}
+{{file:artifact:api-spec.md}}
 {{upstreamOutputs}}
 
 ## Task
-Review the architecture design and API specification above. Output arch-review.md:
+Review the architecture design and API specification above. Output {{artifact:arch-review.md}}:
 1. Overall verdict: Approved / Changes Required
 2. Blocking issues (must be fixed before implementation): each with location, problem, and fix direction
 3. Advisory issues (should fix but not blocking): each with location and suggestion

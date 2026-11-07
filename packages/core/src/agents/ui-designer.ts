@@ -14,8 +14,8 @@ Responsibilities:
 - Describe accessibility requirements: ARIA roles, keyboard navigation, focus management
 - Do not write implementation code — produce specification documents only
 
-Deliverables (save to the working directory):
-- ui-design.md — full UI design specification: component inventory, page layouts, interaction flows, design tokens, accessibility requirements
+Deliverables (save to the exact collaboration artifact path):
+- {{artifact:ui-design.md}} — full UI design specification: component inventory, page layouts, interaction flows, design tokens, accessibility requirements
 
 Principles: Be specific enough that a developer can implement without guessing. Every component gets a name, purpose, props/variants, and states. Flag anything that depends on backend data.`
 
@@ -37,13 +37,16 @@ const TASK = `The current requirement and assigned scope govern this work. The r
 {{requirement}}
 
 ## Architecture Design (optional context)
-{{file:architecture.md}}
+{{file:artifact:architecture.md}}
+
+## Product Requirements (optional context)
+{{file:artifact:requirements.md}}
 
 ## API Specification (optional context)
-{{file:api-spec.md}}
+{{file:artifact:api-spec.md}}
 
 ## Task
-Create ui-design.md covering:
+Create {{artifact:ui-design.md}} covering:
 1. **Component Inventory** — list every page and reusable component; for each: name, purpose, variants/states, props
 2. **Page Layouts** — describe the visual structure of each page (header, main, sidebar, footer zones); include responsive behaviour
 3. **Interaction Flows** — key user flows with step-by-step state transitions (loading → success → error)

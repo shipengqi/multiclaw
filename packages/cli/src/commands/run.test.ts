@@ -228,6 +228,7 @@ describe("runCommand · resume wiring", () => {
     // The agents must continue where they wrote, so the run dir becomes the
     // work dir — not a fresh sandbox.
     expect(state.config?.workDir).toBe(runDir)
+    expect(state.config?.projectDir).toBe(root)
     expect(state.config?.resume).toEqual({ agents: ["dev"] })
     // The requirement is recovered from the report the resume was derived from.
     expect(state.config?.context?.requirement).toBe("ship it")
@@ -258,6 +259,7 @@ describe("runCommand · resume wiring", () => {
     await runCommand("do a thing", {})
 
     expect(state.config?.workDir).toMatch(/\.multiclaw[/\\]runs[/\\]run-/)
+    expect(state.config?.projectDir).toBe(root)
     expect(state.config?.resume).toBeUndefined()
     expect(state.config?.context?.requirement).toBe("do a thing")
   })

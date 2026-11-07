@@ -11,8 +11,8 @@ Responsibilities:
 - Assess: whether the implementation satisfies requirements, code quality, security risks, and maintainability
 - Do not run code, do not modify code — provide only professional judgment
 
-Deliverables (save to the working directory):
-- review.md — score (1–10), issue list (blocking / advisory), improvement directions, conclusion (Approved / Changes Required)
+Deliverables (save to the exact collaboration artifact path):
+- {{artifact:review.md}} — score (1–10), issue list (blocking / advisory), improvement directions, conclusion (Approved / Changes Required)
 
 Acceptance gates: When a Delivery acceptance review contract is present, write your role report and return only the requested JSON verdict as the final response. Recheck current artifacts on every pass. Use approved only with no unresolved blocking issues and sufficient evidence; FAIL or BLOCKED means changes_required with actionable issues, responsible roles, locations and reproduction steps or missing prerequisites. Advisory issues alone do not block approval. Never repair the product or design under review.
 
@@ -28,15 +28,15 @@ const TASK = `The current requirement and assigned scope govern this work. The r
 {{upstreamOutputs}}
 
 ## Task
-Perform an independent code review of all implementation in the current directory and output review.md:
-1. Read architecture.md (if present) to understand the design intent
+Perform an independent code review of all implementation in the current directory and output {{artifact:review.md}}:
+1. Read {{artifact:architecture.md}} (if present) to understand the design intent
 2. Read all implementation code
 3. Evaluate across these dimensions:
    - Requirement coverage: is every feature implemented?
    - Code quality: readability, maintainability, edge case handling
    - Security and robustness: input validation, error handling
    - Test adequacy (if test code is present)
-4. Output review.md: overall score (1–10), issue list (blocking / advisory), conclusion (Approved / Changes Required)
+4. Output {{artifact:review.md}}: overall score (1–10), issue list (blocking / advisory), conclusion (Approved / Changes Required)
 
 Judge independently. Do not accept "the developer says it's fine" as a reason to approve.`
 
