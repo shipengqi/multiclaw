@@ -14,7 +14,7 @@
     "dev:example": "pnpm --filter dev-team-example run dev"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.4",
+    "@biomejs/biome": "^2.6.5",
     "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^5.0.4",
     "conventional-changelog": "^8.1.3",
