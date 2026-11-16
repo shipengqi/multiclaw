@@ -34,12 +34,12 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "^0.101.0",
-    "@agentclientprotocol/codex-acp": "^2.5.0",
-    "@inquirer/prompts": "^8.7.5",
+    "@agentclientprotocol/claude-agent-acp": "^0.106.0",
+    "@agentclientprotocol/codex-acp": "^2.6.0",
+    "@inquirer/prompts": "^8.8.0",
     "@multiclawcli/core": "workspace:*",
     "@multiclawcli/dashboard": "workspace:*",
-    "commander": "^15.0.0",
+    "commander": "^15.1.0",
     "jiti": "^2.7.0"
   },
   "devDependencies": {
